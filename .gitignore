@@ -1,6 +1,5 @@
 /build/
 /build-release/
 /cmake-build-*/
-.cursor/
 .cache/
 compile_commands.json
