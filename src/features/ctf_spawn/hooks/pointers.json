@@ -1,0 +1,8 @@
+[
+  "SelectRandomDeathmatchSpawnPoint",
+  "G_Find",
+  "OnSameTeam",
+  "Info_ValueForKey",
+  "WP_Team1SpawnIndex",
+  "WP_Team2SpawnIndex"
+]

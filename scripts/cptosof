@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Copy gamex86.dll into the SOF server Wine prefix Base directory.
+# Linux paths are case-sensitive: "Soldier of Fortune" vs "Soldier Of Fortune" are different.
+# If SOF_SERVER_BASE is unset, we pick the Base folder that looks like the real game install.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+BUILD_DIR="${BUILD_DIR:-build}"
+SRC="$ROOT/$BUILD_DIR/gamex86.dll"
+
+default_sof_base() {
+	local wprefix="${WINEPREFIX:-$HOME/wprefix/sof-server}"
+	local win_user="${WINE_WINDOWS_USER:-$USER}"
+	local profile="$wprefix/drive_c/users/$win_user"
+	local cand base
+	for cand in "Soldier of Fortune" "Soldier Of Fortune"; do
+		base="$profile/$cand/Base"
+		if [[ -d "$base" ]] && [[ -f "$base/oldgamex86.dll" || -f "$base/pak0.pak" ]]; then
+			echo "$base"
+			return 0
+		fi
+	done
+	# Fallback: canonical install name (lowercase "of")
+	echo "$profile/Soldier of Fortune/Base"
+}
+
+if [[ -n "${SOF_SERVER_BASE:-}" ]]; then
+	DEST="$SOF_SERVER_BASE"
+else
+	DEST="$(default_sof_base)"
+fi
+
+if [[ ! -f "$SRC" ]]; then
+	echo "error: missing $SRC (build first: ./scripts/build.sh or ./scripts/rebuild.sh)" >&2
+	exit 1
+fi
+
+mkdir -p "$DEST"
+cp -v "$SRC" "$DEST/gamex86.dll"
+echo "Installed: $DEST/gamex86.dll"

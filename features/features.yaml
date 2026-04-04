@@ -1,0 +1,12 @@
+# Optional features: each key is a directory under src/features/<name>/.
+# Core (src/core/) is always included — not listed here.
+# Use true / false so every feature can be toggled explicitly in one place.
+
+features:
+  example: true
+  ctf_spawn: true
+  # my_feature: false
+
+# Alternative: list only enabled names (merged with `features:` above if both present).
+# enabled:
+#   - example

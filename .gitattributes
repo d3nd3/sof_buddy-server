@@ -1,0 +1,5 @@
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+CMakePresets.json text eol=lf
+scripts/*.sh text eol=lf
+features/*.yaml text eol=lf

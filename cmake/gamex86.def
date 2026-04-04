@@ -1,0 +1,3 @@
+LIBRARY "gamex86"
+EXPORTS
+	GetGameAPI = GetGameApi  @1

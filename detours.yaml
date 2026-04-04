@@ -1,0 +1,101 @@
+# Registry of symbols the shim may resolve or hook.
+# RVAs (< 0x10000000) are relative to the PE module named in `module` (see runtime/detours.cpp).
+# Absolute addresses are used as-is.
+#
+# Com_DPrintf: id-style developer logging (guarded by developer cvar in the engine).
+# Address from sof_buddy / retail SoF.exe — verify for your server binary if needed.
+
+functions:
+  - name: Com_DPrintf
+    module: SofExe
+    identifier: "0x2001C8E0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    variadic: true
+    params:
+      - type: const char*
+        name: fmt
+
+  # Retail gamex86.dll (as oldgamex86.dll) — RVAs from IDA image base 0x50000000; verify for your build.
+  - name: SelectTeamDeathmatchSpawnPoint
+    module: GameDll
+    identifier: "0xF2FD0"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: SelectRandomDeathmatchSpawnPoint
+    module: GameDll
+    identifier: "0xF2E20"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: G_Find
+    module: GameDll
+    identifier: "0xC26A0"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: from
+      - type: int
+        name: fieldofs
+      - type: char*
+        name: match
+      - type: int
+        name: cmp
+
+  - name: OnSameTeam
+    module: GameDll
+    identifier: "0x887E0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: a
+      - type: void*
+        name: b
+
+  - name: Info_ValueForKey
+    module: GameDll
+    identifier: "0xFE320"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: const char*
+        name: s
+      - type: const char*
+        name: key
+
+  - name: WP_Team1SpawnIndex
+    module: GameDll
+    identifier: "0x617F0"
+    return_type: short
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: int
+        name: spawn_id
+
+  - name: WP_Team2SpawnIndex
+    module: GameDll
+    identifier: "0x61920"
+    return_type: short
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: int
+        name: spawn_id

@@ -1,0 +1,8 @@
+[
+  {
+    "hook": "GameDllLoaded",
+    "callback": "example_OnGameDllLoaded",
+    "priority": 0,
+    "phase": "Post"
+  }
+]
