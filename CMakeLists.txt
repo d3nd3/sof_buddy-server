@@ -44,6 +44,7 @@ add_library(gamex86 SHARED
   "${GEN_DIR}/generated_engine_pointers.cpp"
   src/runtime/log.cpp
   src/runtime/detours.cpp
+  src/runtime/buddy_import.cpp
   src/runtime/shared_hook_manager.cpp
   third_party/DetourXS/ADE32.cpp
   third_party/DetourXS/detourxs.cpp

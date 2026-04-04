@@ -1,5 +1,7 @@
 // CTF team spawn override: see README.md. Uses SOF_EP_* from generated_engine_pointers.h.
+// Gated by cvar _sofbuddy_custom_respawn (0 = stock, 1 = custom).
 
+#include "buddy_import.h"
 #include "generated_engine_pointers.h"
 #include "generated_registrations.h"
 
@@ -169,6 +171,9 @@ void ApplyWp(void* ent, void* spot, int team12) {
 
 void* ctfspawn_SelectTeamSpawn(void* ent,
                                 detour_SelectTeamDeathmatchSpawnPoint::tSelectTeamDeathmatchSpawnPoint original) {
+    if (!Buddy_CustomRespawnEnabled())
+        return original(ent);
+
     const int dm = GameDeathmatchMode();
     // CtfDPrintf("[ctf_spawn] SelectTeamSpawn: ent#%i p=%p deathmatch_mode=%i (CTF=%i)\n", who, ent, dm,
     //            kDmCtf);

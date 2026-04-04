@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <cstring>
 
+#include "buddy_import.h"
 #include "detours.h"
 #include "engfuncs.h"
 #include "generated_detours.h"
@@ -70,6 +71,9 @@ static BOOL LoadOriginalGameDll(HINSTANCE shimModule)
 
 extern "C" game_export_t *GetGameApi(game_import_t *import)
 {
+	if (import)
+		Buddy_BindGameImport(import);
+
 	// Do not LoadLibrary the real game DLL from DllMain — loader lock breaks that on
 	// Windows/Wine and DllMain returns FALSE -> engine reports "failed to load game DLL".
 	if (!g_pfnGetGameApi) {
