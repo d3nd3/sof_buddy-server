@@ -90,7 +90,7 @@ round again. This feature closes that gap.
 | `_sofbuddy_tickpace_cbuf_max` | **Read this one first.** Worst single command-buffer drain, in ms |
 | `_sofbuddy_tickpace_late_avg` | Rolling mean tick lateness, in ms |
 | `_sofbuddy_tickpace_late_max` | Worst tick lateness since boot, in ms |
-| `_sofbuddy_tickpace_saved` | Ticks rescued from slipping into the following loop iteration |
+| `_sofbuddy_tickpace_saved` | Ticks whose boundary passed mid-drain and were caught by the settle correction this loop, instead of firing a whole iteration late |
 | `_sofbuddy_tickpace_defers` | Drains held back by the reserve |
 
 **Interpreting `_sofbuddy_tickpace_cbuf_max`:** under ~10 ms, the reserve is

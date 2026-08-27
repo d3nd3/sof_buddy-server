@@ -141,7 +141,7 @@ agreed to.
 | `_sofbuddy_tickpace_late_avg` | — | rolling mean tick lateness (ms) |
 | `_sofbuddy_tickpace_late_max` | — | worst tick lateness since boot |
 | `_sofbuddy_tickpace_cbuf_max` | — | worst single drain (ms) — tells you which regime you are in |
-| `_sofbuddy_tickpace_saved` | — | ticks rescued from the following iteration |
+| `_sofbuddy_tickpace_saved` | — | ticks whose boundary passed mid-drain and were caught by the settle correction this loop, instead of firing a whole iteration late |
 | `_sofbuddy_tickpace_defers` | — | drains held by the reserve |
 
 `_sofbuddy_tickpace_cbuf_max` is the one to read first. Under ~10ms the reserve
