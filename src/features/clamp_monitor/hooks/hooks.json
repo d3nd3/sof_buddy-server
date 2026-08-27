@@ -1,0 +1,12 @@
+[
+  {
+    "function": "G_RunFrame",
+    "callback": "clampmon_RunFrame",
+    "override": true
+  },
+  {
+    "function": "SV_ReadPackets",
+    "callback": "clampmon_ReadPacketsPost",
+    "phase": "Post"
+  }
+]

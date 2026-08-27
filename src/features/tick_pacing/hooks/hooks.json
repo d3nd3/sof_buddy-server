@@ -1,0 +1,22 @@
+[
+  {
+    "function": "Qcommon_frame",
+    "callback": "tickpace_QcommonFrame",
+    "phase": "Pre"
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "tickpace_SvFramePre",
+    "phase": "Pre"
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "tickpace_SvFramePost",
+    "phase": "Post"
+  },
+  {
+    "function": "Cbuf_Execute",
+    "callback": "tickpace_CbufExecute",
+    "override": true
+  }
+]

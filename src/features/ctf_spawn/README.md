@@ -9,6 +9,7 @@ Non-CTF modes are unchanged: the override forwards to the original **`SelectTeam
 | File | Role |
 |------|------|
 | **`ctf_spawn.cpp`** | Implements **`ctfspawn_SelectTeamSpawn`** (override entry point) using `oG_Find`, `oOnSameTeam`, `oInfo_ValueForKey`, `oSelectRandomDeathmatchSpawnPoint`, and waypoint helpers. |
+| **`cvar.h`** / **`cvar.cpp`** | Handles feature-specific cvar creation and checks (`_sofbuddy_custom_respawn`). |
 | **`hooks/hooks.json`** | **`override`: true** on **`SelectTeamDeathmatchSpawnPoint`** → single choke point; stock logic is replaced only on the CTF path. |
 | **`hooks/pointers.json`** | Marks helper symbols as **pointer-only** so the generator does not install detours on them—only fills **`o*`** trampolines after the game DLL loads. |
 
@@ -25,7 +26,7 @@ Symbol names and RVAs live in the repo-root **`detours.yaml`** (shared registry)
 
 ## Enabling
 
-Set **`ctf_spawn: true`** in **`features/features.yaml`**. If you set it to **`false`**, the generator stops emitting detours and registrations for this feature’s symbols; you should also **remove `src/features/ctf_spawn/ctf_spawn.cpp` from `CMakeLists.txt`** (or equivalent) so the project does not compile code that expects those generated hooks and `o*` pointers.
+Set **`ctf_spawn: true`** in **`src/features/features.yaml`**. If you set it to **`false`**, the generator stops emitting detours and registrations for this feature’s symbols; you should also **rename `ctf_spawn.cpp`** (e.g. to `ctf_spawn.cpp.off`) so the project does not compile code that expects those generated hooks and `o*` pointers.
 
 ## Debug logging (temporary)
 

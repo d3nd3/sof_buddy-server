@@ -3,8 +3,15 @@
 # Use true / false so every feature can be toggled explicitly in one place.
 
 features:
-  example: true
-  ctf_spawn: true
+  example: false
+  ctf_spawn: false
+  clamp_monitor: true
+  hash_lookup: true
+  tick_pacing: true
+  cbuf_insert: true
+  # Disabled: measured a net LOSS on a live server (see src/features/zpool/README.md).
+  # Kept in the tree as a recorded negative result, not built in.
+  zpool: false
   # my_feature: false
 
 # Alternative: list only enabled names (merged with `features:` above if both present).

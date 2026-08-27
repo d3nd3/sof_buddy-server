@@ -1,13 +1,13 @@
 # Detour system (sof_buddy-server)
 
-This repo mirrors the **data-driven detour workflow** from the **sof_buddy** client project: declare symbols in **`detours.yaml`**, wire behaviour in **`src/features/<name>/hooks/hooks.json`** and **`callbacks/callbacks.json`**, and enable optional features in **`features/features.yaml`** (same family as **`detours.yaml`**: comments, clear `true` / `false` toggles). The Python tool **`tools/generate_hooks.py`** (adapted from sof_buddy) emits generated headers under **`${CMAKE_BINARY_DIR}/generated`** when CMake runs (including **`generated_engine_pointers.h`** / **`generated_engine_pointers.cpp`** for pointer-only call helpers). If **`features.yaml`** is absent, the generator falls back to legacy **`features/FEATURES.txt`** (one name per line).
+This repo mirrors the **data-driven detour workflow** from the **sof_buddy** client project: declare symbols in **`detours.yaml`**, wire behaviour in **`src/features/<name>/hooks/hooks.json`** and **`callbacks/callbacks.json`**, and enable optional features in **`src/features/features.yaml`** (same family as **`detours.yaml`**: comments, clear `true` / `false` toggles). The Python tool **`tools/generate_hooks.py`** (adapted from sof_buddy) emits generated headers under **`${CMAKE_BINARY_DIR}/generated`** when CMake runs (including **`generated_engine_pointers.h`** / **`generated_engine_pointers.cpp`** for pointer-only call helpers). If **`features.yaml`** is absent, the generator falls back to legacy **`src/features/FEATURES.txt`** (one name per line).
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `detours.yaml` | Registry of hookable functions (name, module, RVA or absolute address, signature). |
-| `features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with **`name: true|false`**, and/or an **`enabled:`** list of names. **`core`** is not configured here (always on). |
+| `src/features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with **`name: true|false`**, and/or an **`enabled:`** list of names. **`core`** is not configured here (always on). |
 | `src/core/hooks.json` | Optional core function hooks. |
 | `src/core/callbacks.json` | Optional core lifecycle callbacks. |
 | `src/core/pointers.json` | Core pointer-only symbols (resolved to **`detour_Name::oName`**, no detour). Always processed. E.g. **`Com_DPrintf`** for developer print. |
@@ -49,4 +49,6 @@ Add new lifecycle hooks by dispatching from the appropriate place in C++ and lis
 
 Full detail (override hooks, variadic limits, module naming): **`docs/DETOUR_SYSTEM.md`** in the **sof_buddy** repository.
 
-The original SOF1 game SDK headers live under **`src/engine/`** in this repo (reference only).
+Engine `game_import_t` slot map (verified offsets for calling engine functions directly): **`docs/game_import_t.md`**.
+
+The original SOF1 game SDK headers live under **`reference/engine/`** in this repo (reference only).

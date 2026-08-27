@@ -9,6 +9,26 @@
 #define DETOUR_TYPE_JMP 0
 #define DETOUR_LEN_AUTO 0
 
+namespace {
+bool IsMemoryReadable(const void* ptr, size_t size) {
+    if (!ptr || size == 0) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    return true;
+}
+
+bool IsMemoryWritable(const void* ptr, size_t size) {
+    if (!ptr || size == 0) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD | PAGE_READONLY | PAGE_EXECUTE_READ)) return false;
+    return true;
+}
+} // namespace
+
 void* GetModuleBase(const char* moduleName)
 {
     return reinterpret_cast<void*>(GetModuleHandleA(moduleName));
@@ -167,7 +187,7 @@ bool DetourSystem::ApplyDetourAtAddress(void* address, void* detour_func, void**
         return true;
     }
     
-    if (IsBadReadPtr(address, 1)) {
+    if (!IsMemoryReadable(address, 1)) {
         PrintOut(PRINT_BAD, "Cannot apply %s detour at 0x%p (memory not accessible)\n", 
                  name ? name : "unnamed", address);
         return false;
@@ -200,8 +220,8 @@ bool DetourSystem::RemoveDetourAtAddress(void* address) {
     }
     
     void* trampoline = it->second;
-    if (trampoline && !IsBadReadPtr(trampoline, 1)) {
-        if (!IsBadReadPtr(address, 1)) {
+    if (trampoline && IsMemoryReadable(trampoline, 1)) {
+        if (IsMemoryReadable(address, 1)) {
             DetourRemove(&trampoline);
         }
         applied_detours.erase(it);
@@ -266,13 +286,13 @@ void DetourSystem::ApplyModuleDetours(DetourModule target_module, const char* mo
         
         size_t effective_len = detour.detour_len == 0 ? DETOUR_LEN_AUTO : detour.detour_len;
         
-        if (IsBadReadPtr(absolute_addr, 1)) {
+        if (!IsMemoryReadable(absolute_addr, 1)) {
             PrintOut(PRINT_BAD, "Cannot apply %s detour at 0x%p (memory not accessible)\n", 
                      detour.name ? detour.name : "unnamed", absolute_addr);
             continue;
         }
         
-        if (IsBadReadPtr(detour.detour_func, 1)) {
+        if (!IsMemoryReadable(detour.detour_func, 1)) {
             PrintOut(PRINT_BAD, "Cannot apply %s detour: hook function at 0x%p is not accessible\n", 
                      detour.name ? detour.name : "unnamed", detour.detour_func);
             continue;
@@ -313,11 +333,11 @@ void DetourSystem::RemoveModuleDetours(DetourModule target_module, const char* m
         
         if (applied_detours.count(absolute_addr)) {
             void* trampoline = applied_detours[absolute_addr];
-            if (trampoline && !IsBadReadPtr(trampoline, 1)) {
-                if (!IsBadReadPtr(absolute_addr, 1)) {
+            if (trampoline && IsMemoryReadable(trampoline, 1)) {
+                if (IsMemoryReadable(absolute_addr, 1)) {
                     DetourRemove(&trampoline);
                 }
-                if (detour.original_storage && !IsBadWritePtr(detour.original_storage, sizeof(void*))) {
+                if (detour.original_storage && IsMemoryWritable(detour.original_storage, sizeof(void*))) {
                     *detour.original_storage = nullptr;
                 }
                 applied_detours.erase(absolute_addr);

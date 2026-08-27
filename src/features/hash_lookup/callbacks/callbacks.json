@@ -1,0 +1,3 @@
+[
+  { "hook": "GameDllLoaded", "callback": "hashlookup_OnGameDllLoaded", "priority": 0, "phase": "Post" }
+]

@@ -1,20 +1,226 @@
 # sof_buddy-server
 
-A **Soldier of Fortune (SOF1)** mod that runs on the **game server** (dedicated or listen server host), not on players’ game clients.
+A server-side mod for **Soldier of Fortune 1**. It ships as a `gamex86.dll`
+shim that loads the stock game DLL beside it and hosts a data-driven detour
+system, so behaviour changes and instrumentation can be added without touching
+the original binary.
 
-This repository targets server-side behaviour and integration—anything that ships to or runs alongside the SOF1 server process—not client UI, assets, or local player binaries.
+It runs on the **game server** — dedicated or listen-server host — not on
+players' clients. Nothing here has to be installed by the people connecting to
+you.
 
-## Build / install (shim DLL)
+Everything an admin interacts with is a **cvar**. That is what the rest of this
+document is mostly about.
 
-This tree builds a **`gamex86.dll` shim** that loads the stock game from `base\oldgamex86.dll` and forwards `GetGameAPI`, while hosting an optional **data-driven detour pipeline** (same workflow as the **sof_buddy** client project): `detours.yaml`, `features/features.yaml` (enable optional features), and per-feature `hooks.json` / `callbacks.json` under `src/features/`. See **`docs/DETOUR_SYSTEM.md`**.
+---
 
-### Linux → Windows (MinGW-w64, 32-bit)
+## Install
 
-SOF1’s `gamex86.dll` is **32-bit x86**. **CMake** plus **Ninja** is the default: fast incremental builds and a single generator across CLI and `CMakePresets.json`.
+1. In your SoF `base` folder, rename the original `gamex86.dll` to
+   **`oldgamex86.dll`**.
+2. Drop this project's built **`gamex86.dll`** into `base` beside it.
+3. Start the server as usual.
 
-The cross-compiler is **MinGW-w64** targeting **i686** (`i686-w64-mingw32-g++`).
+The shim logs to `sofbuddy-shim.log` next to the executable. If something is
+wrong, that file says so on the first line.
 
-Install the toolchain (Debian/Ubuntu example):
+---
+
+## Cvars
+
+### How to set them
+
+| Where | How | Use for |
+|---|---|---|
+| **Command line** | `+set _sofbuddy_hashmap 1` | Anything marked **load-time** below — these are read once and never again |
+| **Server config** | `set _sofbuddy_tickpace_reserve_ms 5` | Normal tuning; put it in the config your server already runs at startup |
+| **Live console / rcon** | `_sofbuddy_tickpace 0` | Anything marked **live** — takes effect on the next frame, no restart |
+
+Two properties in the tables below matter:
+
+- **`ARCHIVE`** — the engine writes the value into your config when it saves.
+- **`NOSET`** — the engine refuses `set` from the console. Every output cvar is
+  `NOSET`: they are readouts, not settings, and writing to them is meaningless.
+
+> **A cvar only exists if its feature is compiled in.** Features are toggled at
+> **build** time in `src/features/features.yaml`, not at runtime. If a cvar
+> below does not exist on your server, its feature was built out. The default
+> build ships **`clamp_monitor`**, **`hash_lookup`**, **`tick_pacing`** and
+> **`cbuf_insert`**.
+
+---
+
+### Feature switches
+
+The master on/off for each feature.
+
+| Cvar | Default | When read | Flags | What it does |
+|---|:---:|:---:|:---:|---|
+| `_sofbuddy_tickpace` | `1` | live | `ARCHIVE` | Tick pacing: make server ticks fire on their own 100 ms boundary instead of whenever the loop next notices |
+| `_sofbuddy_hashmap` | `0` | **load-time** | `ARCHIVE` | Replace the engine's cvar/command/alias linked lists with hash maps. Needs `+set` — read once at game-DLL load |
+| `_sofbuddy_cbuf_insert` | `0` | live | `ARCHIVE` | Shift the command buffer in place instead of round-tripping it through the zone allocator |
+| `_sofbuddy_zpool` | `0` | **load-time** | `ARCHIVE` | Recycle zone allocations. **Measured no effect** — kept as a recorded negative result |
+| `_sofbuddy_custom_respawn` | `1` | live | — | CTF spawn selection: pick the team spawn farthest from the nearest living enemy, avoiding teammates |
+| `_sofbuddy_example_enabled` | `1` | live | — | Template feature, for developers. Not built by default |
+
+`clamp_monitor` has no on/off switch — it is pure measurement and always
+active when built in.
+
+---
+
+### Tick pacing — `tick_pacing`
+
+Server ticks are supposed to run every 100 ms. The engine samples its clock
+*before* running the console command buffer, so a tick whose boundary passes
+during heavy sofplus scripting is not noticed until the whole loop has gone
+round again. This feature closes that gap.
+
+**Tunables** — all `ARCHIVE`, all read live, all clamped to the ranges shown:
+
+| Cvar | Default | Range | Meaning |
+|---|:---:|:---:|---|
+| `_sofbuddy_tickpace_spin_ms` | `0` | 0 – 20 | When a tick is due within this many ms, busy-wait to the boundary rather than sleeping past it. Costs CPU. Dedicated servers only |
+| `_sofbuddy_tickpace_reserve_ms` | `3` | 0 – 50 | Headroom a command-buffer drain must have before it is allowed to *start*. `0` = stock scheduling |
+| `_sofbuddy_tickpace_defer_max_ms` | `200` | 0 – 1000 | Never hold a drain longer than this, whatever the headroom says |
+
+**Readouts** — all `NOSET`:
+
+| Cvar | Meaning |
+|---|---|
+| `_sofbuddy_tickpace_cbuf_max` | **Read this one first.** Worst single command-buffer drain, in ms |
+| `_sofbuddy_tickpace_late_avg` | Rolling mean tick lateness, in ms |
+| `_sofbuddy_tickpace_late_max` | Worst tick lateness since boot, in ms |
+| `_sofbuddy_tickpace_saved` | Ticks rescued from slipping into the following loop iteration |
+| `_sofbuddy_tickpace_defers` | Drains held back by the reserve |
+
+**Interpreting `_sofbuddy_tickpace_cbuf_max`:** under ~10 ms, the reserve is
+doing real work and the tunables are worth tuning. Well above it, no scheduling
+policy can keep a drain that long off a 100 ms boundary — the win has to come
+from the scripts themselves.
+
+Details, including why command-buffer drains are never split: [`src/features/tick_pacing/README.md`](src/features/tick_pacing/README.md)
+
+---
+
+### Clamp monitoring — `clamp_monitor`
+
+Measures the two ways the engine's clock gets forcibly corrected. They are
+opposite failures and mean different things.
+
+- **highclamp** — the server fell behind and the engine *deletes* the time it
+  owed. This is a load gauge. Non-zero means starvation.
+- **lowclamp** — the server clock ended up more than a whole tick *behind* game
+  time and the engine jumps it forward, *inventing* the difference. On a running
+  map this should be zero. Non-zero means something is moving the clock outside
+  the normal tick path.
+
+**Tunables** — all `ARCHIVE`, read live:
+
+| Cvar | Default | Meaning |
+|---|:---:|---|
+| `_sofbuddy_clamp_notify_ms` | `5` | Log a line to `sofbuddy-shim.log` when a single clamp deletes at least this many ms. At most one line per second |
+| `_sofbuddy_clamp_window` | `2` | Rolling window in seconds for the average below. Rounded to whole ticks, capped at 16 s |
+| `_sofbuddy_clamp_broadcast_ms` | `0` | Tell **all connected players** the server is lagging when the rolling average reaches this. `0` = off. Opt-in, because it is player-visible |
+| `_sofbuddy_clamp_broadcast_interval` | `30` | Minimum seconds between those broadcasts |
+
+**Readouts** — all `NOSET`:
+
+| Cvar | Meaning |
+|---|---|
+| `_sofbuddy_highclamps` | Count of highclamp events since boot |
+| `_sofbuddy_clamp_avg` | Rolling average of per-tick lost ms, over the window above |
+| `_sofbuddy_clamp_last` | Ms lost on the most recent tick (`0` if it was clean) |
+| `_sofbuddy_clamp_lost_ms` | Cumulative ms deleted since boot |
+| `_sofbuddy_lowclamps` | Count of lowclamp events since boot |
+| `_sofbuddy_lowclamp_checks` | Frames the lowclamp test actually ran on — the **denominator** that makes a zero above mean *measured* zero rather than *never measured* |
+| `_sofbuddy_lowclamp_gained_ms` | Cumulative ms the engine invented |
+| `_sofbuddy_lowclamp_worst` | Biggest single forward jump, in ms |
+
+**Reading a zero.** `_sofbuddy_lowclamps 0` is only meaningful alongside
+`_sofbuddy_lowclamp_checks`. That counter counts `SV_Frame`s, not ticks, so on a
+live dedicated server it should climb by **hundreds per second**. If it is
+stuck at `0`, the measurement is not running and the zero means nothing.
+
+Details: [`src/features/clamp_monitor/README.md`](src/features/clamp_monitor/README.md)
+
+---
+
+### Command buffer inserts — `cbuf_insert`
+
+sofplus scripting calls `Cbuf_InsertText` constantly, and the stock
+implementation copies the entire queued buffer out to the heap and back on
+every call. This shifts it in place instead.
+
+**Ships off.** Measurement runs in *both* states, so flipping
+`_sofbuddy_cbuf_insert` between `0` and `1` across two comparable busy periods
+is a controlled A/B on your own server rather than a leap of faith.
+
+**Readouts** — all `NOSET`, published at most 10×/second:
+
+| Cvar | Meaning |
+|---|---|
+| `_sofbuddy_cbuf_insert_us` | Cumulative microseconds spent inside `Cbuf_InsertText`. **This is the A/B number** — same workload at `0` and at `1` |
+| `_sofbuddy_cbuf_insert_bytes` | Cumulative bytes of already-queued text shifted. The quantity the optimisation removes most of |
+| `_sofbuddy_cbuf_insert_max` | Largest buffer seen at insert time. If this stays small, there is nothing here to win |
+| `_sofbuddy_cbuf_inserts` | Total calls |
+| `_sofbuddy_cbuf_insert_slow` | Calls that fell back to the engine (buffer overflow, or the cvar off) |
+
+Details: [`src/features/cbuf_insert/README.md`](src/features/cbuf_insert/README.md)
+
+---
+
+### Dictionary hashing — `hash_lookup`
+
+SoF inherits Quake 2's cvars, commands and aliases as **linked lists**. Every
+cvar read, every cvar write and every console command walks a list and
+`strcmp`s each node. That is fine for a client with a human at the keyboard; it
+is not fine for a server running sofplus scripting, which does thousands of
+these per tick.
+
+`_sofbuddy_hashmap 1` turns all three into hash maps. It is **load-time only** —
+put `+set _sofbuddy_hashmap 1` on the command line, or set it in a config that
+runs before the first map.
+
+Details: [`src/features/hash_lookup/README.md`](src/features/hash_lookup/README.md)
+
+---
+
+## Recipes
+
+**Is my server actually keeping up?**
+
+```
+_sofbuddy_highclamps          should stay 0
+_sofbuddy_clamp_avg           should stay 0.00
+_sofbuddy_tickpace_cbuf_max   how bad the worst drain got
+```
+
+**Is the instrumentation even running?**
+
+```
+_sofbuddy_lowclamp_checks     must climb by hundreds per second
+_sofbuddy_tickpace_saved      should be climbing on a busy server
+```
+
+**Is `cbuf_insert` worth enabling here?**
+
+Run a representative busy period at `_sofbuddy_cbuf_insert 0`, note
+`_sofbuddy_cbuf_insert_us` and `_sofbuddy_cbuf_inserts`; repeat at `1`; compare
+microseconds per call. If `_sofbuddy_cbuf_insert_max` never gets large, skip it.
+
+**Warn players when the server is struggling** (opt-in, player-visible):
+
+```
+set _sofbuddy_clamp_broadcast_ms 25
+set _sofbuddy_clamp_broadcast_interval 60
+```
+
+---
+
+## Building
+
+SoF's `gamex86.dll` is **32-bit x86**. The default toolchain is MinGW-w64
+targeting i686, driven by CMake + Ninja.
 
 ```bash
 sudo apt install cmake ninja-build g++-mingw-w64-i686 python3-yaml
@@ -22,107 +228,48 @@ sudo update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g+
 sudo update-alternatives --set i686-w64-mingw32-gcc /usr/bin/i686-w64-mingw32-gcc-posix
 ```
 
-### Build modes and defaults
-
-**Debug** and **Release** map to CMake’s `CMAKE_BUILD_TYPE`. **Release** is optimized and typical for the DLL you run on a server; **Debug** keeps symbols and minimal optimization so breakpoints and stack traces are usable.
-
-Everything uses a **single build directory** (`build/` by default, or `BUILD_DIR`). With Ninja there is only one active build type in that tree at a time—switching mode **reconfigures** the same folder.
-
-| | **Debug** | **Release** |
-|---|-----------|-------------|
-| **CMake preset** | `mingw32-cross` | `mingw32-cross-release` |
-| **`scripts/build.sh`** | `./scripts/build.sh --debug` | `./scripts/build.sh` (**default**) |
-| **Manual `cmake`** | `-DCMAKE_BUILD_TYPE=Debug` | `-DCMAKE_BUILD_TYPE=Release` |
-
-**Defaults:** `./scripts/build.sh` with no flags → **`Release`** into **`build/`**. CMake presets do not auto-select a mode; you choose **Debug** (`mingw32-cross`) or **Release** (`mingw32-cross-release`) in CMake Tools or on the command line.
-
-**CMake presets** (same `build/` for both; switching preset changes `CMAKE_BUILD_TYPE`):
-
 ```bash
-cmake --preset mingw32-cross-release
-cmake --build --preset mingw32-cross-release
-```
-
-Debug preset (equivalent type for local investigation):
-
-```bash
-cmake --preset mingw32-cross
-cmake --build --preset mingw32-cross
-```
-
-Manual configure (same generator as presets; **Release** example):
-
-```bash
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-mingw32.cmake
-cmake --build build
-```
-
-Debug: use the same command with `-DCMAKE_BUILD_TYPE=Debug` instead of `Release`.
-
-**Shell helpers** (from repo root):
-
-```bash
-./scripts/build.sh              # Release → build/ (default mode + default dir)
-./scripts/build.sh --make       # force Unix Makefiles
-./scripts/build.sh --debug      # Debug → build/
+./scripts/build.sh              # Release -> build/gamex86.dll  (default)
+./scripts/build.sh --debug      # Debug
+./scripts/rebuild.sh            # clean, then build
 ./scripts/clean.sh              # rm -rf build/
-./scripts/rebuild.sh            # clean then build (passes same flags as build.sh)
 ```
 
-Environment: `BUILD_DIR=mybuild ./scripts/build.sh` sets the build directory (**default:** `build`). Optional: `BUILD_TYPE=Debug|Release ./scripts/build.sh` overrides the script’s default **Release** without using `--debug`.
+Both modes share one build directory (`build/`, or `$BUILD_DIR`); switching
+mode reconfigures it. CMake presets `mingw32-cross` (Debug) and
+`mingw32-cross-release` (Release) do the same thing.
 
-The DLL is `build/gamex86.dll` (or `$BUILD_DIR/gamex86.dll`). Copy it into the game’s `base` folder next to `oldgamex86.dll`.
+**Enabling and disabling features** is a one-line edit in
+`src/features/features.yaml` — set the feature `true` or `false` and rebuild.
+CMake reads that file to decide which feature directories to compile, and the
+generator emits detours only for enabled features, so nothing else needs
+touching.
 
-#### Troubleshooting (CMake Tools / CLI)
+### Tests
 
-- **`Parse error` in `cmake/toolchain-mingw32.cmake`**: the file must be **UTF-8**, not UTF-16. If an editor re-saved it as Unicode, re-checkout the file or convert encoding. The repo’s `.gitattributes` keeps `*.cmake` as LF text to reduce this.
-- **Ninja not found / `ENOENT`**: install **`ninja-build`** and ensure `ninja` is on `PATH` (Debian/Ubuntu: `/usr/bin/ninja` from that package).
+Host-side test suites, no server and no Wine required — they build each
+feature's real translation units for the host against stub headers and drive
+them with a transcription of the engine's own loop:
 
-### Windows (native, optional)
+```bash
+tools/tests/tick_pacing/run.sh
+tools/tests/clamp_monitor/run.sh
+tools/tests/cbuf_insert/run.sh
 
-On Windows you can build the same `CMakeLists.txt` with [MinGW-w64 i686](https://www.mingw-w64.org/) or another CMake generator; no Visual Studio project files are kept in this repo.
+SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
+```
 
-### Game install
+---
 
-1. In your SOF1 `base` folder, rename the original `gamex86.dll` to `oldgamex86.dll`.
-2. Place the built `gamex86.dll` in `base` beside `oldgamex86.dll`.
+## Developing
 
-The **`src/engine/`** tree (`gamecpp/`, `qcommon/`, `player/`, `ghoul/`) is **optional reference** SDK source from the original game; the shim does not compile it.
+- **[`NEW_FEATURE.md`](NEW_FEATURE.md)** — step-by-step guide to adding one.
+- **[`docs/DETOUR_SYSTEM.md`](docs/DETOUR_SYSTEM.md)** — how `detours.yaml`,
+  `hooks.json`, `pointers.json` and `callbacks.json` fit together, including
+  override semantics.
+- **`reference/engine/`** — optional SDK reference source from the original
+  game. Not compiled.
 
-## Adding a feature
-
-Behaviour changes ship in the shim by **detouring** code inside **`oldgamex86.dll`** (the stock game DLL renamed beside the shim). The shim’s own `gamex86.dll` image does not contain that logic, so **`GameDll` symbols in `detours.yaml` resolve against `oldgamex86.dll`** (see `src/runtime/detours.cpp`).
-
-### 1. Enable the feature
-
-In **`features/features.yaml`**, add `your_feature: true` under `features:` (or list it under `enabled:`). Only enabled feature directories under `src/features/` are scanned for JSON and sources. If you disable a feature, remove its `.cpp` from **`CMakeLists.txt`** as well, or the build can fail once the generator drops that feature’s detours and declarations.
-
-### 2. Register symbols
-
-Declare every function you hook or call via a pointer in **`detours.yaml`**: `name`, `module` (`GameDll` for game code), `identifier` (RVA as `0x...` below `0x10000000`, or an absolute address), calling convention, return type, and `params`. Run CMake so **`tools/generate_hooks.py`** emits `build/generated/generated_detours.h` / `.cpp` and registrations.
-
-### 3. Layout under `src/features/<name>/`
-
-| Path | Purpose |
-|------|---------|
-| **`hooks/hooks.json`** | Full detours: `function` (must match `detours.yaml`), `callback`, optional `phase` (`Pre` / `Post`), optional **`override`: true** (your callback receives the original trampoline and replaces the stock function). |
-| **`hooks/pointers.json`** | List of `detours.yaml` names resolved to **`detour_Name::oName`** (call-site shorthand: **`SOF_EP_Name(...)`** in `generated_engine_pointers.h`)—**no** patch at those addresses. Use this for helpers (`G_Find`, `OnSameTeam`, etc.) so you do not install redundant hooks. |
-| **`callbacks/callbacks.json`** | Lifecycle hooks such as **`GameDllLoaded`** (see `src/features/example/`). |
-| **`<name>.cpp`** | Implement callbacks; include **`generated_detours.h`** and **`generated_registrations.h`**. |
-
-Details, override semantics, and variadic limits: **`docs/DETOUR_SYSTEM.md`**.
-
-### 4. Wire the build
-
-Add your **`src/features/<name>/*.cpp`** to the **`add_library(gamex86 …)`** list in **`CMakeLists.txt`**.
-
-### 5. Rebuild
-
-Reconfigure or build so the custom command re-runs the generator (e.g. `cmake --build build`). Install **`build/gamex86.dll`** into `base` as usual.
-
-A full example that uses an **override** plus **pointer-only** helpers is documented in **`src/features/ctf_spawn/README.md`**.
-
-## Setup
-
-_(Add further install and run instructions as the project grows.)_
+Behaviour changes are made by **detouring** code inside `oldgamex86.dll`, so
+`GameDll` symbols in `detours.yaml` resolve against that image, not against the
+shim.

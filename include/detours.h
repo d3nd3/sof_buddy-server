@@ -5,7 +5,6 @@
 #include <windows.h>
 #include "shared_hook_manager.h"
 #include "typed_shared_hook_manager.h"
-#include "sof_compat.h"
 #include <tuple>
 
 enum class DetourModule {

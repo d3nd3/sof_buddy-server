@@ -17,6 +17,98 @@ functions:
       - type: const char*
         name: fmt
 
+  # SoF-spsv.exe / SoF.exe share engine .text (verified address-identical).
+  # SV_RunGameFrame @ 0x2005F3F0: framenum++ → sv_time=fn*100 → ge->RunFrame()
+  # → if (sv_time < svs_realtime) { "sv highclamp"; svs_realtime = sv_time; }
+
+  # --- engine frame loop (tick_pacing) -------------------------------------
+  # Absolute addresses on purpose: SofExe RVA resolution goes through
+  # GetModuleHandleA("SoF.exe"), which is NULL on a SoF-spsv.exe server.
+  #
+  # WinMain @0x20066300:  Sleep(1) -> PeekMessage pump -> spin until
+  #   (Sys_Milliseconds() - oldtime) >= 1 -> Qcommon_frame(msec) -> oldtime=newtime
+  # Qcommon_frame @0x2001F720: Sys_ConsoleInput/Cbuf_Execute @0x2001F885, then
+  #   SV_Frame(msec) @0x2001F8BB, then CL_Frame(msec) (returns at once when
+  #   the `dedicated` cvar is set).
+  # SV_Frame @0x2005F5B0: svs.realtime += msec; SV_ReadPackets(); then
+  #   `if (svs.realtime < sv.time) { maybe lowclamp; return; }` else
+  #   SV_RunGameFrame() @0x2005F3F0 (which is where "sv highclamp" lives).
+  - name: Qcommon_frame
+    module: SofExe
+    identifier: "0x2001F720"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: msec
+
+  - name: SV_Frame
+    module: SofExe
+    identifier: "0x2005F5B0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: msec
+
+  # SV_ReadPackets @0x2005F100: called from SV_Frame @0x2005F5EF and from
+  # nowhere else (verified: one caller). It sits *after* the
+  # `svs.realtime += msec` at 0x2005F5E2 and *before* the lowclamp test at
+  # 0x2005F60A, which makes a Post hook on it the exact analogue of what
+  # clamp_monitor already does for highclamp via G_RunFrame: the two globals
+  # hold precisely the values the engine's own `sv.time - svs.realtime > 100`
+  # is about to be computed from, and nothing can perturb them in between.
+  - name: SV_ReadPackets
+    module: SofExe
+    identifier: "0x2005F100"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: Cbuf_Execute
+    module: SofExe
+    identifier: "0x20018530"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # Cbuf_InsertText @0x200181D0: stock Quake 2, with Cbuf_AddText inlined -
+  # Z_Malloc(cursize) + copy out + SZ_Clear + AddText + copy back + Z_Free.
+  # Only one engine caller (newsave @0x20061690); sofplus calls it directly by
+  # address, which is what makes it worth overriding. Note Cbuf_ExecuteText
+  # @0x20018380 carries a second, inlined copy of the same body for its
+  # EXEC_INSERT branch (@0x2001842A) - not reachable from this hook.
+  - name: Cbuf_InsertText
+    module: SofExe
+    identifier: "0x200181D0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
+
+  # Cmd_ExecuteString @0x200194F0: the per-command call inside Cbuf_Execute's
+  # drain loop (call site 0x200185BC). Declared but NOT hooked by anything -
+  # tick_pacing used to hook it Post to stop a drain part-way via cmd_wait, and
+  # that corrupts sofplus's function arguments (see the "Drains are atomic"
+  # note in src/features/tick_pacing/tick_pacing.cpp). Kept declared because
+  # the address and the call site are worth recording; unused declarations
+  # generate nothing.
+  - name: Cmd_ExecuteString
+    module: SofExe
+    identifier: "0x200194F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
+
   # Retail gamex86.dll (as oldgamex86.dll) — RVAs from IDA image base 0x50000000; verify for your build.
   - name: SelectTeamDeathmatchSpawnPoint
     module: GameDll
@@ -99,3 +191,81 @@ functions:
         name: thisp
       - type: int
         name: spawn_id
+
+  # G_RunFrame: engine calls this every server tick, immediately before its own
+  # "sv highclamp" check (sv_time < svs_realtime). Used by clamp_monitor to
+  # observe the exact pre-clamp values instead of polling from a background
+  # thread. This is also the function SoFPlus (spsv.dll) hooks; going through
+  # the normal trampoline detour here (not a game_export_t pointer swap) makes
+  # us compose correctly with it regardless of load order - see
+  # src/features/clamp_monitor/README.md.
+  - name: G_RunFrame
+    module: GameDll
+    identifier: "0xAE340"
+    return_type: float
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: serverframe
+
+  # ---------------------------------------------------------------------
+  # Zone allocator (SoF.exe). Z_Malloc/Z_Free are the engine's single
+  # allocation chokepoint - 36 and 56 call sites respectively - and every
+  # console line runs several of them (Cmd_TokenizeString Z_Frees and
+  # Z_Mallocs one block per argument @0x20018FD8/@0x200190BD, and Cvar_Set2
+  # frees + CopyStrings the value on every write). Under Wine each pair is a
+  # RtlAllocateHeap/RtlFreeHeap round trip. See src/features/zpool/.
+  # ---------------------------------------------------------------------
+  - name: Z_Malloc
+    module: SofExe
+    identifier: "0x2001F120"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: size
+
+  - name: Z_Free
+    module: SofExe
+    identifier: "0x2001EBC0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ptr
+
+  # The CRT entries Z_Malloc/Z_Free themselves call. The pool must allocate
+  # through *these*, not through this DLL's own statically linked CRT: blocks
+  # outlive our detours (spsv reloads this DLL), and the engine's restored
+  # Z_Free would hand them to the engine's free().
+  - name: EngineMalloc
+    module: SofExe
+    identifier: "0x200FABFE"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: unsigned int
+        name: size
+
+  - name: EngineFree
+    module: SofExe
+    identifier: "0x200F9D32"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ptr
+
+
+  - name: Sys_Milliseconds
+    module: SofExe
+    identifier: "0x20055930"
+    return_type: int
+    params: []
+    calling_convention: __cdecl
+    detour_len: 0

@@ -1,0 +1,4 @@
+[
+  { "function": "Z_Malloc", "callback": "zpool_Malloc", "override": true },
+  { "function": "Z_Free",   "callback": "zpool_Free",   "override": true }
+]

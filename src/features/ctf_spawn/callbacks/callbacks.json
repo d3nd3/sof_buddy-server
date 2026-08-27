@@ -1,0 +1,3 @@
+[
+  { "hook": "GameDllLoaded", "callback": "ctfspawn_OnGameDllLoaded", "priority": 0, "phase": "Post" }
+]
