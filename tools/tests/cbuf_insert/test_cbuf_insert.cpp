@@ -1,4 +1,4 @@
-// Host-side harness for src/features/cbuf_insert/*.cpp.
+// Host-side harness for src/features/cpu_optimizations/cbuf_insert/*.cpp.
 //
 // The core test is differential. The engine's own Cbuf_InsertText (IDA
 // @0x200181D0) is transcribed below, and every case is run twice from the same
@@ -126,9 +126,12 @@ extern "C" void PrintOutImpl(int, const char* msg, ...) {
     fake::logs.push_back(buf);
 }
 
-#include "../../../src/features/cbuf_insert/engine.cpp"
-#include "../../../src/features/cbuf_insert/cvar.cpp"
-#include "../../../src/features/cbuf_insert/cbuf_insert.cpp"
+#include "../../../src/features/cpu_optimizations/cbuf_insert/engine.cpp"
+#include "../../../src/features/cpu_optimizations/cbuf_insert/cvar.cpp"
+
+namespace cmdpark { bool Take(char*) { return false; } }
+
+#include "../../../src/features/cpu_optimizations/cbuf_insert/cbuf_insert.cpp"
 
 // ---- the engine's own Cbuf_InsertText, transcribed -------------------------
 //
@@ -255,7 +258,6 @@ std::string Filler(std::size_t n, char seed) {
 
 // ---------------------------------------------------------------------------
 void Test_MatchesEngineByteForByte() {
-    std::printf("in-place insert is byte-identical to the engine's, across sizes\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
 
     int fastCount = 0;
@@ -267,13 +269,10 @@ void Test_MatchesEngineByteForByte() {
                 ++fastCount;
         }
     }
-    std::printf("    %d of %zu cases took the fast path\n",
-                fastCount, sizeof(seeds) / sizeof(*seeds) * sizeof(texts) / sizeof(*texts));
     CHECK(fastCount > 30, "only %d cases took the fast path", fastCount);
 }
 
 void Test_OrderingIsInsertNotAppend() {
-    std::printf("inserted text lands at the front, ahead of what was queued\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
 
     SeedBuffer("second;third;");
@@ -285,7 +284,6 @@ void Test_OrderingIsInsertNotAppend() {
 }
 
 void Test_OverflowDelegatesToTheEngine() {
-    std::printf("anything that does not provably fit is handed to the engine\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
 
     const long long before = cbufinsert::g.delegated;
@@ -302,7 +300,6 @@ void Test_OverflowDelegatesToTheEngine() {
 }
 
 void Test_DisabledDelegatesEverything() {
-    std::printf("_sofbuddy_cbuf_insert 0 delegates every call and still measures\n");
     SetCvar("_sofbuddy_cbuf_insert", 0);
 
     const long long insertsBefore = cbufinsert::g.inserts;
@@ -322,7 +319,6 @@ void Test_DisabledDelegatesEverything() {
 }
 
 void Test_FastPathAvoidsTheAllocator() {
-    std::printf("the fast path does no zone allocation at all\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
 
     SeedBuffer(Filler(1000, 'x'));
@@ -337,7 +333,6 @@ void Test_FastPathAvoidsTheAllocator() {
 }
 
 void Test_CountersTrackTheWork() {
-    std::printf("counters report the bytes the optimisation is there to move\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
 
     cbufinsert::g.inserts = 0;
@@ -364,7 +359,6 @@ void Test_CountersTrackTheWork() {
 }
 
 void Test_EmptyBufferAndEmptyText() {
-    std::printf("empty buffer and empty text behave as the engine does\n");
     SetCvar("_sofbuddy_cbuf_insert", 1);
     DifferentialInsert("", "hello;");
     DifferentialInsert("queued;", "");
@@ -372,7 +366,6 @@ void Test_EmptyBufferAndEmptyText() {
 }
 
 void Test_ShutdownRestoresCvarStrings() {
-    std::printf("detach hands cvar_t.string back to the engine\n");
     fake::Cvar* c = fake::Find("_sofbuddy_cbuf_inserts");
     CHECK(c != nullptr, "output cvar missing");
     if (!c)

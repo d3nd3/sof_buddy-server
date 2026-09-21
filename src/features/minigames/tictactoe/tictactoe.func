@@ -1,0 +1,504 @@
+// TicTacToe as a SoFPlus + buddy-mod script — optional twin of the C game.
+// SoFPlus runs flow/cvars/dot-commands; buddy mod provides mg_* (layout/chat/sprites).
+//
+// The C game (tictactoe.cpp) answers plain `ttt <cell>` client commands.
+// THIS script answers dot-commands instead, so both can live side by side:
+//   .ttt_new <slotX> <slotO>   admin: start X (moves first) vs O
+//   .ttt <1-9>                 players: move on your turn
+//   .ttt_end                   admin: end early (same 5s result → idle as a win)
+//
+// Rendering: mg_push / mg_show / mg_idle (idle minigame placeholder after game end).
+// Board state in script cvars; sp_sc_timer handles the 5s post-game hold (matches C game).
+//
+// Install: copy next to your other .func files and load it, e.g.
+//   sp_sc_func_load_file minigames/tictactoe.func
+// Run ./scripts/cpminigame_assets.sh so Base/sb/ has the sprites.
+
+function fn_ttt_ensure_hooks
+{
+	sp_sc_flow_if number cvar _ttt_hooks == val "0"
+	{
+		set _ttt_hooks "1"
+		sp_sc_func_exec spf_sc_list_add_func _sp_sv_on_client_disconnect "fn_ttt_on_disconnect"
+	}
+}
+
+// cell marks: 0 empty, 1 X, 2 O
+function fn_ttt_init
+{
+	sp_sc_func_exec fn_ttt_ensure_hooks
+	mg_ghoul_register sb/tt/b.m32
+	mg_ghoul_register sb/tt/x.m32
+	mg_ghoul_register sb/tt/o.m32
+	set _ttt_active "0"
+	set _ttt_pending "0"
+	set _ttt_over "0"
+	set _ttt_winner "0"
+	set _ttt_turn "1"
+	set _ttt_moves "0"
+	set _ttt_x "0"
+	set _ttt_o "0"
+	set _ttt_custom_status ""
+	set _ttt_stc "0"
+	set ~i "1"
+	sp_sc_flow_while number cvar ~i <= val "9"
+	{
+		set _ttt_c$~i "0"
+		add ~i 1
+	}
+	// xv/yv tokens (virt 640x480 minus 160/120) — matches tictactoe_logic.h
+	set _ttt_cx_1 "56"; set _ttt_cy_1 "16"; set _ttt_tx_1 "84"; set _ttt_ty_1 "44"
+	set _ttt_cx_2 "128"; set _ttt_cy_2 "16"; set _ttt_tx_2 "156"; set _ttt_ty_2 "44"
+	set _ttt_cx_3 "200"; set _ttt_cy_3 "16"; set _ttt_tx_3 "228"; set _ttt_ty_3 "44"
+	set _ttt_cx_4 "56"; set _ttt_cy_4 "88"; set _ttt_tx_4 "84"; set _ttt_ty_4 "116"
+	set _ttt_cx_5 "128"; set _ttt_cy_5 "88"; set _ttt_tx_5 "156"; set _ttt_ty_5 "116"
+	set _ttt_cx_6 "200"; set _ttt_cy_6 "88"; set _ttt_tx_6 "228"; set _ttt_ty_6 "116"
+	set _ttt_cx_7 "56"; set _ttt_cy_7 "160"; set _ttt_tx_7 "84"; set _ttt_ty_7 "188"
+	set _ttt_cx_8 "128"; set _ttt_cy_8 "160"; set _ttt_tx_8 "156"; set _ttt_ty_8 "188"
+	set _ttt_cx_9 "200"; set _ttt_cy_9 "160"; set _ttt_tx_9 "228"; set _ttt_ty_9 "188"
+}
+
+function fn_ttt_on_disconnect(~slot)
+{
+	sp_sc_flow_if number cvar _ttt_active == val "1"
+	{
+		sp_sc_flow_if number cvar _ttt_pending == val "0"
+		{
+			sp_sc_flow_if number cvar ~slot == cvar _ttt_x
+			{
+				sp_sc_func_exec fn_ttt_abort
+			}
+			else
+			{
+				sp_sc_flow_if number cvar ~slot == cvar _ttt_o
+				{
+					sp_sc_func_exec fn_ttt_abort
+				}
+			}
+		}
+	}
+}
+
+function fn_ttt_abort
+{
+	set _ttt_over "1"
+	mg_print all 2 "TicTacToe: game aborted (player left)"
+	sp_sc_func_exec fn_ttt_schedule_end "Game aborted"
+}
+
+function fn_ttt_schedule_end(~msg)
+{
+	set _ttt_active "0"
+	set _ttt_pending "1"
+	sp_sc_flow_if text cvar ~msg != val ""
+	{
+		set _ttt_custom_status #~msg
+		set _ttt_stc "6"
+	}
+	else
+	{
+		set _ttt_custom_status ""
+		set _ttt_stc "0"
+	}
+	sp_sc_func_exec fn_ttt_draw
+	sp_sc_timer 5000 "sp_sc_func_exec fn_ttt_finish"
+}
+
+function fn_ttt_finish
+{
+	sp_sc_flow_if number cvar _ttt_pending == val "1"
+	{
+		mg_idle #_ttt_x
+		mg_idle #_ttt_o
+		sp_sc_func_exec fn_ttt_init
+	}
+}
+
+function fn_ttt_line(~a,~b,~c)
+{
+	sp_sc_cvar_copy ~x _ttt_c$~a
+	sp_sc_cvar_copy ~y _ttt_c$~b
+	sp_sc_cvar_copy ~z _ttt_c$~c
+	sp_sc_flow_if number cvar ~x == val "0"
+	{
+		bool 0
+	}
+	else
+	{
+		sp_sc_flow_if number cvar ~x == cvar ~y
+		{
+			sp_sc_flow_if number cvar ~y == cvar ~z
+			{
+				bool 1
+			}
+			else
+			{
+				bool 0
+			}
+		}
+		else
+		{
+			bool 0
+		}
+	}
+}
+
+function fn_ttt_judge
+{
+	set _ttt_winner "0"
+	sp_sc_func_exec fn_ttt_line 1 2 3
+	sp_sc_flow_if number cvar bool == val "1"
+	{
+		sp_sc_cvar_copy _ttt_winner _ttt_c1
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 4 5 6
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c4
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 7 8 9
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c7
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 1 4 7
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c1
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 2 5 8
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c2
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 3 6 9
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c3
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 1 5 9
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c1
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_func_exec fn_ttt_line 3 5 7
+		sp_sc_flow_if number cvar bool == val "1"
+		{
+			sp_sc_cvar_copy _ttt_winner _ttt_c3
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "0"
+	{
+		sp_sc_flow_if number cvar _ttt_moves >= val "9"
+		{
+			set _ttt_winner "3"
+		}
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "1"
+	{
+		set _ttt_over "1"
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "2"
+	{
+		set _ttt_over "1"
+	}
+	sp_sc_flow_if number cvar _ttt_winner == val "3"
+	{
+		set _ttt_over "1"
+	}
+}
+
+function fn_ttt_status
+{
+	sp_sc_flow_if text cvar _ttt_custom_status != val ""
+	{
+		set _ttt_status #_ttt_custom_status
+		sp_sc_flow_if number cvar _ttt_stc == val "0"
+		{
+			set _ttt_stc "6"
+		}
+	}
+	else
+	{
+		sp_sc_flow_if number cvar _ttt_over == val "1"
+		{
+			sp_sc_flow_if number cvar _ttt_winner == val "3"
+			{
+				set _ttt_stc "6"
+				set _ttt_status "DRAW!"
+			}
+			else
+			{
+				sp_sc_flow_if number cvar _ttt_winner == val "1"
+				{
+					set _ttt_stc "5"
+					set _ttt_status "X (slot "
+					sp_sc_cvar_append _ttt_status #_ttt_x
+					sp_sc_cvar_append _ttt_status ") WINS!"
+				}
+				else
+				{
+					set _ttt_stc "1"
+					set _ttt_status "O (slot "
+					sp_sc_cvar_append _ttt_status #_ttt_o
+					sp_sc_cvar_append _ttt_status ") WINS!"
+				}
+			}
+		}
+		else
+		{
+			set _ttt_stc "4"
+			sp_sc_flow_if number cvar _ttt_turn == val "1"
+			{
+				set _ttt_status "X (slot "
+				sp_sc_cvar_append _ttt_status #_ttt_x
+				sp_sc_cvar_append _ttt_status ") to move"
+			}
+			else
+			{
+				set _ttt_status "O (slot "
+				sp_sc_cvar_append _ttt_status #_ttt_o
+				sp_sc_cvar_append _ttt_status ") to move"
+			}
+		}
+	}
+}
+
+function fn_ttt_draw
+{
+	set _ttt_board ""
+	sp_sc_cvar_append _ttt_board "xv 48 yv 8 picn sb/tt/b "
+	sp_sc_cvar_append _ttt_board "tc 4 xv 160 yv -72 cstring "
+	sp_sc_cvar_append _ttt_board #_ttt_title
+	sp_sc_cvar_append _ttt_board " "
+	set ~i "1"
+	sp_sc_flow_while number cvar ~i <= val "9"
+	{
+		sp_sc_cvar_copy ~cx _ttt_cx_$~i
+		sp_sc_cvar_copy ~cy _ttt_cy_$~i
+		sp_sc_cvar_copy ~v _ttt_c$~i
+		sp_sc_flow_if number cvar ~v == val "1"
+		{
+			sp_sc_cvar_append _ttt_board "xv "
+			sp_sc_cvar_append _ttt_board #~cx
+			sp_sc_cvar_append _ttt_board " yv "
+			sp_sc_cvar_append _ttt_board #~cy
+			sp_sc_cvar_append _ttt_board " picn sb/tt/x "
+		}
+		else
+		{
+			sp_sc_flow_if number cvar ~v == val "2"
+			{
+				sp_sc_cvar_append _ttt_board "xv "
+				sp_sc_cvar_append _ttt_board #~cx
+				sp_sc_cvar_append _ttt_board " yv "
+				sp_sc_cvar_append _ttt_board #~cy
+				sp_sc_cvar_append _ttt_board " picn sb/tt/o "
+			}
+			else
+			{
+				sp_sc_cvar_copy ~cx _ttt_tx_$~i
+				sp_sc_cvar_copy ~cy _ttt_ty_$~i
+				sp_sc_cvar_append _ttt_board "xv "
+				sp_sc_cvar_append _ttt_board #~cx
+				sp_sc_cvar_append _ttt_board " yv "
+				sp_sc_cvar_append _ttt_board #~cy
+				sp_sc_cvar_append _ttt_board " string "
+				sp_sc_cvar_append _ttt_board #~i
+				sp_sc_cvar_append _ttt_board " "
+			}
+		}
+		add ~i 1
+	}
+	sp_sc_func_exec fn_ttt_status
+	sp_sc_cvar_append _ttt_board "tc "
+	sp_sc_cvar_append _ttt_board #_ttt_stc
+	sp_sc_cvar_append _ttt_board " xv 160 yv 248 cstring "
+	sp_sc_cvar_append _ttt_board #_ttt_status
+	sp_sc_cvar_append _ttt_board " "
+	mg_push #_ttt_x #_ttt_board
+	mg_push #_ttt_o #_ttt_board
+	mg_show #_ttt_x 1
+	mg_show #_ttt_o 1
+}
+
+function .ttt_new(~slot,~a,~b)
+{
+	sp_sc_flow_if number cvar ~a == cvar ~b
+	{
+		mg_print all 2 "ttt: slots must differ (.ttt_new <slotX> <slotO>)"
+	}
+	else
+	{
+		sp_sc_flow_if number cvar ~a >= val "0"
+		{
+			sp_sc_flow_if number cvar ~b >= val "0"
+			{
+				sp_sc_func_exec fn_ttt_init
+				sp_sc_cvar_copy _ttt_x ~a
+				sp_sc_cvar_copy _ttt_o ~b
+				set _ttt_title "TIC-TAC-TOE  X=slot"
+				sp_sc_cvar_append _ttt_title #_ttt_x
+				sp_sc_cvar_append _ttt_title " O=slot"
+				sp_sc_cvar_append _ttt_title #_ttt_o
+				set _ttt_active "1"
+				sp_sc_func_exec fn_ttt_draw
+				mg_print all 2 "TicTacToe: game on - X moves first (.ttt <1-9>)"
+			}
+			else
+			{
+				mg_print all 2 "ttt: use .ttt_new <slotX 0-based> <slotO 0-based>"
+			}
+		}
+		else
+		{
+			mg_print all 2 "ttt: use .ttt_new <slotX 0-based> <slotO 0-based>"
+		}
+	}
+}
+
+function .ttt(~slot,~cell)
+{
+	sp_sc_flow_if number cvar _ttt_pending == val "1"
+	{
+		mg_print all 2 "TicTacToe: game over"
+	}
+	else
+	{
+		sp_sc_flow_if number cvar _ttt_active == val "1"
+		{
+			sp_sc_flow_if number cvar _ttt_over == val "1"
+			{
+				mg_print all 2 "TicTacToe: game over"
+			}
+			else
+			{
+				sp_sc_flow_if number cvar ~slot == cvar _ttt_x
+				{
+					set ~mark "1"
+				}
+				else
+				{
+					sp_sc_flow_if number cvar ~slot == cvar _ttt_o
+					{
+						set ~mark "2"
+					}
+					else
+					{
+						set ~mark "0"
+					}
+				}
+				sp_sc_flow_if number cvar ~mark == val "0"
+				{
+					mg_print all 2 "ttt: you are not in this game"
+				}
+				else
+				{
+					sp_sc_flow_if number cvar ~mark == cvar _ttt_turn
+					{
+						sp_sc_flow_if number cvar ~cell >= val "1"
+						{
+							sp_sc_flow_if number cvar ~cell <= val "9"
+							{
+								sp_sc_cvar_copy ~v _ttt_c$~cell
+								sp_sc_flow_if number cvar ~v == val "0"
+								{
+									set _ttt_c$~cell #~mark
+									add _ttt_moves 1
+									sp_sc_func_exec fn_ttt_judge
+									sp_sc_flow_if number cvar _ttt_over == val "0"
+									{
+										sp_sc_flow_if number cvar _ttt_turn == val "1"
+										{
+											set _ttt_turn "2"
+										}
+										else
+										{
+											set _ttt_turn "1"
+										}
+										sp_sc_func_exec fn_ttt_draw
+									}
+									else
+									{
+										sp_sc_flow_if number cvar _ttt_winner == val "3"
+										{
+											mg_print all 2 "TicTacToe: draw!"
+										}
+										else
+										{
+											sp_sc_flow_if number cvar _ttt_winner == val "1"
+											{
+												mg_print all 2 "TicTacToe: X wins!"
+											}
+											else
+											{
+												mg_print all 2 "TicTacToe: O wins!"
+											}
+										}
+										sp_sc_func_exec fn_ttt_schedule_end ""
+									}
+								}
+								else
+								{
+									mg_print all 2 "ttt: cell taken"
+								}
+							}
+							else
+							{
+								mg_print all 2 "ttt: use .ttt <1-9>"
+							}
+						}
+						else
+						{
+							mg_print all 2 "ttt: use .ttt <1-9>"
+						}
+					}
+					else
+					{
+						mg_print all 2 "ttt: not your turn"
+					}
+				}
+			}
+		}
+		else
+		{
+			mg_print all 2 "ttt: no game running"
+		}
+	}
+}
+
+function .ttt_end(~slot)
+{
+	sp_sc_flow_if number cvar _ttt_active == val "1"
+	{
+		sp_sc_func_exec fn_ttt_schedule_end "GAME OVER"
+		mg_print all 2 "TicTacToe: game over"
+	}
+	else
+	{
+		sp_sc_flow_if number cvar _ttt_pending == val "1"
+		{
+			sp_sc_func_exec fn_ttt_finish
+		}
+	}
+}

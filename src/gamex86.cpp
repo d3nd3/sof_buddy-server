@@ -12,7 +12,6 @@
 
 #include "buddy_import.h"
 #include "detours.h"
-#include "log.h"
 #include "engfuncs.h"
 #include "generated_detours.h"
 #include "generated_engine_pointers.h"
@@ -26,31 +25,23 @@ typedef game_export_t *(*lpfn_GetGameAPI)(game_import_t *);
  * are gated on the SOF_FEATURE_<NAME> definition CMake derives from that same
  * file. Every one of these has to run before this image is unmapped - spsv
  * FreeLibrary/reloads this DLL between game restarts. */
-#ifdef SOF_FEATURE_CLAMP_MONITOR
-/* returns every cvar_t.string it repointed to the engine, which owns the
- * cvar_t past this DLL generation. */
+#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
 extern "C" void ClampMonitor_Shutdown(void);
-#endif
-
-#ifdef SOF_FEATURE_HASH_LOOKUP
-/* puts the engine's own scan-loop bytes back. The JMPs it writes point into
- * this image. */
 extern "C" void HashLookup_Shutdown(void);
-#endif
-
-#ifdef SOF_FEATURE_ZPOOL
-/* hands every cached zone block back to the engine's CRT. */
 extern "C" void ZPool_Shutdown(void);
-#endif
-
-#ifdef SOF_FEATURE_TICK_PACING
-/* returns its cvar_t.string pointers. */
 extern "C" void TickPacing_Shutdown(void);
+extern "C" void CmdPark_Shutdown(void);
+extern "C" void CbufInsert_Shutdown(void);
+extern "C" void CmdCost_Shutdown(void);
+extern "C" void Recvbuf_Shutdown(void);
 #endif
 
-#ifdef SOF_FEATURE_CBUF_INSERT
-/* ditto. */
-extern "C" void CbufInsert_Shutdown(void);
+#ifdef SOF_FEATURE_STUFFTEXT
+/* returns its output cvar_t.string pointers. */
+extern "C" void StuffText_Shutdown(void);
+#endif
+#ifdef SOF_FEATURE_MINIGAMES
+extern "C" void Minigames_Shutdown(void);
 #endif
 
 static HMODULE g_hShim = nullptr;
@@ -159,12 +150,10 @@ static game_export_t *ForwardGetGameAPI(game_import_t *import)
 		RegisterPointerOnlyFunctions_GameDll();
 		EnginePointers_Bind();
 
-		PrintOut(PRINT_LOG, "[shim] bootstrap: applying detours\n");
 		GetDetourSystem().ApplyExeDetours();
 		GetDetourSystem().ApplyGameDetours();
 		SharedHookManager::Instance().DispatchHook<void *>(
 			"GameDllLoaded", SharedHookPhase::Post, static_cast<void *>(ge));
-		PrintOut(PRINT_LOG, "[shim] bootstrap complete\n");
 	}
 
 	return ge;
@@ -190,20 +179,21 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 		 * patches now, otherwise the next generation inherits JMPs into
 		 * trampolines freed with this instance. */
 		GetDetourSystem().RemoveAllDetours();
-#ifdef SOF_FEATURE_ZPOOL
+#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
 		ZPool_Shutdown();
-#endif
-#ifdef SOF_FEATURE_HASH_LOOKUP
 		HashLookup_Shutdown();
-#endif
-#ifdef SOF_FEATURE_CLAMP_MONITOR
 		ClampMonitor_Shutdown();
-#endif
-#ifdef SOF_FEATURE_TICK_PACING
 		TickPacing_Shutdown();
-#endif
-#ifdef SOF_FEATURE_CBUF_INSERT
+		CmdPark_Shutdown();
 		CbufInsert_Shutdown();
+		CmdCost_Shutdown();
+		Recvbuf_Shutdown();
+#endif
+#ifdef SOF_FEATURE_STUFFTEXT
+		StuffText_Shutdown();
+#endif
+#ifdef SOF_FEATURE_MINIGAMES
+		Minigames_Shutdown();
 #endif
 		g_hGameDll = nullptr;
 		g_pfnGetGameAPI = nullptr;

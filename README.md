@@ -21,8 +21,9 @@ document is mostly about.
 2. Drop this project's built **`gamex86.dll`** into `base` beside it.
 3. Start the server as usual.
 
-The shim logs to `sofbuddy-shim.log` next to the executable. If something is
-wrong, that file says so on the first line.
+Diagnostics go to the server console via `gi.dprintf` (and `User/sof.log` with
+`logfile 1`). Routine feature chatter is off by default (opt-in, e.g.
+`_sofbuddy_clamp_notify_ms`).
 
 ---
 
@@ -33,7 +34,7 @@ wrong, that file says so on the first line.
 | Where | How | Use for |
 |---|---|---|
 | **Command line** | `+set _sofbuddy_hashmap 1` | Anything marked **load-time** below — these are read once and never again |
-| **Server config** | `set _sofbuddy_tickpace_reserve_ms 5` | Normal tuning; put it in the config your server already runs at startup |
+| **Server config** | `set _sofbuddy_cmdpark_reserve_ms 5` | Normal tuning; put it in the config your server already runs at startup |
 | **Live console / rcon** | `_sofbuddy_tickpace 0` | Anything marked **live** — takes effect on the next frame, no restart |
 
 Two properties in the tables below matter:
@@ -45,26 +46,35 @@ Two properties in the tables below matter:
 > **A cvar only exists if its feature is compiled in.** Features are toggled at
 > **build** time in `src/features/features.yaml`, not at runtime. If a cvar
 > below does not exist on your server, its feature was built out. The default
-> build ships **`clamp_monitor`**, **`hash_lookup`**, **`tick_pacing`** and
-> **`cbuf_insert`**.
+> build ships **`cpu_optimizations`**, **`stufftext`**, **`reliable_defer`**, and
+> **`print_guard`**. Plan:
+> [`src/features/cpu_optimizations/README.md`](src/features/cpu_optimizations/README.md)
 
 ---
 
 ### Feature switches
 
-The master on/off for each feature.
+**Settings** (you set these):
 
 | Cvar | Default | When read | Flags | What it does |
 |---|:---:|:---:|:---:|---|
-| `_sofbuddy_tickpace` | `1` | live | `ARCHIVE` | Tick pacing: make server ticks fire on their own 100 ms boundary instead of whenever the loop next notices |
-| `_sofbuddy_hashmap` | `0` | **load-time** | `ARCHIVE` | Replace the engine's cvar/command/alias linked lists with hash maps. Needs `+set` — read once at game-DLL load |
-| `_sofbuddy_cbuf_insert` | `0` | live | `ARCHIVE` | Shift the command buffer in place instead of round-tripping it through the zone allocator |
-| `_sofbuddy_zpool` | `0` | **load-time** | `ARCHIVE` | Recycle zone allocations. **Measured no effect** — kept as a recorded negative result |
+| `_sofbuddy_cpuopt` | `1` | live | `ARCHIVE` | Master off-switch for every `cpu_optimizations` module. Hashmap/zpool only honour it at `GameDllLoaded` |
+| `_sofbuddy_cmdpark_strict` | `1` | live | `ARCHIVE` | Tick first: park inter-tick inserts, move every pre-frame queue aside, run everything post-tick. Highclamp / lowclamp violations log one console line |
+| `_sofbuddy_strict_exit` | `0` | live | `ARCHIVE` | Quit on a strict violation instead of logging and continuing |
+| `_sofbuddy_tickpace` | `1` | live | `ARCHIVE` | Tick pacing: settle + optional spin onto the 100 ms boundary |
+| `_sofbuddy_cmdpark` | `1` | live | `ARCHIVE` | Park every `cmd_text` insert in the reserve window; drip after the tick |
+| `_sofbuddy_hashmap` | `1` | **load-time** | `ARCHIVE` | Replace the engine's cvar/command/alias linked lists with hash maps. Read once at game-DLL load; `+set 0` to skip |
+| `_sofbuddy_cbuf_insert` | `1` | live | `ARCHIVE` | Shift the command buffer in place instead of round-tripping it through the zone allocator |
+| `_sofbuddy_zpool` | `1` | **load-time** | `ARCHIVE` | Recycle zone allocations. Read once at game-DLL load; `+set 0` to skip |
 | `_sofbuddy_custom_respawn` | `1` | live | — | CTF spawn selection: pick the team spawn farthest from the nearest living enemy, avoiding teammates |
+| `_sofbuddy_stufftext` | `1` | live | `ARCHIVE` | Server console command `stufftext`: send `svc_stufftext` to clients |
+| `_sofbuddy_reldef` | `1` | live | `ARCHIVE` | Queue server→client reliable staging so bursty prints/stufftext do not coalesce into one blob. Bypassed during connect (`state < cs_spawned`) |
 | `_sofbuddy_example_enabled` | `1` | live | — | Template feature, for developers. Not built by default |
 
 `clamp_monitor` has no on/off switch — it is pure measurement and always
-active when built in.
+active when built in. `_sofbuddy_cmdcost` defaults on; handlers are only patched
+while live timing is enabled (`1`), and spin/bench never leaves wraps installed.
+set `1` to time handlers without touching tick pacing.
 
 ---
 
@@ -75,30 +85,62 @@ Server ticks are supposed to run every 100 ms. The engine samples its clock
 during heavy sofplus scripting is not noticed until the whole loop has gone
 round again. This feature closes that gap.
 
-**Tunables** — all `ARCHIVE`, all read live, all clamped to the ranges shown:
+**Settings** (you set these) — all `ARCHIVE`, all read live, all clamped to the ranges shown:
 
-| Cvar | Default | Range | Meaning |
+| cvar | default | range | what it does |
 |---|:---:|:---:|---|
 | `_sofbuddy_tickpace_spin_ms` | `0` | 0 – 20 | When a tick is due within this many ms, busy-wait to the boundary rather than sleeping past it. Costs CPU. Dedicated servers only |
-| `_sofbuddy_tickpace_reserve_ms` | `3` | 0 – 50 | Headroom a command-buffer drain must have before it is allowed to *start*. `0` = stock scheduling |
-| `_sofbuddy_tickpace_defer_max_ms` | `200` | 0 – 1000 | Never hold a drain longer than this, whatever the headroom says |
 
-**Readouts** — all `NOSET`:
+**Gauges** (read-only; the DLL writes them):
 
-| Cvar | Meaning |
-|---|---|
-| `_sofbuddy_tickpace_cbuf_max` | **Read this one first.** Worst single command-buffer drain, in ms |
-| `_sofbuddy_tickpace_late_avg` | Rolling mean tick lateness, in ms |
-| `_sofbuddy_tickpace_late_max` | Worst tick lateness since boot, in ms |
-| `_sofbuddy_tickpace_saved` | Ticks whose boundary passed mid-drain and were caught by the settle correction this loop, instead of firing a whole iteration late |
-| `_sofbuddy_tickpace_defers` | Drains held back by the reserve |
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_tickpace_late_avg` | ms | Rolling mean tick lateness |
+| `_sofbuddy_tickpace_saved` | count | Ticks whose boundary passed mid-drain and were caught this loop |
 
-**Interpreting `_sofbuddy_tickpace_cbuf_max`:** under ~10 ms, the reserve is
-doing real work and the tunables are worth tuning. Well above it, no scheduling
-policy can keep a drain that long off a 100 ms boundary — the win has to come
-from the scripts themselves.
+Details: [`src/features/cpu_optimizations/tick_pacing/README.md`](src/features/cpu_optimizations/tick_pacing/README.md)
 
-Details, including why command-buffer drains are never split: [`src/features/tick_pacing/README.md`](src/features/tick_pacing/README.md)
+---
+
+### Command-buffer parking — `cmdtext_parking`
+
+Parks every `cmd_text` insert (console, `.COMMAND`, `clc_stringcmd`, timers,
+`Cbuf_AddText` / `InsertText` / `ExecuteText` insert+append) when the tick is
+inside the reserve window, and moves the queued buffer aside instead of
+running it on the boundary. Drips one fitting chunk per later sub-tick, plus
+one chunk after every fired tick.
+
+**Settings** (you set these):
+
+| cvar | default | range | what it does |
+|---|:---:|:---:|---|
+| `_sofbuddy_cmdpark_reserve_ms` | `0` | 0 – 50 | Move queue aside + park inserts when the tick is within this many ms. `0` = stock |
+
+**Gauges** (read-only; the DLL writes them):
+
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_cmdpark_cbuf_max` | ms | Worst drain |
+| `_sofbuddy_cmdpark_defers` | count | Pre-frame queues moved aside |
+| `_sofbuddy_cmdpark_cbuf_cursize` | bytes | Current 8 KB occupancy |
+| `_sofbuddy_cmdpark_cbuf_fill_max` | bytes | Peak 8 KB occupancy |
+
+Details: [`src/features/cpu_optimizations/cmdtext_parking/README.md`](src/features/cpu_optimizations/cmdtext_parking/README.md)
+
+---
+
+### Console command cost — `cmd_cost`
+
+Times each `Cmd_ExecuteString` against the sofplus command catalog (from
+`sofplus-cursor-rules`). `cmdcost::PredictMs()` is the EMA after four samples
+— unused by tick pacing yet.
+
+**Settings** (you set these): `_sofbuddy_cmdcost` (default `1`; set `0` to disable live timing and unwrap).
+
+**Gauges** (read-only; the DLL writes them): `_sofbuddy_cmdcost_max` / `_name`,
+`_sofbuddy_cmdcost_ema` / `_ema_name`, `_sofbuddy_cmdcost_n`.
+
+Details: [`src/features/cpu_optimizations/cmd_cost/README.md`](src/features/cpu_optimizations/cmd_cost/README.md)
 
 ---
 
@@ -114,34 +156,35 @@ opposite failures and mean different things.
   map this should be zero. Non-zero means something is moving the clock outside
   the normal tick path.
 
-**Tunables** — all `ARCHIVE`, read live:
+**Settings** (you set these) — all `ARCHIVE`, read live:
 
-| Cvar | Default | Meaning |
+| cvar | default | what it does |
 |---|:---:|---|
-| `_sofbuddy_clamp_notify_ms` | `5` | Log a line to `sofbuddy-shim.log` when a single clamp deletes at least this many ms. At most one line per second |
+| `_sofbuddy_clamp_notify_ms` | `0` | Log a line when a single clamp deletes at least this many ms. `0` = off (opt-in). At most one line per second |
+| `_sofbuddy_clamp_log_file` | `0` | Append every recorded clamp to `sof_buddy-highclamps.txt` (`[timestamp] hostport=<port> <reason>`). `0` = off (opt-in). Independent of strict |
 | `_sofbuddy_clamp_window` | `2` | Rolling window in seconds for the average below. Rounded to whole ticks, capped at 16 s |
 | `_sofbuddy_clamp_broadcast_ms` | `0` | Tell **all connected players** the server is lagging when the rolling average reaches this. `0` = off. Opt-in, because it is player-visible |
 | `_sofbuddy_clamp_broadcast_interval` | `30` | Minimum seconds between those broadcasts |
 
-**Readouts** — all `NOSET`:
+**Gauges** (read-only; the DLL writes them):
 
-| Cvar | Meaning |
-|---|---|
-| `_sofbuddy_highclamps` | Count of highclamp events since boot |
-| `_sofbuddy_clamp_avg` | Rolling average of per-tick lost ms, over the window above |
-| `_sofbuddy_clamp_last` | Ms lost on the most recent tick (`0` if it was clean) |
-| `_sofbuddy_clamp_lost_ms` | Cumulative ms deleted since boot |
-| `_sofbuddy_lowclamps` | Count of lowclamp events since boot |
-| `_sofbuddy_lowclamp_checks` | Frames the lowclamp test actually ran on — the **denominator** that makes a zero above mean *measured* zero rather than *never measured* |
-| `_sofbuddy_lowclamp_gained_ms` | Cumulative ms the engine invented |
-| `_sofbuddy_lowclamp_worst` | Biggest single forward jump, in ms |
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_highclamps` | count | Highclamp events since boot |
+| `_sofbuddy_clamp_avg` | ms | Rolling average of per-tick lost ms |
+| `_sofbuddy_clamp_last` | ms | Lost on the most recent tick (`0` if clean) |
+| `_sofbuddy_clamp_lost_ms` | ms | Cumulative ms deleted since boot |
+| `_sofbuddy_lowclamps` | count | Lowclamp events since boot |
+| `_sofbuddy_lowclamp_checks` | count | Frames the lowclamp test ran — denominator for a zero |
+| `_sofbuddy_lowclamp_gained_ms` | ms | Cumulative ms the engine invented |
+| `_sofbuddy_lowclamp_worst` | ms | Biggest single forward jump |
 
 **Reading a zero.** `_sofbuddy_lowclamps 0` is only meaningful alongside
 `_sofbuddy_lowclamp_checks`. That counter counts `SV_Frame`s, not ticks, so on a
 live dedicated server it should climb by **hundreds per second**. If it is
 stuck at `0`, the measurement is not running and the zero means nothing.
 
-Details: [`src/features/clamp_monitor/README.md`](src/features/clamp_monitor/README.md)
+Details: [`src/features/cpu_optimizations/clamp_monitor/README.md`](src/features/cpu_optimizations/clamp_monitor/README.md)
 
 ---
 
@@ -151,21 +194,56 @@ sofplus scripting calls `Cbuf_InsertText` constantly, and the stock
 implementation copies the entire queued buffer out to the heap and back on
 every call. This shifts it in place instead.
 
-**Ships off.** Measurement runs in *both* states, so flipping
-`_sofbuddy_cbuf_insert` between `0` and `1` across two comparable busy periods
-is a controlled A/B on your own server rather than a leap of faith.
+**Ships on** (`_sofbuddy_cbuf_insert 1`). Measurement still runs in both
+states for A/B.
 
-**Readouts** — all `NOSET`, published at most 10×/second:
+**Settings** (you set these): `_sofbuddy_cbuf_insert` (default `1`).
 
-| Cvar | Meaning |
-|---|---|
-| `_sofbuddy_cbuf_insert_us` | Cumulative microseconds spent inside `Cbuf_InsertText`. **This is the A/B number** — same workload at `0` and at `1` |
-| `_sofbuddy_cbuf_insert_bytes` | Cumulative bytes of already-queued text shifted. The quantity the optimisation removes most of |
-| `_sofbuddy_cbuf_insert_max` | Largest buffer seen at insert time. If this stays small, there is nothing here to win |
-| `_sofbuddy_cbuf_inserts` | Total calls |
-| `_sofbuddy_cbuf_insert_slow` | Calls that fell back to the engine (buffer overflow, or the cvar off) |
+**Gauges** (read-only; the DLL writes them; at most 10×/second):
 
-Details: [`src/features/cbuf_insert/README.md`](src/features/cbuf_insert/README.md)
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_cbuf_insert_us` | µs | Time inside `Cbuf_InsertText`. The A/B number |
+| `_sofbuddy_cbuf_insert_bytes` | bytes | Queued text shifted |
+| `_sofbuddy_cbuf_insert_max` | bytes | Largest buffer at insert. Small ⇒ skip |
+| `_sofbuddy_cbuf_inserts` | count | Total calls |
+| `_sofbuddy_cbuf_insert_slow` | count | Fell back to the engine |
+
+Details: [`src/features/cpu_optimizations/cbuf_insert/README.md`](src/features/cpu_optimizations/cbuf_insert/README.md)
+
+---
+
+### Server-side stufftext — `stufftext`
+
+Sends `svc_stufftext` to clients from the server console (or via rcon):
+
+```
+stufftext <slot|all|name> <command...>
+```
+
+`slot` is the 0-based client slot, `all` hits every connected client, and
+anything else matches the first client whose userinfo `name` contains it
+(case-insensitive). `command...` is stuffed into the client's console buffer
+(a trailing `\n` is appended when missing) via the stock
+`WriteByte(svc_stufftext)` + `WriteString` + `unicast` sequence.
+
+**Settings** (you set these): `_sofbuddy_stufftext` (default `1`).
+
+**Gauges** (read-only; the DLL writes them):
+
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_stufftext_sent` | count | Clients successfully stuffed |
+| `_sofbuddy_stufftext_errors` | count | Failed / rejected invocations |
+
+`stufftext_reconnect <slot>` (strictly numeric, plus `stufftext_reconnect
+cancel`) runs a chained reconnect for one slot: attractloop set (read-back
+verified) + connect-refusal neutered → stuff `reconnect` → stuff `echo
+Welcome to SoF Buddy - enjoy your stay!` once the slot is seen reconnecting
+→ refusal and flag restored → stuff `reconnect` to the target when still
+present plus any other slot that entered connecting under the lock.
+
+Details: [`src/features/stufftext/README.md`](src/features/stufftext/README.md)
 
 ---
 
@@ -177,11 +255,56 @@ cvar read, every cvar write and every console command walks a list and
 is not fine for a server running sofplus scripting, which does thousands of
 these per tick.
 
-`_sofbuddy_hashmap 1` turns all three into hash maps. It is **load-time only** —
-put `+set _sofbuddy_hashmap 1` on the command line, or set it in a config that
-runs before the first map.
+`_sofbuddy_hashmap 1` (the default) turns all three into hash maps. It is
+**load-time only** — `+set _sofbuddy_hashmap 0` to skip.
 
-Details: [`src/features/hash_lookup/README.md`](src/features/hash_lookup/README.md)
+Details: [`src/features/cpu_optimizations/hash_lookup/README.md`](src/features/cpu_optimizations/hash_lookup/README.md)
+
+---
+
+### Reliable staging — `reliable_defer`
+
+On a dedicated server (`maxclients > 1`) the engine's reliable staging buffer is
+**1400 bytes** (`msgMaxsize` 1384). Stock coalesces every `bprintf`, stufftext,
+and configstring that lands in `client->netchan.message` in the same tick — or
+while an earlier reliable is still unacked — into **one** byte stream per UDP
+packet. Bursts can overflow staging or crowd out the entity frame.
+
+`reliable_defer` hooks `SZ_Write` and `MSG_WriteByte` / `Short` / `String`,
+classifies each append, and queues deferred blobs in buddy memory. One blob
+drips into `message` per client per tick when the reliable lane is open.
+Connect/join traffic (`client->state < cs_spawned`) always passes through stock.
+
+**Settings** (you set these) — all `ARCHIVE`, read live:
+
+| cvar | default | what it does |
+|---|:---:|---|
+| `_sofbuddy_reldef` | `1` | Master enable. `0` = stock coalescing |
+| `_sofbuddy_reldef_reserve` | `256` | Staging headroom floor (bumped to `msgMaxsize/8` when larger) |
+| `_sofbuddy_reldef_frame_reserve` | `0` | Wire headroom for frame+datagram; `0` = `buffersize/2` |
+| `_sofbuddy_reldef_one_per_tick` | `0` | Capture every write (fragile; leave off unless tuning) |
+| `_sofbuddy_reldef_max_queue` | `32` | Max queued blobs per client |
+| `_sofbuddy_reldef_max_queue_bytes` | `262144` | Max queued bytes per client |
+
+Details: [`src/features/reliable_defer/README.md`](src/features/reliable_defer/README.md)
+
+---
+
+### Print bounds — `print_guard`
+
+Bounds engine paths that `vsprintf` into fixed stack buffers (`SV_BroadcastPrintf`,
+`PF_cprintf`, macro expand, `Cbuf_Execute` drains). Without it, long SoFPlus
+output (e.g. `sp_sv_print_broadcast #~out` after thousands of `sp_sc_cvar_append`)
+can smash the stack.
+
+**On when built** — no master switch. Scripter-facing limits:
+
+| cvar | default | SoFPlus command |
+|---|:---:|---|
+| `_sofbuddy_printguard_broadcast_max` | `999` | `sp_sv_print_broadcast #~cvar` |
+| `_sofbuddy_printguard_client_max` | `1000` | `sp_sv_print_client <slot> #~cvar` |
+
+Details: [`src/features/print_guard/README.md`](src/features/print_guard/README.md)
 
 ---
 
@@ -192,7 +315,7 @@ Details: [`src/features/hash_lookup/README.md`](src/features/hash_lookup/README.
 ```
 _sofbuddy_highclamps          should stay 0
 _sofbuddy_clamp_avg           should stay 0.00
-_sofbuddy_tickpace_cbuf_max   how bad the worst drain got
+_sofbuddy_cmdpark_cbuf_max    how bad the worst drain got
 ```
 
 **Is the instrumentation even running?**
@@ -214,6 +337,24 @@ microseconds per call. If `_sofbuddy_cbuf_insert_max` never gets large, skip it.
 set _sofbuddy_clamp_broadcast_ms 25
 set _sofbuddy_clamp_broadcast_interval 60
 ```
+
+**Log clamp events to the server console** (opt-in):
+
+```
+set _sofbuddy_clamp_notify_ms 5
+```
+
+**Clients fail to join with `Illegible server message` after enabling buddy**
+
+First try a full server restart after deploying a new `gamex86.dll`. If it
+persists, disable deferral live and reconnect:
+
+```
+set _sofbuddy_reldef 0
+```
+
+That restores stock reliable coalescing while you tune queue limits or report a
+bug. Connect/join should already bypass deferral; this is the blunt fallback.
 
 ---
 
@@ -253,8 +394,13 @@ them with a transcription of the engine's own loop:
 
 ```bash
 tools/tests/tick_pacing/run.sh
+tools/tests/cmdtext_parking/run.sh
 tools/tests/clamp_monitor/run.sh
 tools/tests/cbuf_insert/run.sh
+tools/tests/cmd_cost/run.sh
+tools/tests/reliable_defer/run.sh
+tools/tests/print_guard/run.sh
+tools/tests/tictactoe/run.sh
 
 SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 ```

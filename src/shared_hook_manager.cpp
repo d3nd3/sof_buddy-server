@@ -30,10 +30,6 @@ void SharedHookManager::RegisterCallback(const std::string& hook_name, const std
                                        int priority, SharedHookPhase phase) {
     hook_callbacks[hook_name].emplace_back(feature_name, callback_name, callback, priority, true, phase);
     SortCallbacksByPriority(hook_callbacks[hook_name]);
-    
-    PrintOut(PRINT_LOG, "Registered shared hook callback: %s::%s for hook %s (priority %d, phase %s)\n", 
-             feature_name.c_str(), callback_name.c_str(), hook_name.c_str(), priority,
-             phase == SharedHookPhase::Pre ? "Pre" : "Post");
 }
 
 /*
@@ -45,34 +41,20 @@ void SharedHookManager::DispatchHook(const std::string& hook_name, SharedHookPha
     auto it = hook_callbacks.find(hook_name);
     if (it == hook_callbacks.end()) {
         // RefDllLoaded / GameDllLoaded etc. register only under hook_callbacks_with_args; the
-        // templated DispatchHook still chains here. Don't log "no callbacks" in that case.
-        if (hook_callbacks_with_args.find(hook_name) != hook_callbacks_with_args.end()) {
-            return;
-        }
-        PrintOut(PRINT_LOG, "[DispatchHook] No callbacks registered for hook '%s' (phase %s)\n", 
-                 hook_name.c_str(), phase == SharedHookPhase::Pre ? "Pre" : "Post");
+        // templated DispatchHook still chains here.
         return;
     }
-    
-    PrintOut(PRINT_LOG, "\n[DispatchHook] === Dispatching hook '%s' (phase %s) ===\n", 
-             hook_name.c_str(), phase == SharedHookPhase::Pre ? "Pre" : "Post");
-    PrintOut(PRINT_LOG, "[DispatchHook] Registered callbacks: %zu\n", it->second.size());
-    
-    size_t dispatched = 0;
+
     for (auto& callback : it->second) {
         if (callback.enabled && callback.phase == phase) {
             try {
-                PrintOut(PRINT_LOG, "\n[DispatchHook] >>> %s <<<\n", callback.feature_name.c_str());
                 callback.callback();
-                dispatched++;
             } catch (...) {
-                PrintOut(PRINT_BAD, "\n[DispatchHook] !!! EXCEPTION in %s !!!\n", 
-                         callback.feature_name.c_str());
+                PrintOut(PRINT_BAD, "[DispatchHook] exception in %s::%s\n",
+                         callback.feature_name.c_str(), callback.callback_name.c_str());
             }
         }
     }
-    PrintOut(PRINT_LOG, "\n[DispatchHook] === Completed: %zu/%zu callbacks dispatched ===\n\n",
-             dispatched, it->second.size());
 }
 
 // Optional feature: Temporarily disable/enable specific feature callbacks at runtime.

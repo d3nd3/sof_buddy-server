@@ -28,3 +28,4 @@ typedef struct { std::uint32_t Signature; IMAGE_OPTIONAL_HEADER_STUB OptionalHea
 HMODULE GetModuleHandleA(const char* name);
 SIZE_T  VirtualQuery(const void* addr, MEMORY_BASIC_INFORMATION* mbi, SIZE_T len);
 DWORD   GetTickCount(void);
+inline void ExitProcess(unsigned) {}

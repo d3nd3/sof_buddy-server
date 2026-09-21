@@ -1,0 +1,20 @@
+[
+  {
+    "function": "Qcommon_frame",
+    "callback": "tickpace_QcommonFrame",
+    "phase": "Pre",
+    "priority": 10
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "tickpace_SvFramePre",
+    "phase": "Pre",
+    "priority": 10
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "tickpace_SvFramePost",
+    "phase": "Post",
+    "priority": 10
+  }
+]

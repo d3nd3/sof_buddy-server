@@ -1,0 +1,31 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "mg_SvFramePost",
+    "phase": "Post"
+  },
+  {
+    "function": "ClientEndServerFrame",
+    "callback": "mg_ClientEndServerFramePre",
+    "phase": "Pre",
+    "priority": 0
+  },
+  {
+    "function": "ClientEndServerFrame",
+    "callback": "mg_ClientEndServerFramePost",
+    "phase": "Post",
+    "priority": 0
+  },
+  {
+    "function": "CL_SendClientMessages",
+    "callback": "mg_CL_SendClientMessagesPre",
+    "phase": "Pre",
+    "priority": 0
+  },
+  {
+    "function": "SV_ClientThink",
+    "callback": "mg_SvClientThinkPre",
+    "phase": "Pre",
+    "priority": 0
+  }
+]

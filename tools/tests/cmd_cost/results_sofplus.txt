@@ -1,0 +1,42 @@
+sofplus remasure — batch QPC / adaptive N (former 0.000us fixed)  hashmap=0
+command                                         n       per_us note          
+------------------------------------------------------------------------------
+sp_sv_sound_client                              4     4000.000 <=qpc-upper   
+sp_sv_sound_broadcast                           4     4000.000 <=qpc-upper   
+sp_sv_print_client                              4     4000.000 <=qpc-upper   
+sp_sv_print_broadcast                           4     4000.000 <=qpc-upper   
+sp_sc_cvar_save                                10     3200.000 ok            
+sp_sv_players                                   8     2000.000 <=qpc-upper   
+sp_sc_func_list                               100      640.000 ok            
+sp_sc_file_find                               100      640.000 ok            
+sp_sc_flow_while                               32      500.000 <=qpc-upper   
+sp_sc_flow_if                                  32      500.000 <=qpc-upper   
+sp_sc_exec_file                                32      500.000 <=qpc-upper   
+sp_sc_exec_cvar                                32      500.000 <=qpc-upper   
+sp_sc_func_load_file                          128      250.000 ok            
+sp_sv_say_unmute                               64      250.000 <=qpc-upper   
+sp_sv_say_mute                                 64      250.000 <=qpc-upper   
+sp_sv_client_swap                              64      250.000 <=qpc-upper   
+sp_sv_client_spec                              64      250.000 <=qpc-upper   
+sp_sv_client_red                               64      250.000 <=qpc-upper   
+sp_sv_client_play                              64      250.000 <=qpc-upper   
+sp_sv_client_blue                              64      250.000 <=qpc-upper   
+sp_sc_timer                                    64      250.000 ok            
+sp_sc_on_change                                64      250.000 <=qpc-upper   
+sp_sc_func_load_cvar                          128      125.000 <=qpc-upper   
+sp_sc_func_exec                               128      125.000 <=qpc-upper   
+sp_sc_cvar_big_text                          1000       32.000 ok            
+sp_sv_info_client                           10000       14.400 ok            
+sp_sc_cvar_list                             10000       11.200 ok            
+sp_sc_info_time                             10000        8.000 ok            
+sp_sv_client_check                          10000        6.400 ok            
+sp_sv_info_client_mod                       10000        4.800 ok            
+sp_sc_uptime                                10000        4.800 ok            
+sp_sc_info_net                              10000        3.200 ok            
+sp_sv_client_cvar_set                      100000        0.640 ok            
+sp_sc_func_alias                           100000        0.320 ok            
+sp_sc_alias                                100000        0.320 ok            
+
+ok = batch total/n; <=qpc-upper = flooder capped below one Wine QPC tick (ceiling, not 0)
+<=qpc-upper ≈ 15.6ms / n (SpinCap), not CPU. IDA why: results_reasoning.txt
+hashmap=1 rerun: results_sofplus_hashmap.txt  compare: results_hashmap_compare.txt

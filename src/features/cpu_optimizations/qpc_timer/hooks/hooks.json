@@ -1,0 +1,7 @@
+[
+  {
+    "function": "Sys_Milliseconds",
+    "callback": "qpc_SysMilliseconds",
+    "override": true
+  }
+]

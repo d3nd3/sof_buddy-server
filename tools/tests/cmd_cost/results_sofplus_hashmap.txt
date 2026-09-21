@@ -1,0 +1,29 @@
+sofplus remasure — batch QPC / adaptive N  hashmap=1
+command                                         n       per_us note          
+------------------------------------------------------------------------------
+sp_sv_print_client                              4     4000.000 <=qpc-upper   
+sp_sv_sound_broadcast                           4     4000.000 <=qpc-upper   
+sp_sv_sound_client                              4     4000.000 <=qpc-upper   
+sp_sv_print_broadcast                           4     4000.000 <=qpc-upper   
+sp_sc_cvar_save                                10     3200.000 ok            
+sp_sv_players                                   8     2000.000 <=qpc-upper   
+sp_sc_func_list                               100     1120.000 ok            
+sp_sc_file_find                               100      960.000 ok            
+sp_sc_exec_cvar                                32      500.000 <=qpc-upper   
+sp_sc_exec_file                                32      500.000 <=qpc-upper   
+sp_sc_flow_while                               32      500.000 <=qpc-upper   
+sp_sc_flow_if                                  32      500.000 <=qpc-upper   
+sp_sc_on_change                                64      250.000 <=qpc-upper   
+sp_sc_timer                                    64      250.000 <=qpc-upper   
+sp_sv_client_blue                              64      250.000 <=qpc-upper   
+sp_sv_client_play                              64      250.000 <=qpc-upper   
+sp_sc_func_exec                               128      125.000 <=qpc-upper   
+sp_sc_func_load_cvar                          128      125.000 <=qpc-upper   
+sp_sc_func_load_file                          128      125.000 ok            
+sp_sc_cvar_list                             10000        9.600 ok            
+sp_sv_client_cvar_set                      100000        0.640 ok            
+sp_sc_alias                                100000        0.480 ok            
+sp_sc_func_alias                          1000000        0.208 ok            
+
+ok = batch total/n; <=qpc-upper = flooder capped below one Wine QPC tick
+team/mute skipped (crash). Compare vs results_sofplus.txt (hashmap=0).

@@ -203,3 +203,45 @@ Windows IDA and Linux `game.so`; all three agree.
 The shim itself only relies on `+0x00 apiversion` (sanity check) and passes the
 pointer straight back to the engine; feature code reaches edicts via the
 `g_edicts` RVA instead of `ge->edicts` — both alias the same array.
+
+## Linux `game.so` — runtime gi pointer (GDB)
+
+On the Linux port the game module is `game.so` (not `gamex86.dll`). The stock
+game DLL still snapshots `game_import_t` on `GetGameAPI`, but **call sites in
+Linux `game.so` reach gi slots via register-relative offsets**; Windows
+`gamex86.dll` tends to call through the copied pointer table directly — easier
+to xref in IDA.
+
+| Symbol | Example value | Notes |
+|--------|---------------|-------|
+| `.text` base (IDA) | `0x9A820` | File-relative code base |
+| Loaded `.text` | `0xf40e8820` | Example ASLR base |
+| `gi` global (file) | `0x002B2360` | Stock `game_import_t GameImport_t` |
+| Table size | `0x18C` | 99 slots |
+
+**IDA EA → live memory** (read slot N at byte offset `4*N`):
+
+```gdb
+printf "%08X\n", *(int*)(loaded_game.so_base + targ - 0x9A820)
+```
+
+**Live memory → IDA EA**:
+
+```gdb
+printf "%08X\n", *(int*)(0x9A820 + targ - loaded_game.so_base)
+```
+
+Example (`PF_Unicast` slot 30 = offset `0x78`):
+
+```gdb
+printf "%08X\n", *(int*)(0xf40e8820 + 0x002B2360 - 0x9A820 + 0x78)
+```
+
+Minigames layout path uses gi slots **9/10** (`Cmd_Argc`/`Cmd_Argv`), **30**
+(`PF_Unicast`), **32/36** (`PF_WriteByte`/`PF_WriteString`), **47/48**
+(`SP_RegisterServer`/`SP_Print`) — same indices as Windows.
+
+**Client layout draw gate** (`Scr_UpdateScreen` @ `0x20015fa0`): layout draws when
+`(player_state.stats[9] & 1)` — i.e. the packed dword `(stats[8]|stats[9]<<16)`
+has bit `0x10000` set. In DM, `G_SetStats` always ORs bit 1 (`stats[9]=2`);
+Buddy re-pokes bit 0 in `ClientEndServerFrame` Post so the value becomes `3`.

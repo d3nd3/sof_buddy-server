@@ -137,21 +137,6 @@ void DetourSystem::RegisterDetourInternal(void* address, void* detour_func, void
     
     detours.push_back({address, detour_func, original_storage, name, module, detour_len});
     registered_detour_names[detour_name] = address;
-    
-    const char* module_name = "";
-    switch (module) {
-        case DetourModule::SofExe: module_name = "SoF.exe"; break;
-        case DetourModule::RefDll: module_name = "ref.dll"; break;
-        case DetourModule::GameDll: module_name = "game.dll"; break;
-        case DetourModule::PlayerDll: module_name = "player.dll"; break;
-        case DetourModule::Unknown: module_name = "Unknown"; break;
-    }
-    
-    void* resolved_addr = ResolveAddress(address, module, true);
-    if (!resolved_addr) {
-        resolved_addr = address;
-    }
-    PrintOut(PRINT_LOG, "Registered detour: %s at 0x%p (raw: 0x%p, %s)\n", name, resolved_addr, address, module_name);
 }
 
 void DetourSystem::ProcessDeferredRegistrations() {
@@ -161,7 +146,6 @@ void DetourSystem::ProcessDeferredRegistrations() {
     
     initialized = true;
     
-    size_t count = 0;
     while (deferred_registrations) {
         DeferredDetourEntry* entry = deferred_registrations;
         deferred_registrations = deferred_registrations->next;
@@ -169,11 +153,6 @@ void DetourSystem::ProcessDeferredRegistrations() {
         RegisterDetourInternal(entry->address, entry->detour_func, entry->original_storage, entry->name, entry->module, entry->detour_len);
         
         free(entry);
-        count++;
-    }
-    
-    if (count > 0) {
-        PrintOut(PRINT_LOG, "Processed %zu deferred detour registrations\n", count);
     }
 }
 
@@ -183,7 +162,6 @@ bool DetourSystem::ApplyDetourAtAddress(void* address, void* detour_func, void**
     }
     
     if (applied_detours.find(address) != applied_detours.end()) {
-        PrintOut(PRINT_LOG, "Detour already applied at %p: %s\n", address, name ? name : "unnamed");
         return true;
     }
     
@@ -201,7 +179,6 @@ bool DetourSystem::ApplyDetourAtAddress(void* address, void* detour_func, void**
             *original_storage = trampoline;
         }
         applied_detours[address] = trampoline;
-        PrintOut(PRINT_LOG, "Applied detour at %p: %s\n", address, name ? name : "unnamed");
         return true;
     } else {
         PrintOut(PRINT_BAD, "Failed to apply %s detour at 0x%p\n", name ? name : "unnamed", address);
@@ -225,7 +202,6 @@ bool DetourSystem::RemoveDetourAtAddress(void* address) {
             DetourRemove(&trampoline);
         }
         applied_detours.erase(it);
-        PrintOut(PRINT_LOG, "Removed detour at %p\n", address);
         return true;
     }
     
@@ -244,19 +220,8 @@ bool DetourSystem::IsDetourRegistered(const char* name) const {
 }
 
 void DetourSystem::ApplyModuleDetours(DetourModule target_module, const char* module_name) {
-    size_t applied_count = 0;
-    
-    PrintOut(PRINT_LOG, "Applying %s detours...\n", module_name);
-    
-    if (target_module == DetourModule::Unknown) {
-        PrintOut(PRINT_LOG, "System-module detours to apply:\n");
-        for (const auto& detour : detours) {
-            if (detour.module == DetourModule::Unknown) {
-                PrintOut(PRINT_LOG, " - %s at %p\n", detour.name ? detour.name : "unnamed", detour.address);
-            }
-        }
-    }
-    
+    (void)module_name;
+
     for (auto& detour : detours) {
         if (detour.module != target_module) {
             continue;
@@ -280,7 +245,6 @@ void DetourSystem::ApplyModuleDetours(DetourModule target_module, const char* mo
         }
         
         if (applied_detours.find(absolute_addr) != applied_detours.end()) {
-            PrintOut(PRINT_LOG, "Detour already applied: %s\n", detour.name ? detour.name : "unnamed");
             continue;
         }
         
@@ -308,18 +272,15 @@ void DetourSystem::ApplyModuleDetours(DetourModule target_module, const char* mo
                          detour.name ? detour.name : "unnamed");
             }
             applied_detours[absolute_addr] = trampoline;
-            applied_count++;
         } else {
             PrintOut(PRINT_BAD, "Failed to apply %s detour at 0x%p -> 0x%p (DetourCreate returned NULL)\n", 
                      detour.name ? detour.name : "unnamed", absolute_addr, detour.detour_func);
         }
     }
-    
-    PrintOut(PRINT_LOG, "Applied %zu %s detours successfully\n", applied_count, module_name);
 }
 
 void DetourSystem::RemoveModuleDetours(DetourModule target_module, const char* module_name) {
-    size_t removed_count = 0;
+    (void)module_name;
     for (auto it = detours.begin(); it != detours.end(); ++it) {
         const auto& detour = *it;
         if (detour.module != target_module) {
@@ -341,12 +302,8 @@ void DetourSystem::RemoveModuleDetours(DetourModule target_module, const char* m
                     *detour.original_storage = nullptr;
                 }
                 applied_detours.erase(absolute_addr);
-                removed_count++;
             }
         }
-    }
-    if (removed_count) {
-        PrintOut(PRINT_LOG, "Removed %zu %s detours\n", removed_count, module_name);
     }
 }
 
@@ -388,7 +345,6 @@ void DetourSystem::RemovePlayerDetours() {
 }
 
 void DetourSystem::RemoveAllDetours() {
-    PrintOut(PRINT_LOG, "Removing %zu applied detours...\n", applied_detours.size());
     for (auto& detour : detours) {
         void* absolute_addr = ResolveAddress(detour.address, detour.module);
         if (!absolute_addr) {
@@ -401,7 +357,6 @@ void DetourSystem::RemoveAllDetours() {
                 if (detour.original_storage) {
                     *detour.original_storage = nullptr;
                 }
-                PrintOut(PRINT_LOG, "Successfully removed detour: %s at 0x%p\n", detour.name ? detour.name : "unnamed", absolute_addr);
             }
             applied_detours.erase(absolute_addr);
         }

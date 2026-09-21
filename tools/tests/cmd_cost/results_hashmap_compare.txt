@@ -1,0 +1,47 @@
+hashmap OFF (results_sofplus.txt / results_strlen.txt)
+     vs ON  (results_sofplus_hashmap.txt / results_strlen_hashmap.txt)
++set _sofbuddy_hashmap 1 at GameDllLoaded. Same wine QPC ~15.6ms.
+
+cmd_cost times the handler (TimedCmd), not Cmd_ExecuteString.
+Hashmap's command-list win is therefore invisible here. What can move is
+Cvar_Get / Cvar_Set2 inside the sofplus handler.
+
+<=qpc-upper rows cannot compare (same SpinCap ceiling).
+
+--- sofplus (ok rows only) ---
+
+command                    off_us     on_us   on/off
+------------------------- -------- --------- -------
+sp_sc_cvar_save             3200.0    3200.0    1.00   disk, not dict
+sp_sc_func_list              640.0    1120.0    1.75   Com_Printf volume; QPC 4 vs 7 ticks
+sp_sc_file_find              640.0     960.0    1.50   FS+qsort; QPC 4 vs 6 ticks
+sp_sc_func_load_file         250.0     125.0    0.50   2 ticks vs 1 — not a 2× CPU win
+sp_sc_cvar_list               11.2       9.6    0.86   many Cvar_Set; mild
+sp_sv_client_cvar_set          0.640     0.640   1.00
+sp_sc_alias                    0.320     0.480   1.50   noise / extra wrap
+sp_sc_func_alias               0.320     0.208   0.65   on reached n=1e6 (off 1e5)
+
+--- strlen (handler Cvar_Get+Set of _cmdcost_blob / dst) ---
+
+command            len     off     on
+len                  0   0.320  0.240
+len                256   0.800  0.640
+copy                 0   0.320  0.480
+copy               256   0.960  1.440
+escape               0   0.320  0.176
+hex                 64   3.200  1.120   off extra QPC tick; on stays O(n) 0.3→2.1
+hex                128   3.200  2.080
+unhex              128   1.440  1.280
+replace              *   6–11   6–11    still invalid-arg Com_Printf
+append               *   6–10   6–32    still extra Cvar_Set + QPC
+save                 *   0.3–1ms 0.3–3ms  disk
+
+Read: cheap cvar ops stay sub-µs either way. Hashmap does not collapse the
+0.2–0.8µs floor in this test — CopyString + tokenize-outside-sample still
+dominate once the list walk is gone, and Wine QPC steps (0.16µs at n=1e6)
+are as big as the delta.
+
+Where hashmap should show (deep list / Cmd_ExecuteString of unknown tokens)
+is sofbuddy_bench.func phases A–C, not TimedCmd of a named handler.
+
+Team/mute not re-run on hashmap=1 (server crash mid-spin).

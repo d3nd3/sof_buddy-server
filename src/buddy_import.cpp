@@ -54,8 +54,8 @@ FnT ResolveGiSlot(unsigned slot, const char* who) {
     if (!f)
         return nullptr;
     if (!IsExecutableCodeAddress(reinterpret_cast<const void*>(f))) {
-        PrintOut(PRINT_BAD, "[buddy_import] %s: slot value %p is not executable memory - aborting call\n",
-                 who, reinterpret_cast<const void*>(f));
+        LogFallbackImpl(PRINT_BAD, "[buddy_import] %s: slot value %p is not executable memory - aborting call\n",
+                        who, reinterpret_cast<const void*>(f));
         return nullptr;
     }
     return f;
@@ -254,4 +254,165 @@ float Buddy_ReadCvarValue(void* cv, float default_val) {
     if (!cv)
         return default_val;
     return *reinterpret_cast<float*>(static_cast<char*>(cv) + kCvarValueOfs);
+}
+
+// gi.unicast — slot 30 (0x078): void (*unicast)(edict_t *ent, qboolean reliable).
+using unicast_fn = void (*)(void*, int);
+
+void Buddy_Unicast(void* ent, int reliable) {
+    if (!ent)
+        return;
+    auto f = ResolveGiSlot<unicast_fn>(30u, "unicast");
+    if (!f)
+        return;
+    f(ent, reliable);
+}
+
+// gi.WriteByte — slot 32 (0x080): void (*WriteByte)(int c).
+using writebyte_fn = void (*)(int);
+
+void Buddy_WriteByte(int c) {
+    auto f = ResolveGiSlot<writebyte_fn>(32u, "WriteByte");
+    if (!f)
+        return;
+    f(c);
+}
+
+// gi.WriteString — slot 36 (0x090): void (*WriteString)(char *s).
+using writestring_fn = void (*)(const char*);
+
+void Buddy_WriteString(const char* s) {
+    if (!s)
+        return;
+    auto f = ResolveGiSlot<writestring_fn>(36u, "WriteString");
+    if (!f)
+        return;
+    f(s);
+}
+
+bool Buddy_StuffText(void* ent, const char* text) {
+    if (!ent || !text)
+        return false;
+    auto wbyte = ResolveGiSlot<writebyte_fn>(32u, "WriteByte");
+    auto wstr = ResolveGiSlot<writestring_fn>(36u, "WriteString");
+    auto uni = ResolveGiSlot<unicast_fn>(30u, "unicast");
+    if (!wbyte || !wstr || !uni)
+        return false;
+    // Same order as the stock game (p_client.cpp): WriteByte, WriteString, unicast.
+    wbyte(13);  // svc_stufftext
+    wstr(text);
+    uni(ent, 1);
+    return true;
+}
+
+// gi.argc/argv — slots 9/10 (game.h field order; bprintf lands on slot 12
+// as the existing wrappers confirm). Valid during ClientCommand-style
+// dispatches; the returned strings belong to the engine command buffer.
+using argc_fn = int (*)();
+using argv_fn = const char* (*)(int);
+
+int Buddy_ClientArgc() {
+    auto f = ResolveGiSlot<argc_fn>(9u, "argc");
+    if (!f)
+        return 0;
+    return f();
+}
+
+const char* Buddy_ClientArgv(int n) {
+    auto f = ResolveGiSlot<argv_fn>(10u, "argv");
+    if (!f)
+        return "";
+    const char* s = f(n);
+    return s ? s : "";
+}
+
+// gi.args — slot 11: concatenation of argv[1..] for the current command.
+using args_fn = const char* (*)();
+
+const char* Buddy_ClientArgs() {
+    auto f = ResolveGiSlot<args_fn>(11u, "args");
+    if (!f)
+        return "";
+    const char* s = f();
+    return s ? s : "";
+}
+
+// gi.configstring — slot 68: sets a server configstring (propagates to
+// clients as svc_configstring; Q2 SV_Configstring semantics).
+using configstring_fn = void (*)(int, const char*);
+
+bool Buddy_Configstring(int num, const char* s) {
+    if (!s || num < 0)
+        return false;
+    auto f = ResolveGiSlot<configstring_fn>(68u, "configstring");
+    if (!f)
+        return false;
+    f(num, s);
+    return true;
+}
+
+// SV_RemoveIndex__FPCcii @ SoF.exe+0xA8439 (1.06 Linux): ghoul/sound unload path.
+constexpr unsigned kRvaSvRemoveIndex = 0xA8439;
+using remove_index_fn = void (*)(const char*, int, int);
+
+bool Buddy_RemoveIndex(const char* path, int start, int max_count) {
+    if (!path || !path[0] || start < 0 || max_count <= 0)
+        return false;
+    HMODULE h = GetModuleHandleA("SoF.exe");
+    if (!h)
+        h = GetModuleHandleA("SoF-spsv.exe");
+    if (!h)
+        return false;
+    auto f = reinterpret_cast<remove_index_fn>(reinterpret_cast<char*>(h) + kRvaSvRemoveIndex);
+    if (!IsExecutableCodeAddress(reinterpret_cast<const void*>(f)))
+        return false;
+    f(path, start, max_count);
+    return true;
+}
+
+// gi.imageindex — slot 3: registers a picture/model/sound name server-side
+// (precache configstring) and returns its index, 0 when unresolvable.
+using imageindex_fn = int (*)(const char*);
+
+int Buddy_ImageIndex(const char* name) {
+    if (!name || !name[0])
+        return 0;
+    auto f = ResolveGiSlot<imageindex_fn>(3u, "imageindex");
+    if (!f)
+        return 0;
+    return f(name);
+}
+
+// gi.SP_Register — slot 47: void (*SP_Register)(const char *Package).
+using sp_register_fn = void (*)(const char*);
+
+bool Buddy_SP_Register(const char* package) {
+    if (!package || !package[0])
+        return false;
+    auto f = ResolveGiSlot<sp_register_fn>(47u, "SP_Register");
+    if (!f)
+        return false;
+    f(package);
+    return true;
+}
+
+// gi.SP_Print — slot 48: void (*SP_Print)(edict_t *ent, unsigned short ID, ...).
+using sp_print_fn = void (*)(void*, unsigned short, ...);
+
+void Buddy_SP_Print(void* ent, unsigned short id) {
+    if (!ent)
+        return;
+    auto f = ResolveGiSlot<sp_print_fn>(48u, "SP_Print");
+    if (!f)
+        return;
+    f(ent, id);
+}
+
+void Buddy_SP_PrintLayout(void* ent, unsigned short id, const char* text) {
+    if (!ent || !text)
+        return;
+    auto f = ResolveGiSlot<sp_print_fn>(48u, "SP_Print");
+    if (!f)
+        return;
+    f(ent, id, text);
 }

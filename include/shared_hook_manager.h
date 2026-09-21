@@ -70,10 +70,6 @@ public:
         auto cb = std::make_shared<SharedHookCallbackWithArgs<Args...>>(feature_name, callback_name, callback, priority, true, phase);
         hook_callbacks_with_args[hook_name].push_back(cb);
         SortCallbacksByPriority(hook_callbacks_with_args[hook_name]);
-        
-        PrintOut(PRINT_LOG, "Registered shared hook callback: %s::%s for hook %s (priority %d, phase %s, with parameters)\n", 
-                 feature_name.c_str(), callback_name.c_str(), hook_name.c_str(), priority,
-                 phase == SharedHookPhase::Pre ? "Pre" : "Post");
     }
     
     // Call all registered callbacks for a hook and phase (in priority order, no parameters)

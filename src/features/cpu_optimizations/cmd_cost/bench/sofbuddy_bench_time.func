@@ -1,0 +1,103 @@
+// Func-body braced timing only (cfg string-form timed via exec + server clock).
+function sofbuddy_bench_time_init()
+{
+  set _bench_time_n 2500
+  set _bench_time_target 3
+  set _bench_time_maxrounds 20
+  alias bench_cga "sp_sc_cvar_math_add bench_wcnt 1"
+  echo "[bench_time] loaded hashmap=" #_sofbuddy_hashmap
+}
+
+function sofbuddy_bench_time_work_inline()
+{
+  set ~i 0
+  set bench_wcnt 0
+  sp_sc_flow_while number cvar ~i < val #_bench_time_n
+  {
+    sp_sc_cvar_math_add bench_wcnt 1
+    add ~i 1
+  }
+}
+
+function sofbuddy_bench_time_work_alias()
+{
+  set ~i 0
+  set bench_wcnt 0
+  sp_sc_flow_while number cvar ~i < val #_bench_time_n
+  {
+    bench_cga
+    add ~i 1
+  }
+}
+
+function sofbuddy_bench_time_round_start()
+{
+  sp_sc_flow_if number cvar _bench_time_phase == val 0
+  {
+    sp_sc_func_exec sofbuddy_bench_time_work_inline
+  }
+  else
+  {
+    sp_sc_func_exec sofbuddy_bench_time_work_alias
+  }
+  add _bench_time_round 1
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_bench_time_t0
+  sp_sc_flow_if number val #~e >= val #_bench_time_target
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_time_finish"
+  }
+  else
+  {
+    sp_sc_flow_if number cvar _bench_time_round >= val #_bench_time_maxrounds
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_time_finish"
+    }
+    else
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_time_round_start"
+    }
+  }
+}
+
+function sofbuddy_bench_time_finish()
+{
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_bench_time_t0
+  set ~ops #_bench_time_round
+  sp_sc_cvar_math_mul ~ops #_bench_time_n
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+  sp_sc_flow_if number cvar _bench_time_phase == val 0
+  {
+    echo "[bench_time] func_inline n" #_bench_time_n "rounds" #_bench_time_round "sec" #~e "iter/s" #~rate "cnt" #bench_wcnt
+  }
+  else
+  {
+    echo "[bench_time] func_alias  n" #_bench_time_n "rounds" #_bench_time_round "sec" #~e "iter/s" #~rate "cnt" #bench_wcnt
+  }
+  add _bench_time_phase 1
+  sp_sc_flow_if number cvar _bench_time_phase < val 2
+  {
+    set _bench_time_round 0
+    sp_sc_info_time
+    set _bench_time_t0 #_sp_sc_info_time_sec
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_time_round_start"
+  }
+}
+
+function sofbuddy_bench_time_run()
+{
+  echo "[bench_time] func-body start hashmap=" #_sofbuddy_hashmap
+  set _bench_time_phase 0
+  set _bench_time_round 0
+  sp_sc_info_time
+  set _bench_time_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_time_round_start
+}

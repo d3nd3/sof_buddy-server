@@ -1,0 +1,12 @@
+[
+  {
+    "function": "Cmd_ExecuteString",
+    "callback": "cmdcost_CmdPre",
+    "phase": "Pre"
+  },
+  {
+    "function": "Cmd_ExecuteString",
+    "callback": "cmdcost_CmdPost",
+    "phase": "Post"
+  }
+]

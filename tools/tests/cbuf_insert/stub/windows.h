@@ -31,3 +31,4 @@ HMODULE GetModuleHandleA(const char* name);
 SIZE_T  VirtualQuery(const void* addr, MEMORY_BASIC_INFORMATION* mbi, SIZE_T len);
 BOOL QueryPerformanceCounter(LARGE_INTEGER* out);
 BOOL QueryPerformanceFrequency(LARGE_INTEGER* out);
+inline void ExitProcess(UINT) {}

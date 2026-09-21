@@ -1,0 +1,79 @@
+IDA (spsv.dll + SoF.exe) vs live µs. Wine QPC ~15.6ms.
+<=qpc-upper ≈ 15.6ms / SpinCap  (ranking is the cap, not CPU).
+
+n     15.6ms/n     rows
+4     ~3900µs      print/sound
+8     ~1950µs      players
+32    ~490µs       flow/exec
+64    ~244µs       team/mute/timer/on_change
+128   ~122µs       func_exec / load_cvar
+
+--- sofplus remasure (results_sofplus.txt) ---
+
+command                      n    per_us  note           why
+--------------------------- --- -------- -------------- ----------------------------------------------------------
+sp_sv_sound_client            4  4000.000 <=qpc-upper   cap. Handler wants sound INDEX (atoi+5, 6..25) then
+                                                        gi start-sound. Bench passed misc/menu1.wav → atoi 0
+                                                        → Com_Printf "Invalid sound file index" (0x1000f1e0).
+sp_sv_sound_broadcast         4  4000.000 <=qpc-upper   cap + same index check (0x1000f180) → sub_10018970.
+sp_sv_print_client            4  4000.000 <=qpc-upper   cap. gi.cprintf(ent, PRINT_HIGH) if inuse==1
+                                                        (0x1000e640 → 0x100177f0). Netchan, not CPU.
+sp_sv_print_broadcast         4  4000.000 <=qpc-upper   cap. SV_BroadcastPrintf 0x200618d0 (0x1000e600).
+                                                        Walks every client netchan.
+sp_sc_cvar_save              10  3200.000 ok            REAL. Walk all cvars + WriteTextFileUser (0x100036e0).
+                                                        0.3–3ms disk; blob length barely matters.
+sp_sv_players                 8  2000.000 <=qpc-upper   cap. Header + per-connected Com_Printf (0x1000e160).
+sp_sc_func_list             100   640.000 ok            REAL. Com_Printf each script func (0x10008ef0).
+sp_sc_file_find             100   640.000 ok            REAL. Pak/FS walk, Jenkins hash, malloc, qsort,
+                                                        Cvar_Set per hit (0x10005c40).
+sp_sc_flow_while             32   500.000 <=qpc-upper   cap. If true, snprintf 4KB self-copy of while+body
+                                                        and Cbuf_InsertText (0x100048f3). Abort at 100000.
+sp_sc_flow_if                32   500.000 <=qpc-upper   cap. strcmp/atof then Cbuf_InsertText then/else
+                                                        (0x100041b0). Extra cmds, not the compare.
+sp_sc_exec_file              32   500.000 <=qpc-upper   cap. Read file, patch ';', Cbuf_InsertText (0x10004110).
+sp_sc_exec_cvar              32   500.000 <=qpc-upper   cap. Cbuf_InsertText(cvar string) (0x10004090).
+sp_sc_func_load_file        128   250.000 ok            REAL-ish (1 QPC tick/128). DoesFileExist +
+                                                        convert_sp_to_sof parse/malloc/hash (0x100077d0).
+sp_sv_say_mute/unmute        64   250.000 <=qpc-upper   cap. Slot or '*' loop (0x1000f010).
+sp_sv_client_{play,spec,     64   250.000 <=qpc-upper   cap. sub_1000d390: spectator/team flags,
+ red,blue,swap}                                         PF_Unicast "spectator 0/1", optional
+                                                        SV_BroadcastPrintf.
+sp_sc_timer                  64   250.000 ok            1 QPC tick/64. malloc timer+cmd, sorted insert
+                                                        (0x1000ca90). Spin leaks timers; real << 250µs.
+sp_sc_on_change              64   250.000 <=qpc-upper   cap. Steal cvar callback, Cvar_Set _sp_sc_on_change_%s
+                                                        (0x100053e0).
+sp_sc_func_load_cvar        128   125.000 <=qpc-upper   cap. Same convert_sp_to_sof on cvar string (0x100050c0).
+sp_sc_func_exec             128   125.000 <=qpc-upper   cap. Hash lookup + Cvar_Set params + Cbuf_InsertText
+                                                        body (0x10008120). Unknown name → Com_Printf.
+sp_sc_cvar_list           10000    11.200 ok            Full cvar walk + print.
+sp_sc_alias / func_alias 1e5     0.320 ok            Short Cvar_Set / cmd insert. Same floor as cvar_len.
+
+Tick-budget real costs: cvar_save (ms I/O), file_find / func_list / func_load_* (enumerate+print/parse).
+print/sound/team only if you let them multicast — do not raise SpinCap to "measure" them.
+
+--- strlen scaling (results_strlen.txt) ---
+
+Shared floor 0.2–0.8µs: every cmd is Cvar_Get + Cvar_Set2. Both walk cvar_vars
+(next +0x1C) with 2-byte strcmp, then CopyString/Z_Free. Hundreds of cvars beat
+strlen of a 256 blob. Engine: Cvar_Get 0x20021ae0, Cvar_Set → Cvar_Set2 0x20021d70.
+
+command                 slope     why
+---------------------- --------- -------------------------------------------------
+len / copy / escape /  flat      strlen/strncat 4KB stack then Cvar_Set of a short
+ unescape / nbsp /               or same-size string. List walk dominates O(n).
+ no_color / substr /
+ split
+hex                    jump@64   2 nibble lookups/byte, Cvar_Set of 2n (0x10002a90).
+                                 64→3.2µs is QPC (one extra 15.6ms tick at n=10000
+                                 vs 100000), not a 64-byte cliff. Skip 256: 512 hex
+                                 blows cvar string cap.
+unhex                  mild      Inverse of hex; skip 256 same cap.
+replace                6–11 flat Bench args "A X" are not %xx:%xx maps. Parser
+                                 Com_Printf "Invalid argument…" per arg (0x100034e0).
+                                 LUT+byte walk is cheap; row is printf + QPC steps.
+append / append_nl     6–13 flat strncat 4KB + Cvar_Set (0x10001450). Bench also
+                                 copies blob into dest inside the timed loop → two
+                                 Cvar_Set2 walks. Piece 1 vs 64 cannot show up.
+save                   0.3–1ms   Disk + full list; anti-correlates with blob len.
+
+Cvar string cap ~256; oversized set can crash. hex/unhex/save skipped at 256.

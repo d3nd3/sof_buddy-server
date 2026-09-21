@@ -1,0 +1,10 @@
+[
+  { "function": "Cbuf_AddText", "callback": "cmdpark_CbufAddText", "override": true },
+  { "function": "Cbuf_Execute", "callback": "cmdpark_CbufExecute", "override": true },
+  { "function": "Cbuf_ExecuteText", "callback": "cmdpark_CbufExecuteText", "override": true },
+  { "function": "Qcommon_frame", "callback": "cmdpark_QcommonFrame", "phase": "Pre", "priority": 9 },
+  { "function": "SV_Frame", "callback": "cmdpark_SvFramePre", "phase": "Pre", "priority": 9 },
+  { "function": "SV_Frame", "callback": "cmdpark_SvFramePost", "phase": "Post", "priority": 9 },
+  { "function": "SV_ReadPackets", "callback": "cmdpark_ReadPacketsPre", "phase": "Pre", "priority": 10 },
+  { "function": "SV_ReadPackets", "callback": "cmdpark_ReadPacketsPost", "phase": "Post" }
+]

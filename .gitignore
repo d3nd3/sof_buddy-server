@@ -3,3 +3,6 @@
 /cmake-build-*/
 .cache/
 compile_commands.json
+/export/
+__pycache__/
+*.pyc

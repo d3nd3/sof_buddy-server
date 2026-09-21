@@ -25,6 +25,8 @@
 #include "buddy_import.h"
 #include "log.h"
 
+void ClampMonitor_LogSessionSummary() {}
+
 // ---- virtual clock ---------------------------------------------------------
 namespace fake {
 
@@ -43,6 +45,12 @@ std::uint32_t EngineMs() { return static_cast<std::uint32_t>(qpc / 1000); }
 
 }  // namespace fake
 
+namespace qpcstub {
+std::int64_t lastSeen = -1;
+int repeats = 0;
+void Reset() { lastSeen = -1; repeats = 0; }
+}  // namespace qpcstub
+
 BOOL QueryPerformanceCounter(LARGE_INTEGER* out) {
     // A real QPC read costs tens of nanoseconds and perturbs nothing, so this
     // must not charge for one: the paced runs read the clock more often than
@@ -52,16 +60,17 @@ BOOL QueryPerformanceCounter(LARGE_INTEGER* out) {
     // A busy-wait does burn time, though, and the harness would hang without
     // it. So the clock moves only once a caller has read the same value many
     // times over - which is what a spin looks like and nothing else does.
-    static std::int64_t lastSeen = -1;
-    static int repeats = 0;
-    if (fake::qpc == lastSeen) {
-        if (++repeats >= 16) {
+    //
+    // State is resettable (see Reset) because exact-ms assertions elsewhere
+    // must not depend on how many reads earlier tests happened to perform.
+    if (fake::qpc == qpcstub::lastSeen) {
+        if (++qpcstub::repeats >= 16) {
             ++fake::qpc;
-            repeats = 0;
+            qpcstub::repeats = 0;
         }
     } else {
-        lastSeen = fake::qpc;
-        repeats = 0;
+        qpcstub::lastSeen = fake::qpc;
+        qpcstub::repeats = 0;
     }
     out->QuadPart = fake::qpc;
     return 1;
@@ -127,7 +136,25 @@ void ClearCommands() {
 HMODULE GetModuleHandleA(const char* name) {
     if (name && std::strcmp(name, "SoF.exe") == 0)
         return fake::image;
+    if (name && std::strcmp(name, "kernel32") == 0) {
+        static int kernelToken = 0;
+        return &kernelToken;
+    }
     return nullptr;
+}
+
+void FakeKernelSleep(DWORD) {}
+
+FARPROC GetProcAddress(HMODULE, const char* name) {
+    if (name && std::strcmp(name, "Sleep") == 0)
+        return reinterpret_cast<FARPROC>(&FakeKernelSleep);
+    return nullptr;
+}
+
+BOOL VirtualProtect(void*, SIZE_T, DWORD, DWORD* old) {
+    if (old)
+        *old = PAGE_READWRITE;
+    return 1;
 }
 
 SIZE_T VirtualQuery(const void* addr, MEMORY_BASIC_INFORMATION* mbi, SIZE_T len) {
@@ -200,9 +227,22 @@ extern "C" void PrintOutImpl(int, const char* msg, ...) {
     fake::logs.push_back(buf);
 }
 
-#include "../../../src/features/tick_pacing/engine.cpp"
-#include "../../../src/features/tick_pacing/cvar.cpp"
-#include "../../../src/features/tick_pacing/tick_pacing.cpp"
+// ---- cmdpark backlog stubs -------------------------------------------------
+// Production definitions live in src/features/cpu_optimizations/cmdtext_parking/
+// cmdpark.cpp (same DLL, direct call). The harness links only the tick_pacing
+// TUs, so stub them here — controllable, so the gate test can drive them.
+namespace cmdpark {
+int g_stubParkBytes = 0;
+bool g_stubHoldArmed = false;
+int ParkBytes() { return g_stubParkBytes; }
+bool HoldArmed() { return g_stubHoldArmed; }
+}  // namespace cmdpark
+
+#define TICKPACE_HARNESS 1
+#include "../../../src/features/cpu_optimizations/tick_pacing/engine.cpp"
+#include "../../../src/features/cpu_optimizations/tick_pacing/cvar.cpp"
+#include "../../../src/features/cpu_optimizations/tick_pacing/tick_pacing.cpp"
+#include "../../../src/features/cpu_optimizations/tick_pacing/sleep_gate.cpp"
 
 // ---- test driver -----------------------------------------------------------
 int g_failures = 0;
@@ -218,8 +258,13 @@ int g_failures = 0;
 // ---------------------------------------------------------------------------
 struct Sim {
     double sleepMs = 1.0;         // what the loop's Sleep(1) actually costs
+    double coarseSleepMs = 0.0;   // >0: Sleep(1) really costs this (coarse host
+                                  // timer) unless the Sleep-skip gate fires
     double frameMs = 0.0;         // what the game frame costs
     double cmdCostMs = 0.0;       // what one console command costs
+    double cmdCostJitterMs = 0.0; // + uniform [0, jitter) per command (live
+                                  // sofplus drains vary 1-8ms; default 0 keeps
+                                  // every older test bit-identical)
 
     // Two producers, because which one dominates decides how much the settle
     // correction is worth on a given server:
@@ -232,9 +277,12 @@ struct Sim {
     //                 what actually land mid-tick.
     int    cmdsPerTick = 0;
     double asyncPeriodMs = 0.0;
+    double asyncOffsetMs = 0.0;   // first async command at wallOrigin+offset
+    double iterCmdMs = 0.0;       // extra command cost queued every loop iter
 
     bool   paced = true;
     bool   svsInitialized = true;
+    bool   parkStrict = false;    // cmdpark strict: hold pre-SV drain, drip after tick
 };
 
 struct Run {
@@ -250,6 +298,23 @@ struct Run {
                                   // crossed. The engine's clamp deletes
                                   // whatever exceeds 100.
     std::uint32_t realtimeShadow = 0;
+
+    // Q2/SoF CL_AddEntities showclamp: cl.time vs cl.frame.servertime.
+    // Instant 0-ping snapshots at tick wall time; cl.time tracks wall between
+    // snapshots and snaps back on highclamp (cl_ents.c / SoF.exe 0x20004460).
+    int    clientHighclamps = 0;
+    int    clientHighclampMax = 0;
+    double lastSnapWall = -1.0;
+    double clTime = 0.0;
+    bool   clInit = false;
+    int    lastSnapServertime = 0;
+    double clientPollAt = 0.0;
+    int    showclampPrints = 0;     // CL_AddEntities prints at 7ms client frames
+    int    showclampPrintMax = 0;
+    int    snapGaps = 0;
+    int    snapGapGe5 = 0;          // wall gap between snapshots >= 105ms
+    double snapGapSum = 0.0;
+    double snapGapMax = 0.0;
 
     double MaxLate() const {
         double m = 0.0;
@@ -272,6 +337,10 @@ struct Run {
 Sim g_sim;
 Run g_run;
 double g_nextAsyncMs = 0.0;
+std::vector<double> g_park;
+// Deterministic per-command cost jitter (own LCG; reset every run so all
+// arms being compared see the identical sequence — a fair A/B).
+std::uint32_t g_jitterState = 0;
 
 /** How far the server's own clock has drifted from wall clock, in ms. The
  *  engine's contract is sv.time == 100 * framenum == elapsed wall time, so
@@ -287,10 +356,15 @@ double RateError(const Run& r) {
 void FakeCbufOriginal() {
     ++g_run.cbufRuns;
     while (fake::CmdCursize() != 0) {
-        const double cost = fake::cmdQueue.front();
+        double cost = fake::cmdQueue.front();
         fake::cmdQueue.erase(fake::cmdQueue.begin());
         fake::CmdCursize() = static_cast<std::int32_t>(fake::cmdQueue.size());
 
+        if (g_sim.cmdCostJitterMs > 0.0) {
+            g_jitterState = g_jitterState * 1103515245u + 12345u;
+            cost += (static_cast<double>((g_jitterState >> 7) & 0x7fffffff) /
+                     2147483648.0) * g_sim.cmdCostJitterMs;
+        }
         fake::AdvanceMs(cost);
         ++g_run.cmdsRun;
 
@@ -303,6 +377,8 @@ void FakeCbufOriginal() {
     }
 }
 
+void ClientPoll();
+
 /** SV_Frame, transcribed. The `if (!svs.initialized) return;` comes *before*
  *  the accumulate (0x2005F5D2 vs 0x2005F5D8). */
 void EngineSvFrame(int msec) {
@@ -310,6 +386,9 @@ void EngineSvFrame(int msec) {
         return;
 
     fake::Realtime() += static_cast<std::uint32_t>(msec);
+
+    if (g_sim.paced)
+        tickpace_ReadPacketsPre();
 
     if (fake::Realtime() < fake::SvTime()) {
         if (fake::SvTime() - fake::Realtime() > 100) {
@@ -335,28 +414,102 @@ void EngineSvFrame(int msec) {
         fake::Realtime() = fake::SvTime();             // "sv highclamp"
         ++g_run.highclamps;
     }
+
+    // Snapshot is sent at the end of SV_Frame (CL_SendClientMessages).
+    ClientPoll();
+    const double wall = fake::NowMs();
+    const int servertime = static_cast<int>(fake::SvTime());
+    if (!g_run.clInit) {
+        g_run.clTime = 0.0;
+        g_run.clInit = true;
+        g_run.clientPollAt = wall;
+    } else {
+        const double gap = wall - g_run.lastSnapWall;
+        ++g_run.snapGaps;
+        g_run.snapGapSum += gap;
+        if (gap > g_run.snapGapMax)
+            g_run.snapGapMax = gap;
+        if (gap >= 105.0)
+            ++g_run.snapGapGe5;
+        const int hi = static_cast<int>(gap - 100.0);
+        if (hi > 0) {
+            ++g_run.clientHighclamps;
+            if (hi > g_run.clientHighclampMax)
+                g_run.clientHighclampMax = hi;
+        }
+    }
+    // CL_ParseFrame @0x2000306c: snap cl.time into [servertime-100, servertime].
+    if (g_run.clTime > static_cast<double>(servertime))
+        g_run.clTime = static_cast<double>(servertime);
+    else if (g_run.clTime < static_cast<double>(servertime) - 100.0)
+        g_run.clTime = static_cast<double>(servertime) - 100.0;
+    g_run.lastSnapServertime = servertime;
+    g_run.lastSnapWall = wall;
+}
+
+/** Dedicated server has no CL_Frame; this is the connecting client's
+ *  CL_UpdateSimulationTimeInfo + CL_AddEntities at ~7ms/frame (the live
+ *  "high clamp 7" print is one client frame of overshoot, not drain remainder). */
+void ClientPoll() {
+    if (!g_run.clInit)
+        return;
+    constexpr double kClFrameMs = 7.0;
+    const double now = fake::NowMs();
+    while (g_run.clientPollAt + kClFrameMs <= now) {
+        g_run.clientPollAt += kClFrameMs;
+        g_run.clTime += kClFrameMs;
+        const int hi = static_cast<int>(g_run.clTime -
+                                        static_cast<double>(g_run.lastSnapServertime));
+        if (g_run.clTime > static_cast<double>(g_run.lastSnapServertime)) {
+            ++g_run.showclampPrints;
+            if (hi > g_run.showclampPrintMax)
+                g_run.showclampPrintMax = hi;
+            g_run.clTime = static_cast<double>(g_run.lastSnapServertime);
+        }
+    }
 }
 
 void EngineQcommonFrame(int msec) {
     if (g_sim.paced)
         tickpace_QcommonFrame(msec);
-
-    if (g_sim.paced)
-        tickpace_CbufExecute(&FakeCbufOriginal);
-    else
-        FakeCbufOriginal();
-
+    if (g_sim.parkStrict && !fake::cmdQueue.empty()) {
+        g_park.insert(g_park.end(), fake::cmdQueue.begin(), fake::cmdQueue.end());
+        fake::cmdQueue.clear();
+        fake::CmdCursize() = 0;
+    }
+    cmdpark::g_stubHoldArmed = g_sim.parkStrict;
+    cmdpark::g_stubParkBytes = static_cast<int>(g_park.size()) * 16;
+    FakeCbufOriginal();
     if (g_sim.paced)
         tickpace_SvFramePre(msec);
+    const int svBefore = static_cast<int>(fake::SvTime());
     EngineSvFrame(msec);
     if (g_sim.paced)
         tickpace_SvFramePost(msec);
+    const bool ticked = static_cast<int>(fake::SvTime()) != svBefore;
+    if (g_sim.parkStrict && ticked && !g_park.empty()) {
+        fake::cmdQueue.swap(g_park);
+        fake::CmdCursize() = static_cast<int>(fake::cmdQueue.size());
+        FakeCbufOriginal();
+        g_park.swap(fake::cmdQueue);
+        fake::CmdCursize() = static_cast<int>(fake::cmdQueue.size());
+    }
+    cmdpark::g_stubParkBytes = static_cast<int>(g_park.size()) * 16;
 }
 
 /** One WinMain iteration: Sleep(1), message pump, spin until at least one
- *  whole millisecond has passed, then Qcommon_frame(msec). */
+ *  whole millisecond has passed, then Qcommon_frame(msec). With a coarse host
+ *  timer the Sleep itself overshoots; the Sleep-skip gate (production: an IAT
+ *  patch on WinMain's Sleep call) lets near-boundary iterations skip it. */
 void EngineLoopIteration(std::uint32_t& oldtime) {
-    fake::AdvanceMs(g_sim.sleepMs);
+    const bool skipSleep = g_sim.paced &&
+        tickpace::SleepGate_ShouldSkip(1, tickpace::SleepGate_WinMainSleepRet());
+    if (skipSleep)
+        fake::AdvanceMs(0.05);
+    else if (g_sim.coarseSleepMs > 0.0)
+        fake::AdvanceMs(g_sim.coarseSleepMs);
+    else
+        fake::AdvanceMs(g_sim.sleepMs);
 
     std::uint32_t newtime = fake::EngineMs();
     while (newtime - oldtime < 1) {          // the engine's own `while (time < 1)`
@@ -373,9 +526,12 @@ void EngineLoopIteration(std::uint32_t& oldtime) {
             g_nextAsyncMs += g_sim.asyncPeriodMs;
         }
     }
+    if (g_sim.iterCmdMs > 0.0)
+        fake::QueueCommand(g_sim.iterCmdMs);
 
     g_run.realtimeShadow += static_cast<std::uint32_t>(msec);
     EngineQcommonFrame(msec);
+    ClientPoll();
 }
 
 void SetCvar(const char* name, float v) {
@@ -390,17 +546,22 @@ float CvarValue(const char* name) {
 
 /** Boots a running map and runs `iterations` engine loop iterations. */
 Run RunLoop(const Sim& sim, int iterations) {
+    qpcstub::Reset();
     g_sim = sim;
     g_run = Run();
     tickpace::g = tickpace::State();
     fake::ClearCommands();
+    g_park.clear();
+    cmdpark::g_stubParkBytes = 0;
+    cmdpark::g_stubHoldArmed = false;
 
     fake::SvState() = 2;               // ss_game
     fake::SvsInit() = sim.svsInitialized ? 1 : 0;
     fake::SvTime() = 0;
     fake::Realtime() = 0;
     g_run.wallOrigin = fake::NowMs();
-    g_nextAsyncMs = fake::NowMs();
+    g_nextAsyncMs = fake::NowMs() + sim.asyncOffsetMs;
+    g_jitterState = 0x12345678u;
 
     std::uint32_t oldtime = fake::EngineMs();
     for (int i = 0; i < iterations; ++i)
@@ -414,17 +575,22 @@ Run RunLoop(const Sim& sim, int iterations) {
  *  Comparing at a fixed iteration count does not: firing ticks earlier changes
  *  how much wall time an iteration count buys. */
 Run RunLoopFor(const Sim& sim, double wallMs) {
+    qpcstub::Reset();
     g_sim = sim;
     g_run = Run();
     tickpace::g = tickpace::State();
     fake::ClearCommands();
+    g_park.clear();
+    cmdpark::g_stubParkBytes = 0;
+    cmdpark::g_stubHoldArmed = false;
 
     fake::SvState() = 2;
     fake::SvsInit() = sim.svsInitialized ? 1 : 0;
     fake::SvTime() = 0;
     fake::Realtime() = 0;
     g_run.wallOrigin = fake::NowMs();
-    g_nextAsyncMs = fake::NowMs();
+    g_nextAsyncMs = fake::NowMs() + sim.asyncOffsetMs;
+    g_jitterState = 0x12345678u;
 
     const double until = fake::NowMs() + wallMs;
     std::uint32_t oldtime = fake::EngineMs();
@@ -432,25 +598,6 @@ Run RunLoopFor(const Sim& sim, double wallMs) {
         EngineLoopIteration(oldtime);
     g_run.wallMs = fake::NowMs() - g_run.wallOrigin;
     return g_run;
-}
-
-/** The carry invariant. svs.realtime is deliberately no longer identical to
- *  the engine's own accumulation - the settle correction is carried forward in
- *  it rather than added and taken back off (which is what caused lowclamp
- *  spam). What must still hold is that the correction only ever pushes it
- *  *forward*, and never by more than one frame's worth: svs.realtime is still
- *  `newtime - starttime` plus a bounded, non-negative amount of "time that has
- *  passed since the engine sampled newtime". */
-void CheckCarry(const Run& r, const char* what) {
-    const std::int32_t carry =
-        static_cast<std::int32_t>(fake::Realtime() - r.realtimeShadow);
-    CHECK(carry >= 0, "%s pushed svs.realtime %d ms *behind* the engine's own clock",
-          what, -carry);
-    CHECK(carry <= 100, "%s left a %d ms correction in svs.realtime (max 100)",
-          what, carry);
-    CHECK(static_cast<std::uint32_t>(carry) == tickpace::g.carried,
-          "%s: svs.realtime is %d ms ahead but the feature only accounts for %u",
-          what, carry, tickpace::g.carried);
 }
 
 double AvgOvershoot(const Run& r) {
@@ -464,13 +611,15 @@ double AvgOvershoot(const Run& r) {
 void ResetCvars() {
     SetCvar("_sofbuddy_tickpace", 1);
     SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+    SetCvar("_sofbuddy_cmdpark_strict", 0);
     SetCvar("_sofbuddy_tickpace_reserve_ms", 0);
     SetCvar("_sofbuddy_tickpace_defer_max_ms", 200);
+    cmdpark::g_stubHoldArmed = false;
 }
 
 // ---------------------------------------------------------------------------
 void Test_RealtimeIsNeverInflated() {
-    std::printf("svs.realtime keeps its `newtime - starttime` meaning\n");
     ResetCvars();
 
     // Console work arriving at an arbitrary phase, 30ms of it every 40ms: the
@@ -479,7 +628,6 @@ void Test_RealtimeIsNeverInflated() {
     Run paced = RunLoop(sim, 400);
 
     CHECK(paced.highclamps == 0, "unexpected highclamps: %d", paced.highclamps);
-    CheckCarry(paced, "settle");
     CHECK(RateError(paced) <= 100.0,
           "%d ticks over %.0fms of wall clock is not 10Hz",
           paced.framenum, paced.wallMs);
@@ -487,7 +635,6 @@ void Test_RealtimeIsNeverInflated() {
     // And with the reserve on, so the limiter is in play too.
     SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
     Run reserved = RunLoop(sim, 400);
-    CheckCarry(reserved, "reserve");
     CHECK(RateError(reserved) <= 100.0,
           "reserve broke the 10Hz rate: %d ticks over %.0fms",
           reserved.framenum, reserved.wallMs);
@@ -527,8 +674,23 @@ void Sweep_Lowclamps() {
     std::printf("    %d configs; worst extra lowclamps = %d\n    %s\n", configs, worst, worstDesc);
 }
 
+void Test_NoLowclampAfterTickConsumesSettle() {
+    ResetCvars();
+    // Fast 1-2ms loops with light drains: the old direct-write design unwound a
+    // tick-consumed correction after `+= msec`, briefly stepping the clock
+    // backwards and widening deficit past 100 in the field. Folding the delta
+    // into `msec` keeps the add atomic, so this stays at zero lowclamps.
+    Sim sim;
+    sim.sleepMs = 0.05;
+    sim.cmdCostMs = 8.0;
+    sim.cmdsPerTick = 1;
+    sim.frameMs = 2.0;
+    sim.asyncPeriodMs = 0;
+    Run r = RunLoopFor(sim, 12000.0);
+    CHECK(r.lowclamps == 0, "post-tick settle unwind caused %d lowclamps", r.lowclamps);
+}
+
 void Test_NoSpuriousLowclamps() {
-    std::printf("the correction never leaves svs.realtime behind enough to lowclamp\n");
     ResetCvars();
 
     // SV_Frame @0x2005F61D lowclamps when `sv.time - svs.realtime > 100`. The
@@ -546,9 +708,6 @@ void Test_NoSpuriousLowclamps() {
           base.lowclamps);
 
     Run paced = RunLoopFor(sim, 8000.0);
-    std::printf("    lowclamps - stock: %d | paced: %d   (ticks %d, saved %s)\n",
-                base.lowclamps, paced.lowclamps, paced.framenum,
-                fake::Find("_sofbuddy_tickpace_saved")->string);
     CHECK(paced.lowclamps == 0, "the correction caused %d lowclamps", paced.lowclamps);
 
     // And with the reserve on, so the drain gate is in play as well.
@@ -556,22 +715,9 @@ void Test_NoSpuriousLowclamps() {
     Run reserved = RunLoopFor(sim, 8000.0);
     CHECK(reserved.lowclamps == 0, "the reserve caused %d lowclamps", reserved.lowclamps);
 
-    // Turning the feature off mid-run must unwind the correction, not strand
-    // it in svs.realtime.
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 0);
-    Run half = RunLoop(sim, 200);
-    SetCvar("_sofbuddy_tickpace", 0);
-    for (int i = 0; i < 50; ++i) {
-        std::uint32_t oldtime = fake::EngineMs();
-        EngineLoopIteration(oldtime);
-    }
-    CHECK(tickpace::g.carried == 0, "correction left stranded after disabling: %u",
-          tickpace::g.carried);
-    (void)half;
 }
 
 void Test_TicksFireCloserToTheirBoundary() {
-    std::printf("a tick that comes due during a drain no longer waits a whole iteration\n");
     ResetCvars();
 
     // 25ms of console work arriving every 37ms. 37 and 100 are deliberately
@@ -586,237 +732,16 @@ void Test_TicksFireCloserToTheirBoundary() {
     sim.paced = true;
     Run paced = RunLoopFor(sim, 20000.0);
 
-    std::printf("    stock:  %d ticks, wall late avg %.1fms max %.1fms | overshoot avg %.1fms max %dms\n",
-                stock.framenum, stock.AvgLate(), stock.MaxLate(),
-                AvgOvershoot(stock), stock.MaxOvershoot());
-    std::printf("    settle: %d ticks, wall late avg %.1fms max %.1fms | overshoot avg %.1fms max %dms\n",
-                paced.framenum, paced.AvgLate(), paced.MaxLate(),
-                AvgOvershoot(paced), paced.MaxOvershoot());
-    std::printf("    ticks rescued from the following iteration: %.0f\n",
-                CvarValue("_sofbuddy_tickpace_saved"));
-
-    // Wall lateness is what a client feels: the decision is made at the same
-    // instant either way, settle just lets it come out the right way round, so
-    // a tick can only ever fire at the same wall time or earlier.
-    CHECK(paced.AvgLate() < stock.AvgLate(),
-          "paced avg wall lateness %.2f not better than stock %.2f",
-          paced.AvgLate(), stock.AvgLate());
-    CHECK(paced.MaxLate() <= stock.MaxLate() + 0.01,
-          "paced max wall lateness %.2f worse than stock %.2f",
-          paced.MaxLate(), stock.MaxLate());
+    // Wall lateness can match stock (we no longer pull the tick into the
+    // drain). Client interpolation must not get worse: that is the stutter.
+    CHECK(paced.clientHighclampMax <= stock.clientHighclampMax + 1,
+          "paced client highclamp max %d vs stock %d",
+          paced.clientHighclampMax, stock.clientHighclampMax);
     CHECK(CvarValue("_sofbuddy_tickpace_saved") > 0.0f,
           "saved counter never moved: %.0f", CvarValue("_sofbuddy_tickpace_saved"));
 }
 
-void Test_ReserveKeepsSmallDrainsOffTheBoundary() {
-    std::printf("the reserve keeps ordinary console work off the tick boundary\n");
-    ResetCvars();
-
-    // Many small commands - the shape a sofplus server actually produces
-    // between the occasional heavy one. 3ms each, one every 7ms: 43% duty,
-    // and 7 against 100 walks the arrival across every phase.
-    Sim sim; sim.sleepMs = 1.0; sim.cmdCostMs = 3.0; sim.asyncPeriodMs = 7.0;
-    sim.frameMs = 10.0;
-
-    sim.paced = false;
-    Run stock = RunLoopFor(sim, 30000.0);
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
-    sim.paced = true;
-    Run reserved = RunLoopFor(sim, 30000.0);
-
-    std::printf("    max overshoot - stock: %dms | +reserve: %dms   (drains held: %lld)\n",
-                stock.MaxOvershoot(), reserved.MaxOvershoot(), tickpace::g.defers);
-
-    CHECK(reserved.MaxOvershoot() <= stock.MaxOvershoot(),
-          "reserve made the clamp margin worse (%d vs %d)",
-          reserved.MaxOvershoot(), stock.MaxOvershoot());
-    CHECK(RateError(reserved) <= 100.0,
-          "reserve broke the 10Hz rate: %d ticks over %.0fms",
-          reserved.framenum, reserved.wallMs);
-    CHECK(reserved.cmdsRun + static_cast<int>(fake::cmdQueue.size()) == fake::cmdsQueuedTotal,
-          "%d run + %zu queued != %d queued",
-          reserved.cmdsRun, fake::cmdQueue.size(), fake::cmdsQueuedTotal);
-}
-
-void Test_ReserveDoesNotHarmASaturatedServer() {
-    std::printf("a drain bigger than the gate is left alone, not held into a spiral\n");
-    ResetCvars();
-
-    // One 70ms command every 90ms - 78% duty plus a 10ms frame. No phase of a
-    // tick has room for a 70ms drain, so holding cannot help and, if the gate
-    // were allowed to grow to fit, would defer arriving work and compound.
-    Sim sim; sim.sleepMs = 1.0; sim.cmdCostMs = 70.0; sim.asyncPeriodMs = 90.0;
-    sim.frameMs = 10.0;
-
-    sim.paced = false;
-    Run stock = RunLoopFor(sim, 30000.0);
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
-    sim.paced = true;
-    Run reserved = RunLoopFor(sim, 30000.0);
-
-    std::printf("    max overshoot - stock: %dms | +reserve: %dms | max late %.0fms vs %.0fms\n",
-                stock.MaxOvershoot(), reserved.MaxOvershoot(),
-                reserved.MaxLate(), stock.MaxLate());
-
-    CHECK(reserved.MaxOvershoot() <= stock.MaxOvershoot() + 5,
-          "reserve made overshoot worse on a saturated server (%d vs %d)",
-          reserved.MaxOvershoot(), stock.MaxOvershoot());
-    CHECK(reserved.MaxLate() <= stock.MaxLate() + 20.0,
-          "reserve made lateness worse (%.0fms vs %.0fms)",
-          reserved.MaxLate(), stock.MaxLate());
-    CHECK(RateError(reserved) <= 150.0,
-          "the server fell behind: %d ticks over %.0fms",
-          reserved.framenum, reserved.wallMs);
-}
-
-void Test_DrainsAreNeverSplit() {
-    std::printf("a drain that starts runs to completion, and cmd_wait is never touched\n");
-    ResetCvars();
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
-
-    g_sim = Sim();
-    g_run = Run();
-    tickpace::g = tickpace::State();
-    fake::ClearCommands();
-    fake::SvState() = 2;
-
-    // 20 commands of 5ms each - 100ms of work - queued with only 50ms of
-    // headroom, i.e. a drain that provably will not fit.
-    //
-    // The old drain limiter stopped part-way here, which is what corrupted
-    // sofplus: sp_sc_func_exec_ binds a function's arguments into the global
-    // `~1`/`~2` cvars and then inserts the body, and a body left queued across
-    // a tick has those cvars rebound by whatever sofplus's frame hook inserts
-    // ahead of it. Overrunning the boundary is the lesser evil.
-    fake::Realtime() = 100000;
-    fake::SvTime() = 100050;
-    for (int i = 0; i < 20; ++i)
-        fake::QueueCommand(5.0);
-
-    int msec = 1;
-    tickpace_QcommonFrame(msec);
-    tickpace_CbufExecute(&FakeCbufOriginal);
-
-    CHECK(g_run.cmdsRun == 20 || g_run.cmdsRun == 0,
-          "drain was split: %d of 20 commands ran", g_run.cmdsRun);
-    if (g_run.cmdsRun == 20)
-        CHECK(fake::cmdQueue.empty(), "%zu commands left after a drain",
-              fake::cmdQueue.size());
-    CHECK(fake::CmdWait() == 0, "the feature set cmd_wait");
-}
-
-void Test_StartGateIsBounded() {
-    std::printf("the start gate never waits for more than its ceiling\n");
-    ResetCvars();
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
-
-    g_sim = Sim();
-    g_run = Run();
-    tickpace::g = tickpace::State();
-    fake::ClearCommands();
-    fake::SvState() = 2;
-    fake::Realtime() = 200000;
-
-    // Teach the window that drains here cost ~40ms.
-    for (int round = 0; round < 4; ++round) {
-        fake::SvTime() = static_cast<std::uint32_t>(fake::Realtime()) + 100;
-        fake::QueueCommand(40.0);
-        int msec = 1;
-        tickpace_QcommonFrame(msec);
-        tickpace_CbufExecute(&FakeCbufOriginal);
-    }
-    CHECK(tickpace::RecentWorstDrainMs() > 35.0,
-          "drain window learned %.1fms, expected ~40",
-          tickpace::RecentWorstDrainMs());
-
-    // ...but the gate is capped, so a 40ms drain is NOT held off for 43ms of
-    // headroom. Holding that long would defer 40ms of arriving work and make
-    // the next drain longer still.
-    CHECK(tickpace::RoomNeededMs(3.0f) <= 10.0,
-          "gate grew to %.1fms despite the ceiling", tickpace::RoomNeededMs(3.0f));
-
-    // 20ms of headroom is over the gate, so the drain runs rather than being
-    // held for a window it will never get.
-    const long long before = tickpace::g.defers;
-    fake::SvTime() = static_cast<std::uint32_t>(fake::Realtime()) + 20;
-    fake::QueueCommand(40.0);
-    int msec = 1;
-    tickpace_QcommonFrame(msec);
-    tickpace_CbufExecute(&FakeCbufOriginal);
-    CHECK(tickpace::g.defers == before, "drain was held with 20ms of room");
-    CHECK(fake::cmdQueue.empty(), "drain did not run");
-}
-
-void Test_NestedDrainRunsWhole() {
-    std::printf("a nested Cbuf_ExecuteText(EXEC_NOW) runs whole\n");
-    ResetCvars();
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
-
-    g_sim = Sim();
-    g_run = Run();
-    tickpace::g = tickpace::State();
-    fake::ClearCommands();
-    fake::SvState() = 2;
-    fake::Realtime() = 100000;
-    fake::SvTime() = 100200;      // 200ms away: the outer drain starts
-
-    static int nested = 0;
-    static int outer = 0;
-    nested = 0;
-    outer = 0;
-    struct Cmd {
-        static void Run() {
-            ++outer;
-            // This command carries us past the tick boundary and then issues
-            // Cbuf_ExecuteText(EXEC_NOW, ...), which re-enters Cbuf_Execute.
-            // That drain must complete: its caller expects the text to have
-            // executed by the time the call returns.
-            fake::AdvanceMs(250.0);
-            fake::QueueCommand(1.0);
-            fake::QueueCommand(1.0);
-            const int before = g_run.cmdsRun;
-            tickpace_CbufExecute(&FakeCbufOriginal);
-            nested = g_run.cmdsRun - before;
-        }
-    };
-
-    int msec = 1;
-    tickpace_QcommonFrame(msec);
-    tickpace::g.inCbuf = true;
-    tickpace::g.nestedCbuf = 0;
-    Cmd::Run();
-    tickpace::g.inCbuf = false;
-
-    CHECK(outer == 1, "outer command did not run");
-    CHECK(nested == 2, "nested drain was cut short: %d of 2 commands", nested);
-    CHECK(fake::cmdQueue.empty(), "%zu commands left after the nested drain",
-          fake::cmdQueue.size());
-    CHECK(fake::CmdWait() == 0, "the feature set cmd_wait");
-}
-
-void Test_BehindServerStillDrains() {
-    std::printf("a permanently-behind server still runs its command buffer\n");
-    ResetCvars();
-    SetCvar("_sofbuddy_tickpace_reserve_ms", 50);
-    SetCvar("_sofbuddy_tickpace_defer_max_ms", 200);
-
-    // Every game frame overruns a whole tick, so the boundary is always "due".
-    // Without the valve - and without the valve disarming the limiter - the
-    // console and every sofplus timer would go dead.
-    Sim sim; sim.sleepMs = 1.0; sim.frameMs = 130.0;
-    sim.cmdCostMs = 2.0; sim.cmdsPerTick = 4;
-    Run r = RunLoop(sim, 80);
-
-    std::printf("    %d commands run of %d queued over %.0fms\n",
-                r.cmdsRun, fake::cmdsQueuedTotal, r.wallMs);
-    CHECK(r.cmdsRun > 0, "command buffer starved completely");
-    CHECK(r.cmdsRun >= fake::cmdsQueuedTotal / 2,
-          "only %d of %d commands ran - the valve is not draining properly",
-          r.cmdsRun, fake::cmdsQueuedTotal);
-}
-
 void Test_MapLoadIntervalIsNotCredited() {
-    std::printf("a multi-second drain (a `map` command) is not credited as tick time\n");
     ResetCvars();
 
     g_sim = Sim();
@@ -848,31 +773,32 @@ void Test_MapLoadIntervalIsNotCredited() {
           g_run.lowclamps);
 }
 
-void Test_SpinPullsTicksOntoTheBoundary() {
-    std::printf("the pre-tick spin lands ticks on the boundary when Sleep is coarse\n");
+void Test_SleepSkipFiresTicksOnTime() {
     ResetCvars();
 
     // A host whose Sleep(1) really costs ~8ms: the boundary can only be
-    // noticed on an 8ms grid, so a tick is on average 4ms late.
-    Sim sim; sim.sleepMs = 8.0; sim.frameMs = 2.0;
+    // noticed on an 8ms grid, so a tick is on average 4ms late. Skipping the
+    // oversleeping Sleep (spin window) notices it sooner.
+    Sim sim; sim.coarseSleepMs = 8.0; sim.frameMs = 2.0;
 
-    Run without = RunLoop(sim, 300);
+    sim.paced = false;
+    Run stock = RunLoopFor(sim, 12000.0);
+    sim.paced = true;
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+    Run skipOnly = RunLoopFor(sim, 12000.0);
     SetCvar("_sofbuddy_tickpace_spin_ms", 10);
-    Run with = RunLoop(sim, 300);
+    Run gated = RunLoopFor(sim, 12000.0);
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
 
-    std::printf("    spin off: avg late %.2fms | spin on: avg %.2fms\n",
-                without.AvgLate(), with.AvgLate());
-
-    CHECK(with.AvgLate() < without.AvgLate() * 0.5,
-          "spin did not halve average lateness (%.2f vs %.2f)",
-          with.AvgLate(), without.AvgLate());
-    CHECK(RateError(with) <= 100.0,
-          "spin broke the 10Hz rate: %d ticks over %.0fms",
-          with.framenum, with.wallMs);
+    CHECK(gated.AvgLate() < skipOnly.AvgLate() * 0.5,
+          "spin did not halve average lateness vs skip-only (%.2f vs %.2f)",
+          gated.AvgLate(), skipOnly.AvgLate());
+    CHECK(RateError(gated) <= 100.0,
+          "gate broke the 10Hz rate: %d ticks over %.0fms",
+          gated.framenum, gated.wallMs);
 }
 
 void Test_DisabledIsByteIdentical() {
-    std::printf("_sofbuddy_tickpace 0 leaves the engine exactly as it found it\n");
     ResetCvars();
     SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
 
@@ -900,32 +826,7 @@ void Test_DisabledIsByteIdentical() {
     SetCvar("_sofbuddy_tickpace", 1);
 }
 
-void Test_ReserveZeroIsStockScheduling() {
-    std::printf("_sofbuddy_tickpace_reserve_ms 0 restores stock command scheduling\n");
-    ResetCvars();
-
-    Sim sim; sim.sleepMs = 1.0; sim.cmdCostMs = 20.0; sim.asyncPeriodMs = 45.0;
-    sim.frameMs = 5.0;
-
-    sim.paced = false;
-    Run stock = RunLoop(sim, 400);
-    const int stockCmds = stock.cmdsRun;
-    const int stockDrains = stock.cbufRuns;
-
-    sim.paced = true;                      // settle on, reserve 0
-    Run paced = RunLoop(sim, 400);
-
-    CHECK(paced.cbufRuns == stockDrains,
-          "Cbuf_Execute ran %d times vs %d - scheduling changed with reserve 0",
-          paced.cbufRuns, stockDrains);
-    CHECK(paced.cmdsRun == stockCmds, "%d commands ran vs %d",
-          paced.cmdsRun, stockCmds);
-    CHECK(tickpace::g.defers == 0, "held %lld drains with reserve 0",
-          tickpace::g.defers);
-}
-
 void Test_HighclampAnchorIsLeftAlone() {
-    std::printf("a clamp re-anchors svs.realtime and the correction is not taken back off\n");
     ResetCvars();
 
     // Frames that overrun a whole tick: every tick highclamps.
@@ -945,8 +846,36 @@ void Test_HighclampAnchorIsLeftAlone() {
           fake::Realtime(), fake::SvTime() - fake::Realtime(), fake::SvTime());
 }
 
+// When SV_RunGameFrame highclamps, drop only the settle debt that was still
+// over sv.time — the engine already removed it from svs.realtime.
+void Test_HighclampForgivesSettleOverDebt() {
+    ResetCvars();
+    g_run = Run();
+    g_run.framenum = 1;
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::SvTime() = 100;
+    fake::Realtime() = 0;
+    int msec = 250;
+    int boot = 0;
+    tickpace_QcommonFrame(boot);
+    tickpace::HarnessSetSettleMs(120);
+    tickpace::g.projectedRealtime = 250;
+    tickpace::g.haveProjected = true;
+    tickpace::g.svTimeAtPre = 100;
+    tickpace::g.measuring = true;
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(fake::Realtime() == fake::SvTime(),
+          "highclamp anchor expected (rt=%u sv=%u)",
+          fake::Realtime(), fake::SvTime());
+    CHECK(tickpace::HarnessSettleMs() == 70,
+          "settle debt over sv.time not forgiven (got %d)",
+          tickpace::HarnessSettleMs());
+}
+
 void Test_NoWritesOutsideSsGame() {
-    std::printf("nothing is touched while sv.state is not ss_game\n");
     ResetCvars();
     SetCvar("_sofbuddy_tickpace_reserve_ms", 3);
 
@@ -995,7 +924,6 @@ void Test_SvsUninitializedIsSafe() {
     // correction added and never accumulated would be stranded and would
     // inflate svs.realtime once per iteration until the server ran its clock
     // away. The Post hook recognises the shape and undoes it.
-    std::printf("SV_Frame's early return (svs.initialized == 0) leaves no correction behind\n");
     ResetCvars();
 
     Sim sim; sim.sleepMs = 1.0; sim.cmdCostMs = 30.0; sim.asyncPeriodMs = 40.0;
@@ -1007,8 +935,580 @@ void Test_SvsUninitializedIsSafe() {
           fake::Realtime());
 }
 
+void Test_SleepSkipGate() {
+    ResetCvars();
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+
+    void* site = tickpace::SleepGate_WinMainSleepRet();
+    CHECK(site != nullptr, "WinMain Sleep return address did not resolve");
+    void* elsewhere = static_cast<char*>(site) + 1;
+
+    // Tick due in 10ms, window 10: skip WinMain's Sleep(1), nothing else.
+    fake::SvTime() = 1000;
+    fake::Realtime() = 990;
+    SetCvar("_sofbuddy_tickpace_spin_ms", 10);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true, "due-in-window Sleep(1) not skipped");
+    CHECK(tickpace::SleepGate_ShouldSkip(1, elsewhere) == false, "foreign caller skipped");
+    CHECK(tickpace::SleepGate_ShouldSkip(0, site) == false, "Sleep(0) skipped");
+    CHECK(tickpace::SleepGate_ShouldSkip(50, site) == false, "Sleep(50) skipped");
+
+    // Tick 30ms out with a 10ms window: sleep normally.
+    fake::Realtime() = 970;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false, "out-of-window Sleep(1) skipped");
+
+    // Overdue tick: never sleep, catch up instead.
+    fake::SvTime() = 1000;
+    fake::Realtime() = 1005;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true, "overdue tick still sleeps");
+
+    // Window off: stock behavior, always sleep (unless another reason fires).
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+    fake::Realtime() = 995;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false, "window-0 Sleep(1) skipped");
+
+    // Spin needs tickpace master as well as spin_ms > 0.
+    SetCvar("_sofbuddy_tickpace", 0);
+    SetCvar("_sofbuddy_tickpace_spin_ms", 10);
+    fake::Realtime() = 990;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "spin skipped with tickpace off");
+    SetCvar("_sofbuddy_tickpace", 1);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
+          "spin skipped with tickpace on");
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+
+    // Drain-boundary one-shot requires tickpace master.
+    tickpace::g.skipNextSleep = true;
+    SetCvar("_sofbuddy_tickpace", 0);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "boundary skip ignored when tickpace off");
+    SetCvar("_sofbuddy_tickpace", 1);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
+          "boundary skip needs tickpace on");
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "boundary skip flag consumed");
+
+    // No map running: always sleep.
+    SetCvar("_sofbuddy_tickpace_spin_ms", 10);
+    fake::SvState() = 1;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false, "Sleep(1) skipped while loading");
+    fake::SvState() = 2;
+
+    // Install writes the gate into the IAT slot, remove restores Sleep.
+    tickpace::SleepGate_Install();
+    void** slot = reinterpret_cast<void**>(fake::image + 0x11114C);
+    CHECK(*slot != reinterpret_cast<void*>(&FakeKernelSleep), "install left stock Sleep in place");
+    tickpace::SleepGate_Remove();
+    CHECK(*slot == reinterpret_cast<void*>(&FakeKernelSleep), "remove did not restore Sleep");
+
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+}
+
+// SoF.exe CL_AddEntities @0x20004460 / Q2 cl_ents.c: high clamp N means the
+// client's cl.time ran N ms past cl.frame.servertime (lerpfrac stuck at 1).
+// That is the micro-stutter: interpolation has nothing newer to blend toward.
+//
+// Settle must credit untilAfterMsec (shortage to sv.time), not post-drain
+// elapsed. Crediting elapsed overshoots by the drain remainder (~5-7ms) and
+// reproduces client showclamp 5-7.
+void Test_SettleHitsBoundaryWithoutOvershoot() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 2.0;
+    sim.cmdCostMs = 7.0;
+    sim.asyncPeriodMs = 100.0;
+    sim.asyncOffsetMs = 95.0;
+
+    Run r = RunLoopFor(sim, 20000.0);
+    CHECK(r.MaxOvershoot() <= 2,
+          "settle overshot the boundary by %d ms (want <=2; old bug was ~5-7)",
+          r.MaxOvershoot());
+}
+
+// A 7ms sofplus timer that straddles the 100ms boundary must not phase-lock
+// snapshot spacing (client high clamp N = wall gap between snapshots - 100).
+void Test_ClientShowclampMatchesStock() {
+    ResetCvars();
+
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 2.0;
+    sim.cmdCostMs = 7.0;
+    sim.asyncPeriodMs = 100.0;
+    sim.asyncOffsetMs = 95.0;
+
+    sim.paced = false;
+    Run stock = RunLoopFor(sim, 20000.0);
+    sim.paced = true;
+    SetCvar("_sofbuddy_tickpace_settle", 0);
+    Run skipOnly = RunLoopFor(sim, 20000.0);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+    Run settleOn = RunLoopFor(sim, 20000.0);
+
+    std::printf("  showclamp: stock max=%d n=%d prints=%d gapge5=%d | "
+                "skip max=%d n=%d prints=%d | settle max=%d n=%d prints=%d "
+                "gapge5=%d gapmax=%.1f\n",
+                stock.clientHighclampMax, stock.clientHighclamps,
+                stock.showclampPrints, stock.snapGapGe5,
+                skipOnly.clientHighclampMax, skipOnly.clientHighclamps,
+                skipOnly.showclampPrints,
+                settleOn.clientHighclampMax, settleOn.clientHighclamps,
+                settleOn.showclampPrints, settleOn.snapGapGe5,
+                settleOn.snapGapMax);
+    CHECK(settleOn.clientHighclampMax <= skipOnly.clientHighclampMax + 1,
+          "settle client highclamp max %d vs skip-only %d",
+          settleOn.clientHighclampMax, skipOnly.clientHighclampMax);
+    CHECK(settleOn.clientHighclampMax <= stock.clientHighclampMax + 1,
+          "settle client highclamp max %d vs stock %d",
+          settleOn.clientHighclampMax, stock.clientHighclampMax);
+    CHECK(settleOn.lowclamps == stock.lowclamps,
+          "settle caused %d lowclamps (stock %d)",
+          settleOn.lowclamps, stock.lowclamps);
+}
+
+// Parked backlog skips Sleep(1) only while cmdtext_parking is armed.
+void Test_BacklogSkipsSleep() {
+    ResetCvars();
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    void* site = tickpace::SleepGate_WinMainSleepRet();
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+
+    cmdpark::g_stubParkBytes = 300;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "backlog skipped while parking disarmed");
+
+    cmdpark::g_stubHoldArmed = true;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
+          "armed backlog did not skip");
+
+    cmdpark::g_stubParkBytes = 0;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "empty park skipped Sleep(1)");
+
+    cmdpark::g_stubParkBytes = 300;
+    SetCvar("_sofbuddy_tickpace", 0);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
+          "armed backlog skip is independent of tickpace");
+    SetCvar("_sofbuddy_tickpace", 1);
+
+    cmdpark::g_stubParkBytes = 0;
+    cmdpark::g_stubHoldArmed = false;
+}
+
+// Variable drains: 2-8ms timers every ~9ms while the server holds 10Hz.
+void Test_SettleDebtUnderContinuousDrains() {
+    ResetCvars();
+
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 2.0;
+    sim.cmdCostMs = 2.0;
+    sim.cmdCostJitterMs = 6.0;
+    sim.asyncPeriodMs = 9.0;
+    sim.asyncOffsetMs = 0.0;
+
+    sim.paced = false;
+    Run stock = RunLoopFor(sim, 20000.0);
+    sim.paced = true;
+    Run paced = RunLoopFor(sim, 20000.0);
+
+    CHECK(paced.clientHighclampMax <= stock.clientHighclampMax + 1,
+          "paced client highclamp max %d vs stock %d",
+          paced.clientHighclampMax, stock.clientHighclampMax);
+    CHECK(paced.MaxLate() <= stock.MaxLate() + 1.0,
+          "paced worst lateness %.1f vs stock %.1f",
+          paced.MaxLate(), stock.MaxLate());
+    CHECK(paced.lowclamps == stock.lowclamps,
+          "paced caused %d lowclamps (stock %d)",
+          paced.lowclamps, stock.lowclamps);
+}
+
+// Live server regime: 7ms sofplus drains every ~9ms, late_avg swung 5-7 with
+// tickpace on. Must not spam client high clamp 5-7 (settle crediting elapsed).
+void Test_LiveLikeNoShowclampSpam() {
+    ResetCvars();
+
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 2.0;
+    sim.cmdCostMs = 7.0;
+    sim.cmdCostJitterMs = 1.0;
+    sim.asyncPeriodMs = 9.0;
+    sim.asyncOffsetMs = 3.0;
+
+    sim.paced = false;
+    Run stock = RunLoopFor(sim, 60000.0);
+    sim.paced = true;
+    SetCvar("_sofbuddy_tickpace_settle", 0);
+    Run skipOnly = RunLoopFor(sim, 60000.0);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+    Run settleOn = RunLoopFor(sim, 60000.0);
+
+    std::printf("  live-like: stock max=%d n=%d prints=%d gapge5=%d late=%.1f ticks=%d wall=%.0f\n"
+                "             skip  max=%d n=%d prints=%d gapge5=%d late=%.1f ticks=%d\n"
+                "             settle max=%d n=%d prints=%d gapge5=%d late=%.1f ticks=%d"
+                " over=%d saved=%.0f gapmax=%.1f\n",
+                stock.clientHighclampMax, stock.clientHighclamps,
+                stock.showclampPrints, stock.snapGapGe5, stock.AvgLate(),
+                stock.framenum, stock.wallMs,
+                skipOnly.clientHighclampMax, skipOnly.clientHighclamps,
+                skipOnly.showclampPrints, skipOnly.snapGapGe5, skipOnly.AvgLate(),
+                skipOnly.framenum,
+                settleOn.clientHighclampMax, settleOn.clientHighclamps,
+                settleOn.showclampPrints, settleOn.snapGapGe5, settleOn.AvgLate(),
+                settleOn.framenum,
+                settleOn.MaxOvershoot(), CvarValue("_sofbuddy_tickpace_saved"),
+                settleOn.snapGapMax);
+    // The elapsed-credit bug shows up as server overshoot 5-7 at tick fire.
+    CHECK(settleOn.MaxOvershoot() <= 2,
+          "settle overshot %d ms (want <=2; elapsed-credit bug was 5-7)",
+          settleOn.MaxOvershoot());
+    CHECK(settleOn.clientHighclampMax <= stock.clientHighclampMax + 1,
+          "settle client max %d vs stock %d",
+          settleOn.clientHighclampMax, stock.clientHighclampMax);
+    CHECK(settleOn.AvgLate() <= skipOnly.AvgLate() + 0.5,
+          "settle late %.1f vs skip-only %.1f",
+          settleOn.AvgLate(), skipOnly.AvgLate());
+}
+
+// Unsigned sv.time - svs - msec wraps; signed path must stay <= 0 (no phantom
+// straddle) when svs.realtime + msec_sampled already reached sv.time.
+void Test_SignedNoPhantomStraddle() {
+    ResetCvars();
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+
+    fake::SvTime() = 100;
+    fake::Realtime() = 102;
+    int msec = 5;
+    tickpace_QcommonFrame(msec);
+    const int until = tickpace::HarnessMsUntilTickAfterMsec(msec);
+    CHECK(until <= 0, "already-past boundary: untilAfter=%d (want <=0)", until);
+
+    // Old unsigned path: static_cast<int32_t>(100u - 102u - 5u) == -7 too,
+    // but settleMs>svs used to wrap RealtimeWithoutSettle to UINT32_MAX.
+    fake::SvTime() = 100;
+    fake::Realtime() = 10;
+    tickpace::HarnessSetSettleMs(15);
+    msec = 5;
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(2.0);
+    tickpace_SvFramePre(msec);
+    CHECK(tickpace::HarnessSettleMs() == 0,
+          "settleMs>svs must be cleared (got %d)", tickpace::HarnessSettleMs());
+
+    fake::SvTime() = 100;
+    fake::Realtime() = 105;
+    tickpace::HarnessSetSettleMs(0);
+    msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(2.0);
+    tickpace_SvFramePre(msec);
+    CHECK(tickpace::HarnessSettleMs() == 0,
+          "already-past must not settle (got %d)", tickpace::HarnessSettleMs());
+
+    // settleMs>0 must not phantom-straddle when sample already reached sv.time.
+    fake::SvTime() = 100;
+    fake::Realtime() = 105;
+    tickpace::HarnessSetSettleMs(15);
+    msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(2.0);
+    tickpace_SvFramePre(msec);
+    CHECK(tickpace::g.pendingSaved == false && tickpace::g.saved == 0,
+          "settleMs must not phantom-straddle (pending=%d saved=%lld)",
+          tickpace::g.pendingSaved ? 1 : 0,
+          static_cast<long long>(tickpace::g.saved));
+}
+
+// gap_trace scenario driven through the real SvFramePre hook.
+void Test_DirectStraddleCredit() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    auto oneStraddle = [](bool elapsedCredit) {
+        tickpace::g = tickpace::State();
+        fake::SvState() = 2;
+        fake::SvsInit() = 1;
+        fake::SvTime() = 100;
+        fake::Realtime() = 93;
+        int msec = 5;
+        tickpace_QcommonFrame(msec);
+        fake::AdvanceMs(7.0);
+        tickpace::SetSimulateElapsedCredit(elapsedCredit);
+        tickpace_SvFramePre(msec);
+        return 93 + msec - 100;
+    };
+
+    const int fixedOver = oneStraddle(false);
+    const int buggyOver = oneStraddle(true);
+    std::printf("  direct straddle: buggy over=%d fixed over=%d (want 5 and 0)\n",
+                buggyOver, fixedOver);
+    CHECK(buggyOver >= 5 && buggyOver <= 7,
+          "buggy credit overshoot %d", buggyOver);
+    CHECK(fixedOver == 0, "fixed credit overshoot %d", fixedOver);
+}
+
+// QPC already crossed the boundary but Sys_Milliseconds has not (Wine
+// timeGetTime bucket / spsv samples then runs scripts). Crediting U here
+// sends now and unwinds from a 1ms sample — client high clamp ~U.
+void Test_SettleNeedsEngineElapsed() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::SvTime() = 100;
+    fake::Realtime() = 93;
+    int msec = 5;
+    tickpace_QcommonFrame(msec);
+    const int frozen = static_cast<int>(fake::NowMs());
+    fake::AdvanceMs(7.0);
+    tickpace::SetEngineNowOverride(frozen);
+    tickpace_SvFramePre(msec);
+    tickpace::SetEngineNowOverride(-1);
+    CHECK(msec == 5, "must not credit while engine ms frozen (msec=%d)", msec);
+    CHECK(tickpace::HarnessSettleMs() == 0, "settleMs=%d", tickpace::HarnessSettleMs());
+    CHECK(tickpace::g.skipNextSleep, "QPC straddle still skips Sleep");
+}
+
+// Full-loop A/B: elapsed credit must produce worse overshoot than untilAfterMsec.
+// _saved must advance only when a straddle actually produces a tick, not on
+// phantom sub-tick straddle detection.
+void Test_SavedOnlyOnTick() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::SvTime() = 100;
+    fake::Realtime() = 93;
+    int msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(7.0);
+    tickpace_SvFramePre(msec);
+    CHECK(tickpace::g.saved == 0 && tickpace::g.pendingSaved,
+          "pending before tick (saved=%lld pending=%d)",
+          static_cast<long long>(tickpace::g.saved),
+          tickpace::g.pendingSaved ? 1 : 0);
+
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 1,
+          "settle same-frame saved=%lld",
+          static_cast<long long>(tickpace::g.saved));
+
+    SetCvar("_sofbuddy_tickpace_settle", 0);
+    tickpace::g = tickpace::State();
+    fake::SvTime() = 100;
+    fake::Realtime() = 93;
+    msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(7.0);
+    tickpace_SvFramePre(msec);
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 0, "skip w/o rescue skip: saved=%lld",
+          static_cast<long long>(tickpace::g.saved));
+    (void)tickpace::ConsumeSkipNextSleep();
+    tickpace_QcommonFrame(msec);
+    tickpace_SvFramePre(msec);
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 1, "skip rescue saved=%lld",
+          static_cast<long long>(tickpace::g.saved));
+
+    tickpace::g = tickpace::State();
+    fake::SvTime() = 100;
+    fake::Realtime() = 105;
+    msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(2.0);
+    tickpace_SvFramePre(msec);
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 0 && !tickpace::g.pendingSaved,
+          "already-past must not save (saved=%lld)",
+          static_cast<long long>(tickpace::g.saved));
+}
+
+void Test_SettleArmsOnlyWhenReachable() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::SvTime() = 100;
+    fake::Realtime() = 93;
+    int msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(7.0);
+    tickpace_SvFramePre(msec);
+    CHECK(tickpace::g.pendingSaved, "legit straddle must arm pending");
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 1, "legit saved=%lld",
+          static_cast<long long>(tickpace::g.saved));
+
+    tickpace::g = tickpace::State();
+    fake::SvTime() = 100;
+    fake::Realtime() = 105;
+    msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(2.0);
+    tickpace_SvFramePre(msec);
+    CHECK(!tickpace::g.pendingSaved, "already-past must not arm pending");
+}
+
+void Test_37msSavedNotEveryTick() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 5.0;
+    sim.cmdCostMs = 25.0;
+    sim.asyncPeriodMs = 37.0;
+    sim.paced = true;
+    Run r = RunLoopFor(sim, 60000.0);
+    const float saved = CvarValue("_sofbuddy_tickpace_saved");
+    const double ratio = r.framenum > 0 ? saved / r.framenum : 0;
+    std::printf("  37ms regime: ticks=%d saved=%.0f ratio=%.3f\n",
+                r.framenum, saved, ratio);
+    CHECK(ratio < 0.85, "saved/ticks=%.2f (session bug was ~1.0)", ratio);
+}
+
+void Test_SettleStalePendingCleared() {
+    ResetCvars();
+    SetCvar("_sofbuddy_tickpace", 1);
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    tickpace::g = tickpace::State();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::SvTime() = 100;
+    fake::Realtime() = 93;
+    int msec = 5;
+    tickpace_QcommonFrame(msec);
+    fake::AdvanceMs(7.0);
+    tickpace_SvFramePre(msec);
+    msec = 6;  // botched: need 7 to reach sv.time
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 0 && !tickpace::g.pendingSaved,
+          "under-credit stale pending (saved=%lld pending=%d)",
+          static_cast<long long>(tickpace::g.saved),
+          tickpace::g.pendingSaved ? 1 : 0);
+
+    msec = 10;
+    EngineSvFrame(msec);
+    tickpace_SvFramePost(msec);
+    CHECK(tickpace::g.saved == 0,
+          "later tick must not count stale pending: %lld",
+          static_cast<long long>(tickpace::g.saved));
+}
+
+void DumpArm(const char* name, const Run& r) {
+    std::printf("    %-7s ticks=%d prints=%d gapge5=%d gapmax=%.1f late=%.1f "
+                "over=%d rate_err=%.1f\n",
+                name, r.framenum, r.showclampPrints, r.snapGapGe5, r.snapGapMax,
+                r.AvgLate(), r.MaxOvershoot(), RateError(r));
+}
+
+// Live defaults: cmdpark strict (pre-SV drain held, drip after tick) plus
+// Wine Sleep(1) often costing ~15.6ms. The no-park 1ms-sleep harness cannot
+// tell tickpace from stock; this can.
+void Test_LiveMissingFactors() {
+    std::printf("live missing factors (park strict + coarse Sleep)\n");
+    ResetCvars();
+
+    auto run3 = [](Sim sim) {
+        sim.paced = false;
+        Run stock = RunLoopFor(sim, 20000.0);
+        sim.paced = true;
+        SetCvar("_sofbuddy_tickpace_settle", 0);
+        Run skip = RunLoopFor(sim, 20000.0);
+        SetCvar("_sofbuddy_tickpace_settle", 1);
+        Run settle = RunLoopFor(sim, 20000.0);
+        DumpArm("stock", stock);
+        DumpArm("skip", skip);
+        DumpArm("settle", settle);
+        return settle.showclampPrints > stock.showclampPrints + 20;
+    };
+
+    Sim base;
+    base.frameMs = 2.0;
+    base.cmdCostMs = 7.0;
+    base.cmdCostJitterMs = 1.0;
+    base.asyncPeriodMs = 9.0;
+    base.asyncOffsetMs = 3.0;
+
+    std::printf("  park-strict, Sleep(1)=1ms\n");
+    Sim a = base;
+    a.parkStrict = true;
+    a.sleepMs = 1.0;
+    const bool parkBad = run3(a);
+
+    std::printf("  no park, Sleep(1)=15.6ms\n");
+    Sim b = base;
+    b.coarseSleepMs = 15.6;
+    const bool coarseBad = run3(b);
+
+    std::printf("  park-strict + Sleep(1)=15.6ms\n");
+    Sim c = base;
+    c.parkStrict = true;
+    c.coarseSleepMs = 15.6;
+    const bool bothBad = run3(c);
+
+    if (!parkBad && !coarseBad && !bothBad)
+        std::printf("  (none of these arms made settle spam vs stock)\n");
+}
+
+void Test_BuggyElapsedCreditOvershoots() {
+    ResetCvars();
+    Sim sim;
+    sim.sleepMs = 1.0;
+    sim.frameMs = 2.0;
+    sim.cmdCostMs = 7.0;
+    sim.cmdCostJitterMs = 1.0;
+    sim.asyncPeriodMs = 9.0;
+    sim.asyncOffsetMs = 3.0;
+    sim.paced = true;
+    SetCvar("_sofbuddy_tickpace_settle", 1);
+
+    tickpace::SetSimulateElapsedCredit(true);
+    Run buggy = RunLoopFor(sim, 60000.0);
+    tickpace::SetSimulateElapsedCredit(false);
+    Run fixed = RunLoopFor(sim, 60000.0);
+
+    std::printf("  live-like A/B: buggy over_max=%d | fixed over_max=%d\n",
+                buggy.MaxOvershoot(), fixed.MaxOvershoot());
+    CHECK(buggy.MaxOvershoot() > fixed.MaxOvershoot(),
+          "buggy over_max %d should exceed fixed %d",
+          buggy.MaxOvershoot(), fixed.MaxOvershoot());
+    CHECK(fixed.MaxOvershoot() <= 2,
+          "fixed over_max %d (want <=2)", fixed.MaxOvershoot());
+}
+
 void Test_ShutdownRestoresCvarStrings() {
-    std::printf("detach hands cvar_t.string back to the engine\n");
     fake::Cvar* late = fake::Find("_sofbuddy_tickpace_late_avg");
     CHECK(late != nullptr, "output cvar missing");
     if (!late)
@@ -1030,21 +1530,31 @@ int main() {
 
     Test_RealtimeIsNeverInflated();
     if (std::getenv("SWEEP")) { Sweep_Lowclamps(); return 0; }
+    Test_NoLowclampAfterTickConsumesSettle();
     Test_NoSpuriousLowclamps();
     Test_TicksFireCloserToTheirBoundary();
-    Test_ReserveKeepsSmallDrainsOffTheBoundary();
-    Test_ReserveDoesNotHarmASaturatedServer();
-    Test_DrainsAreNeverSplit();
-    Test_StartGateIsBounded();
-    Test_NestedDrainRunsWhole();
-    Test_BehindServerStillDrains();
     Test_MapLoadIntervalIsNotCredited();
-    Test_SpinPullsTicksOntoTheBoundary();
+    Test_SleepSkipFiresTicksOnTime();
     Test_DisabledIsByteIdentical();
-    Test_ReserveZeroIsStockScheduling();
     Test_HighclampAnchorIsLeftAlone();
+    Test_HighclampForgivesSettleOverDebt();
     Test_NoWritesOutsideSsGame();
     Test_SvsUninitializedIsSafe();
+    Test_SleepSkipGate();
+    Test_BacklogSkipsSleep();
+    Test_SettleHitsBoundaryWithoutOvershoot();
+    Test_ClientShowclampMatchesStock();
+    Test_SettleDebtUnderContinuousDrains();
+    Test_LiveLikeNoShowclampSpam();
+    Test_SignedNoPhantomStraddle();
+    Test_DirectStraddleCredit();
+    Test_SettleNeedsEngineElapsed();
+    Test_SavedOnlyOnTick();
+    Test_SettleArmsOnlyWhenReachable();
+    Test_37msSavedNotEveryTick();
+    Test_SettleStalePendingCleared();
+    Test_BuggyElapsedCreditOvershoots();
+    Test_LiveMissingFactors();
     Test_ShutdownRestoresCvarStrings();
 
     if (g_failures == 0)

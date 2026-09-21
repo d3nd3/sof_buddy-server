@@ -34,9 +34,13 @@ typedef union { struct { std::uint32_t LowPart; std::int32_t HighPart; }; std::i
 
 HMODULE GetModuleHandleA(const char* name);
 SIZE_T  VirtualQuery(const void* addr, MEMORY_BASIC_INFORMATION* mbi, SIZE_T len);
+FARPROC GetProcAddress(HMODULE h, const char* name);
+BOOL    VirtualProtect(void* addr, SIZE_T size, DWORD prot, DWORD* old);
 
 // The virtual clock. Reads are free; a busy-wait (the same value read over and
 // over) moves it, so a spin in the code under test terminates.
+inline void ExitProcess(UINT) {}
+
 BOOL QueryPerformanceCounter(LARGE_INTEGER* out);
 BOOL QueryPerformanceFrequency(LARGE_INTEGER* out);
 

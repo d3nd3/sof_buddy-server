@@ -1,0 +1,8 @@
+[
+  {
+    "function": "Cmd_ExecuteString",
+    "callback": "pg_CmdPre",
+    "phase": "Pre",
+    "priority": 100
+  }
+]

@@ -17,6 +17,17 @@ functions:
       - type: const char*
         name: fmt
 
+  - name: Com_Printf
+    module: SofExe
+    identifier: "0x2001C6E0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    variadic: true
+    params:
+      - type: const char*
+        name: fmt
+
   # SoF-spsv.exe / SoF.exe share engine .text (verified address-identical).
   # SV_RunGameFrame @ 0x2005F3F0: framenum++ → sv_time=fn*100 → ge->RunFrame()
   # → if (sv_time < svs_realtime) { "sv highclamp"; svs_realtime = sv_time; }
@@ -68,6 +79,20 @@ functions:
     detour_len: 0
     params: []
 
+  # SV_ClientThink @0x200635F0: (client_t* cl, usercmd_t* cmd) from clc_move
+  # after MSG_ReadDeltaUserCmd; calls ge->ClientThink unless cinematic freeze.
+  - name: SV_ClientThink
+    module: SofExe
+    identifier: "0x200635F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: client
+      - type: void*
+        name: cmd
+
   - name: Cbuf_Execute
     module: SofExe
     identifier: "0x20018530"
@@ -75,6 +100,20 @@ functions:
     calling_convention: __cdecl
     detour_len: 0
     params: []
+
+  # Cbuf_AddText @0x20018180: append; overflow drops the new text.
+  # sofplus ClientCommand_HOOK (.COMMAND / "say .COMMAND") reaches this via
+  # ScriptEventDispatcher(directInsert=0) from SV_ReadPackets, i.e. after
+  # this loop's Cbuf_Execute and often on an inter-tick SV_Frame.
+  - name: Cbuf_AddText
+    module: SofExe
+    identifier: "0x20018180"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
 
   # Cbuf_InsertText @0x200181D0: stock Quake 2, with Cbuf_AddText inlined -
   # Z_Malloc(cursize) + copy out + SZ_Clear + AddText + copy back + Z_Free.
@@ -92,13 +131,22 @@ functions:
       - type: char*
         name: text
 
-  # Cmd_ExecuteString @0x200194F0: the per-command call inside Cbuf_Execute's
-  # drain loop (call site 0x200185BC). Declared but NOT hooked by anything -
-  # tick_pacing used to hook it Post to stop a drain part-way via cmd_wait, and
-  # that corrupts sofplus's function arguments (see the "Drains are atomic"
-  # note in src/features/tick_pacing/tick_pacing.cpp). Kept declared because
-  # the address and the call site are worth recording; unused declarations
-  # generate nothing.
+  # Cbuf_ExecuteText @0x20018380: EXEC_NOW=0 / INSERT=1 / APPEND=2. Insert and
+  # append inlined (do not call Cbuf_InsertText / Cbuf_AddText).
+  - name: Cbuf_ExecuteText
+    module: SofExe
+    identifier: "0x20018380"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: exec_when
+      - type: char*
+        name: text
+
+  # Cmd_ExecuteString @0x200194F0: per-command call inside Cbuf_Execute
+  # (0x200185BC). cmd_cost times Pre/Post only — never cmd_wait.
   - name: Cmd_ExecuteString
     module: SofExe
     identifier: "0x200194F0"
@@ -198,7 +246,21 @@ functions:
   # thread. This is also the function SoFPlus (spsv.dll) hooks; going through
   # the normal trampoline detour here (not a game_export_t pointer swap) makes
   # us compose correctly with it regardless of load order - see
-  # src/features/clamp_monitor/README.md.
+  # src/features/cpu_optimizations/clamp_monitor/README.md.
+  # ClientEndServerFrame(edict): G_SetStats + scoreboard; runs inside
+  # SV_RunGameFrame before CL_SendClientMessages. Layout visibility and
+  # svc_layout must be pushed here (not SV_Frame Post) or clients never
+  # receive STAT_LAYOUTS bit 0 / layout in the same tick.
+  - name: ClientEndServerFrame
+    module: GameDll
+    identifier: "0xF9A00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
   - name: G_RunFrame
     module: GameDll
     identifier: "0xAE340"
@@ -215,7 +277,7 @@ functions:
   # console line runs several of them (Cmd_TokenizeString Z_Frees and
   # Z_Mallocs one block per argument @0x20018FD8/@0x200190BD, and Cvar_Set2
   # frees + CopyStrings the value on every write). Under Wine each pair is a
-  # RtlAllocateHeap/RtlFreeHeap round trip. See src/features/zpool/.
+  # RtlAllocateHeap/RtlFreeHeap round trip. See src/features/cpu_optimizations/zpool/.
   # ---------------------------------------------------------------------
   - name: Z_Malloc
     module: SofExe
@@ -269,3 +331,133 @@ functions:
     params: []
     calling_convention: __cdecl
     detour_len: 0
+
+  # setupIpUdpSocket @0x2004ECB0: Quake 2's UDP_OpenSocket
+  # (net_interface, port) -> SOCKET, 0 on failure. Verified IDA SoF.exe:
+  # socket -> ioctlsocket(FIONBIO) -> setsockopt(SO_BROADCAST) -> bind,
+  # single caller NET_OpenIP @0x2004EE30. Only SO_BROADCAST is ever set.
+  - name: SetupIpUdpSocket
+    module: SofExe
+    identifier: "0x2004ECB0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: net_interface
+      - type: int
+        name: port
+
+  # --- engine console commands (stufftext) -------------------------------
+  # Addresses from the sofplus engine interface scan (see
+  # src/features/cpu_optimizations/hash_lookup/README.md): identical in the 2012 and 2019
+  # server engines, which share .text. Pointer-only (call the engine to
+  # register our own server-console command; never detour these).
+  - name: Cmd_AddCommand
+    module: SofExe
+    identifier: "0x20019130"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: cmd_name
+      - type: void*
+        name: function
+
+  - name: Cmd_Argc
+    module: SofExe
+    identifier: "0x20018D20"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: Cmd_Argv
+    module: SofExe
+    identifier: "0x20018D30"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: n
+
+  - name: Cmd_Args
+    module: SofExe
+    identifier: "0x20018D50"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # --- reliable_defer: server→client reliable staging (SZ_Write + MSG_Write*) -
+  # Dedicated server sends frames here (SV_Frame → CL_SendClientMessages).
+  - name: CL_SendClientMessages
+    module: SofExe
+    identifier: "0x20062560"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: SZ_Write
+    module: SofExe
+    identifier: "0x2001E7B0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: void*
+        name: data
+      - type: int
+        name: length
+
+  # Reliable server→client staging also uses MSG_Write* (not SZ_Write).
+  - name: MSG_WriteByte
+    module: SofExe
+    identifier: "0x2001CB00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
+  - name: MSG_WriteShort
+    module: SofExe
+    identifier: "0x2001CB70"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
+  - name: MSG_WriteString
+    module: SofExe
+    identifier: "0x2001CD00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: char*
+        name: s
+
+  - name: SZ_Clear
+    module: SofExe
+    identifier: "0x2001E730"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb

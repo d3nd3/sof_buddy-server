@@ -1,4 +1,4 @@
-// Host-side harness for src/features/clamp_monitor/*.cpp.
+// Host-side harness for src/features/cpu_optimizations/clamp_monitor/*.cpp.
 //
 // Both feature translation units are #included below so the tests can drive
 // the real code (including its file-static state) against a synthetic engine
@@ -131,8 +131,14 @@ extern "C" void PrintOutImpl(int, const char* msg, ...) {
     fake::logs.push_back(buf);
 }
 
-#include "../../../src/features/clamp_monitor/cvar.cpp"
-#include "../../../src/features/clamp_monitor/clamp_monitor.cpp"
+#include "../../../src/features/cpu_optimizations/clamp_monitor/cvar.cpp"
+#include "../../../src/features/cpu_optimizations/clamp_monitor/clamp_monitor.cpp"
+#include "../../../src/features/cpu_optimizations/qpc_timer/cvar.cpp"
+
+namespace tickpace {
+DebugSnap GetDebugSnap() { return {}; }
+}
+void TickPace_LogSessionSummary() {}
 
 // ---- test driver -----------------------------------------------------------
 int g_failures = 0;
@@ -150,6 +156,7 @@ int g_framenum = 0;
  *  ahead, otherwise advance sv.time by one tick, run the game frame, and
  *  highclamp. Returns true when a game frame actually ran. */
 bool EngineFrame(int msec) {
+    clampmon_SvFramePre(msec);
     fake::Realtime() += static_cast<std::uint32_t>(msec);
     fake::tick += static_cast<DWORD>(msec);
 
@@ -218,6 +225,54 @@ void ResetFeatureState() {
     g_state = MonitorState();
     fake::logs.clear();
     fake::broadcasts.clear();
+    CpuOpt_OnFatal() = nullptr;
+    CpuOpt_ResetCbufHist();
+    if (fake::Cvar* c = fake::Find("_sofbuddy_cmdpark_strict"))
+        c->value = 0;
+}
+
+const char* g_fatal = nullptr;
+void CaptureFatal(const char* w) { g_fatal = w; }
+
+void Test_StrictLowclampFatals() {
+    std::printf("strict fatals on a real lowclamp (not map-load settle)\n");
+    ResetFeatureState();
+    CpuOpt_StrictCvar();
+    CpuOpt_OnFatal() = CaptureFatal;
+    g_fatal = nullptr;
+    SetCvar("_sofbuddy_cmdpark_strict", 1.0f);
+    EngineStartMap();
+    g_fatal = nullptr;
+    fake::Realtime() = fake::SvTime() - 250;
+    EngineFrame(1);
+    CHECK(g_fatal != nullptr && std::strstr(g_fatal, "lowclamp"),
+          "strict missed lowclamp fatal (got %s)", g_fatal ? g_fatal : "null");
+    CHECK(g_fatal && std::strstr(g_fatal, "invented"),
+          "lowclamp fatal should say how much time was invented (got %s)",
+          g_fatal ? g_fatal : "null");
+    bool sawCbuf = false;
+    for (const auto& line : fake::logs) {
+        if (line.find("cmd_text cursize") != std::string::npos)
+            sawCbuf = true;
+    }
+    CHECK(sawCbuf, "fatal should print last cmd_text sizes");
+    CpuOpt_OnFatal() = nullptr;
+    SetCvar("_sofbuddy_cmdpark_strict", 0.0f);
+}
+
+void Test_StrictHighclampFatals() {
+    std::printf("strict fatals on a real highclamp\n");
+    ResetFeatureState();
+    CpuOpt_StrictCvar();
+    CpuOpt_OnFatal() = CaptureFatal;
+    g_fatal = nullptr;
+    SetCvar("_sofbuddy_cmdpark_strict", 1.0f);
+    EngineStartMap();
+    EngineFrame(150);
+    CHECK(g_fatal != nullptr && std::strstr(g_fatal, "highclamp"),
+          "strict missed highclamp fatal (got %s)", g_fatal ? g_fatal : "null");
+    CpuOpt_OnFatal() = nullptr;
+    SetCvar("_sofbuddy_cmdpark_strict", 0.0f);
 }
 
 char* g_engineOwnedAvgString = nullptr;
@@ -451,7 +506,7 @@ void Test_BroadcastThresholdAndRateLimit() {
 }
 
 void Test_NotifyLogThreshold() {
-    std::printf("notify threshold gates the shim log line\n");
+    std::printf("notify threshold gates the notify log line\n");
     ResetFeatureState();
     SetCvar("_sofbuddy_clamp_notify_ms", 30.0f);
     EngineStartMap();
@@ -463,7 +518,7 @@ void Test_NotifyLogThreshold() {
     CHECK(fake::logs.size() == 1, "expected 1 log line, got %zu", fake::logs.size());
     CHECK(fake::logs.size() == 1 && fake::logs[0].find("400 ms deleted") != std::string::npos,
           "log line was: %s", fake::logs.empty() ? "" : fake::logs[0].c_str());
-    SetCvar("_sofbuddy_clamp_notify_ms", 5.0f);
+    SetCvar("_sofbuddy_clamp_notify_ms", 0.0f);
 }
 
 void Test_FreezeTest() {
@@ -496,6 +551,8 @@ int main() {
     Test_LowclampIgnoredOutsideSsGame();
     Test_MapChangeSpikeIsNotCounted();
     Test_SustainedOverloadCountsEveryTick();
+    Test_StrictHighclampFatals();
+    Test_StrictLowclampFatals();
     Test_RollingAverageDecays();
     Test_WindowCvarIsHonoured();
     Test_CountersPrintExactly();

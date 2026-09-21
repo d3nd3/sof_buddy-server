@@ -59,9 +59,6 @@ public:
                             std::function<void(Args&...)> callback, int priority = 0) {
         pre_callbacks.emplace_back(feature_name, callback_name, callback, priority, true);
         SortCallbacksByPriority(pre_callbacks);
-        
-        PrintOut(PRINT_LOG, "Registered typed pre-callback: %s::%s (priority %d)\n",
-                 feature_name.c_str(), callback_name.c_str(), priority);
     }
     
     template<typename CB>
@@ -69,9 +66,6 @@ public:
                               CB callback, int priority = 0) {
         post_callbacks.emplace_back(feature_name, callback_name, callback, priority, true);
         SortCallbacksByPriority(post_callbacks);
-        
-        PrintOut(PRINT_LOG, "Registered typed post-callback: %s::%s (priority %d) - total post callbacks: %zu\n",
-                 feature_name.c_str(), callback_name.c_str(), priority, post_callbacks.size());
     }
     
     void DispatchPre(Args&... args) {

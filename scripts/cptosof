@@ -16,7 +16,7 @@ default_sof_base() {
 	local cand base
 	for cand in "Soldier of Fortune" "Soldier Of Fortune"; do
 		base="$profile/$cand/Base"
-		if [[ -d "$base" ]] && [[ -f "$base/oldgamex86.dll" || -f "$base/pak0.pak" ]]; then
+		if [[ -d "$base" ]] && [[ -f "$base/oldgamex86.dll" && -f "$base/pak0.pak" ]]; then
 			echo "$base"
 			return 0
 		fi

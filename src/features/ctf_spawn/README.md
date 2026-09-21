@@ -4,6 +4,14 @@ CTF-only change to **team spawn selection**: pick the team spawn point that is *
 
 Non-CTF modes are unchanged: the override forwards to the original **`SelectTeamDeathmatchSpawnPoint`** when `deathmatch` is not **CTF** (`games_t::DM_CTF` = **4**).
 
+## Cvars
+
+**Settings** (you set these):
+
+| cvar | default | what it does |
+|---|---|---|
+| `_sofbuddy_custom_respawn` | 1 | Use farthest-from-enemy team spawn on CTF. No gauges. |
+
 ## Files in this folder
 
 | File | Role |

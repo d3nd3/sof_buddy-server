@@ -11,7 +11,7 @@ This repo mirrors the **data-driven detour workflow** from the **sof_buddy** cli
 | `src/core/hooks.json` | Optional core function hooks. |
 | `src/core/callbacks.json` | Optional core lifecycle callbacks. |
 | `src/core/pointers.json` | Core pointer-only symbols (resolved to **`detour_Name::oName`**, no detour). Always processed. E.g. **`Com_DPrintf`** for developer print. |
-| `src/features/<feature>/hooks/hooks.json` | Per-feature Pre/Post (or override) hooks on `detours.yaml` names. |
+| `src/features/<feature>/hooks/hooks.json` | Per-feature Pre/Post (or override) hooks on `detours.yaml` names. Nested `**/hooks/hooks.json` (e.g. `cpu_optimizations/tick_pacing/`) counts as the **parent** feature name. |
 | `src/features/<feature>/hooks/pointers.json` | Optional: extra pointer-only symbols for that feature. |
 | `${CMAKE_BINARY_DIR}/generated/generated_engine_pointers.h` | **`SOF_EP_Name(...)`** macros expand to **`detour_Name::oName(__VA_ARGS__)`** (prefix avoids clashing with qualified **`detour_Name::oName`** in source—bare **`oName(...)`** macros used to recurse badly). **`EnginePointers_Bind()`** (in the generated `.cpp`) assigns fallbacks after all `RegisterPointerOnlyFunctions_*` when resolve failed (always non-null at call sites). |
 | `src/features/<feature>/callbacks/callbacks.json` | Register for shared hooks (e.g. `GameDllLoaded`). |

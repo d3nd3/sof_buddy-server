@@ -1,0 +1,66 @@
+engine-alias wrapper vs inline body — hashmap on/off
+  Wine, SoF-spsv.exe dedicated, dm/nycctf1, empty server.
+  Driver: src/features/cpu_optimizations/cmd_cost/bench/sofbuddy_bench_alias.func
+  (func-body phases) + tools/tests/cmd_cost/fixtures/bench_alias_{inline,wrap}.cfg
+  (while_cpu.cfg production shape).
+
+Two shapes matter — do not conflate them:
+
+  A) FUNC-BODY (braced flow_while, 8000 iters/round, 1 op/iter)
+     Inline: { sp_sc_cvar_math_add bench_mcnt 1 ; add ~i 1 }
+     Alias:  { bench_minc ; add ~i 1 }   with alias bench_minc "sp_sc_cvar_math_add ..."
+
+  B) CFG / while_cpu.cfg (string-form flow_while, 2500 iters, engine cvar counter)
+     Inline: sp_sc_flow_while ... wcnt < val 2500 "sp_sc_cvar_math_add bench_wcnt 1"
+     Alias:  alias bench_cga "..." ; sp_sc_flow_while ... wcnt < val 2500 bench_cga
+
+--------------------------------------------------------------------------------
+A) func-body braced (validated: loop ended at 8000, counters exact)
+--------------------------------------------------------------------------------
+                          hashmap=1                    hashmap=0
+                    inline      alias    A/I      inline      alias    A/I
+  add (engine)      24000/s     24000/s   1.00x    13333/s     21333/s  (noisy)
+  math_add          34667/s     32000/s   1.08x    18667/s     13333/s   1.40x
+
+Read: wrapping one command in an engine alias inside a func braced while costs
+~8% with hashmap on and ~40% with hashmap off for math_add. Engine `add` shows
+no measurable alias penalty in this shape (1 s clock buckets swamp it).
+
+Hashmap mostly affects the math_add path (Cvar_Get lookup); alias lookup itself
+is a small slice once you're already in Cmd_ExecuteString.
+
+--------------------------------------------------------------------------------
+B) while_cpu.cfg production shape (exec string-form flow_while, n=2500)
+--------------------------------------------------------------------------------
+Server-timed func-body (sofbuddy_bench_time.func, hashmap=1):
+  func_inline  3 s server clock  ~14200 iter/s  cnt=2500
+  func_alias   2 s server clock  ~25000 iter/s  cnt=2499  (1 s buckets; ~1.0x)
+
+Cfg exec (bench_time_cfg_*.cfg) — harness was broken: rcon exec has no done
+reply, so wall time tracked UDP timeout (bogus ~2 iter/s). Fixed in
+bench_alias.exec_cfg_wait() (poll bench_wcnt, short rcon timeouts).
+
+Quoted inline cfg (warm server, n=2500): ~0.8 s wall, ~3300 iter/s.
+func_inline / cfg_inline_quoted ≈ 4–5x (not ~7000x).
+
+Old production shape (alias token winc, or sp_sc_timer + string flow_while):
+still catastrophic (~2 iter/s, >20 min for n=2500). Alias-token n=50: 180 s
+timeout, cnt=0 (wcnt never advances — hang, not slow completion). Fixtures
+bench_time_cfg_*.cfg use quoted inline, which completes quickly.
+
+Read: func-body braced + alias ≈ same speed. Quoted cfg string-form is modestly
+slower than func-body. Alias-token/timer cfg shape is the catastrophe; fix is
+func-body inlining (while_cpu.func), not hashmap.
+
+--------------------------------------------------------------------------------
+verdict
+--------------------------------------------------------------------------------
+1. Prefer func-body inlined loops (already applied to while_cpu / while_wait).
+2. Engine alias per iteration inside a func body: small tax (~1.1–1.4x on
+   math_add depending on hashmap); avoid on hot paths but not catastrophic.
+3. while_cpu.cfg shape (timer + string-form flow_while + alias token): the
+   alias trap. Fix is structural (func file), not toggling hashmap.
+4. hashmap=0 widens func-body math_add alias gap (1.08x → 1.40x) same as the
+   math_add vs add comparison — lookup-bound work gets slower without the index.
+
+tools: tools/tests/cmd_cost/bench_alias.py, quick_cfg_alias.py (250-iter smoke)

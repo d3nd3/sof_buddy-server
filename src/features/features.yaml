@@ -5,13 +5,13 @@
 features:
   example: false
   ctf_spawn: false
-  clamp_monitor: true
-  hash_lookup: true
-  tick_pacing: true
-  cbuf_insert: true
-  # Disabled: measured a net LOSS on a live server (see src/features/zpool/README.md).
-  # Kept in the tree as a recorded negative result, not built in.
-  zpool: false
+  # Tick/CPU modules under src/features/cpu_optimizations/ (includes
+  # cmd_cost; zpool compiled, cvar 0). See that folder's README.
+  cpu_optimizations: true
+  stufftext: true
+  reliable_defer: true
+  print_guard: true
+  minigames: true
   # my_feature: false
 
 # Alternative: list only enabled names (merged with `features:` above if both present).

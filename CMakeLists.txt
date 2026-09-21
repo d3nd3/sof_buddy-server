@@ -22,6 +22,8 @@ set(GENERATED_HEADERS
 file(GLOB_RECURSE HOOK_JSON_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/*/hooks/*.json"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/features/*/callbacks/*.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/features/*/*/hooks/*.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/features/*/*/callbacks/*.json"
 )
 
 add_custom_command(
@@ -34,6 +36,22 @@ add_custom_command(
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py
     COMMENT "Generate detours from detours.yaml and feature hooks/callbacks JSON"
 )
+
+set(SOFPLUS_CURSOR_RULES "${CMAKE_CURRENT_SOURCE_DIR}/../sofplus-cursor-rules"
+    CACHE PATH "sofplus-cursor-rules repo (command catalog)")
+file(GLOB SOFPLUS_CMD_MDC CONFIGURE_DEPENDS
+    "${SOFPLUS_CURSOR_RULES}/.cursor/rules/sofplus-api/commands/*.mdc")
+add_custom_command(
+    OUTPUT ${GENERATED_DIR}/generated_cmd_catalog.h
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_cmd_catalog.py
+            -o ${GENERATED_DIR}/generated_cmd_catalog.h
+            --rules ${SOFPLUS_CURSOR_RULES}
+    DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_cmd_catalog.py
+        ${SOFPLUS_CMD_MDC}
+    COMMENT "Generate sofplus command catalog from sofplus-cursor-rules"
+)
+list(APPEND GENERATED_HEADERS ${GENERATED_DIR}/generated_cmd_catalog.h)
 
 # Compile only the features src/features/features.yaml turns on.
 #
@@ -94,6 +112,8 @@ add_library(gamex86 SHARED
     ${GENERATED_SOURCES}
     cmake/gamex86.def
 )
+add_custom_target(sofplus_cmd_catalog DEPENDS ${GENERATED_DIR}/generated_cmd_catalog.h)
+add_dependencies(gamex86 sofplus_cmd_catalog)
 
 # Remove the 'lib' prefix so it builds as 'gamex86.dll' instead of 'libgamex86.dll'
 set_target_properties(gamex86 PROPERTIES
@@ -120,6 +140,7 @@ target_link_libraries(gamex86 PRIVATE
     uuid
     comdlg32
     advapi32
+    ws2_32
 )
 
 target_link_options(gamex86 PRIVATE

@@ -1,0 +1,28 @@
+[
+  {
+    "function": "SZ_Write",
+    "callback": "reldef_SZ_Write",
+    "override": true
+  },
+  {
+    "function": "MSG_WriteByte",
+    "callback": "reldef_MSG_WriteByte",
+    "override": true
+  },
+  {
+    "function": "MSG_WriteShort",
+    "callback": "reldef_MSG_WriteShort",
+    "override": true
+  },
+  {
+    "function": "MSG_WriteString",
+    "callback": "reldef_MSG_WriteString",
+    "override": true
+  },
+  {
+    "function": "CL_SendClientMessages",
+    "callback": "reldef_CL_SendClientMessagesPre",
+    "phase": "Pre",
+    "priority": 5
+  }
+]

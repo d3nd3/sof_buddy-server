@@ -45,6 +45,9 @@ fi
 CMAKE_ARGS=(
   -S "$ROOT" -B "$BUILD_DIR" -G "$GENERATOR"
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+  # generate_hooks.py needs PyYAML; default to an interpreter that has it.
+  # Env PYTHON3 overrides (e.g. a venv python).
+  -DPython3_EXECUTABLE="${PYTHON3:-/usr/bin/python3}"
 )
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
   CMAKE_ARGS+=(-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN")

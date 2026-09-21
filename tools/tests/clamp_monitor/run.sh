@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-side tests for src/features/clamp_monitor.
+# Host-side tests for src/features/cpu_optimizations/clamp_monitor.
 #
 # The feature's two translation units are #included by the harness and built
 # for the host (32-bit, so the engine's cvar_t offsets line up), against stub
@@ -11,6 +11,9 @@ cd "$(dirname "$0")"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 g++ -m32 -std=gnu++17 -g -fno-strict-aliasing \
-    -Istub -I../../../include -I../../../src/features/clamp_monitor \
-    -o "$out/test_clamp_monitor" test_clamp_monitor.cpp
+    -Istub -I../../../include \
+    -I../../../src/features/cpu_optimizations \
+    -I../../../src/features/cpu_optimizations/clamp_monitor \
+    -o "$out/test_clamp_monitor" test_clamp_monitor.cpp \
+    ../../../src/features/cpu_optimizations/cpuopt.cpp
 "$out/test_clamp_monitor"

@@ -1,0 +1,18 @@
+[
+  {
+    "function": "G_RunFrame",
+    "callback": "clampmon_RunFrame",
+    "override": true
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "clampmon_SvFramePre",
+    "phase": "Pre",
+    "priority": 5
+  },
+  {
+    "function": "SV_ReadPackets",
+    "callback": "clampmon_ReadPacketsPost",
+    "phase": "Post"
+  }
+]

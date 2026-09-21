@@ -49,6 +49,50 @@ void Buddy_CaptionPrintf(void* ent, unsigned short string_id);
 /** Helper to read a float value from an engine cvar pointer (+0x18). Returns default_val if cv is null. */
 float Buddy_ReadCvarValue(void* cv, float default_val);
 
+/** svc_stufftext opcode (qcommon.h svc_ops_e): WriteByte + WriteString + unicast. */
+#define BUDDY_SVC_STUFFTEXT 13
+
+/** gi.WriteByte (slot 32): append a byte to the current network message. */
+void Buddy_WriteByte(int c);
+
+/** gi.WriteString (slot 36): append a NUL-terminated string to the current message. */
+void Buddy_WriteString(const char* s);
+
+/** gi.unicast (slot 30): send the current message to one client. reliable != 0. */
+void Buddy_Unicast(void* ent, int reliable);
+
+/** WriteByte(svc_stufftext) + WriteString(text) + unicast(ent, reliable).
+ *  Returns false when ent/text is null or any engine slot is unresolvable. */
+bool Buddy_StuffText(void* ent, const char* text);
+
+/** gi.argc (slot 9): argument count of the current client/server command. */
+int Buddy_ClientArgc();
+
+/** gi.argv (slot 10): argument n of the current command ("" when missing). */
+const char* Buddy_ClientArgv(int n);
+
+/** gi.args (slot 11): argv[1..] concatenated ("" when missing). */
+const char* Buddy_ClientArgs();
+
+/** gi.configstring (slot 68): set a server configstring by index. */
+bool Buddy_Configstring(int num, const char* s);
+
+/** SV_RemoveIndex @ SoF.exe: drop one configstring in [start, start+max) by path
+ *  and multicast svc_removeconfigstring to connected clients. */
+bool Buddy_RemoveIndex(const char* path, int start, int max_count);
+
+/** gi.imageindex (slot 3): precache a pic/model/sound name, returns index. */
+int Buddy_ImageIndex(const char* name);
+
+/** gi.SP_Register (slot 47): load a StringPackage by reference name (no .sp suffix). */
+bool Buddy_SP_Register(const char* package);
+
+/** gi.SP_Print (slot 48): StringPackage print; id is (package_id<<8)|index. */
+void Buddy_SP_Print(void* ent, unsigned short id);
+
+/** SP_Print with one layout "%s" arg (sofree-style custom package entry). */
+void Buddy_SP_PrintLayout(void* ent, unsigned short id, const char* text);
+
 #ifdef __cplusplus
 }
 #endif

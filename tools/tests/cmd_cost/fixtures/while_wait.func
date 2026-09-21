@@ -1,0 +1,9 @@
+// while_wait - same alias-trap fix as while_cpu; body inlined in a func.
+function while_wait_run()
+{
+  sp_sc_flow_while number cvar wwait < val 30
+  {
+    sp_sc_cvar_math_add wwait 1
+    wait
+  }
+}

@@ -1,0 +1,6 @@
+[
+  {
+    "hook": "GameDllLoaded",
+    "callback": "reldef_OnGameDllLoaded"
+  }
+]
