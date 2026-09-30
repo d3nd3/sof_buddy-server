@@ -13,19 +13,22 @@ constexpr char kLagBarFree = '-';
 
 struct LagSnapshot {
     float game_ms = 0.0f;
+    float engine_ms = 0.0f;
     float cmd_ms = 0.0f;
     float shell_ms = 0.0f;
     float spare_ms = 100.0f;
     int server_frame = -1;
 };
 
-inline void LagNormalizeBreakdown(float& game_ms, float& cmd_ms, float& shell_ms, float& spare_ms) {
-    float used = game_ms + cmd_ms + shell_ms;
+inline void LagNormalizeBreakdown(float& sim_ms, float& engine_ms, float& buffer_ms,
+                                  float& think_ms, float& spare_ms) {
+    float used = sim_ms + engine_ms + buffer_ms + think_ms;
     if (used > kLagTickBudgetMs && used > 0.0f) {
         const float scale = kLagTickBudgetMs / used;
-        game_ms *= scale;
-        cmd_ms *= scale;
-        shell_ms *= scale;
+        sim_ms *= scale;
+        engine_ms *= scale;
+        buffer_ms *= scale;
+        think_ms *= scale;
         used = kLagTickBudgetMs;
     }
     spare_ms = kLagTickBudgetMs - used;
@@ -66,12 +69,13 @@ inline void LagRenderLegend(MgCanvas& c, int centerX, int y) {
         const char* text;
         int tc;
     };
-    static const Key keys[] = {{"SV Tick (frame)", kMgColGreen},
-                               {"Console (buffer)", kMgColYellow},
+    static const Key keys[] = {{"Sim", kMgColGreen},
+                               {"Engine", kMgColRed},
                                {"ClientThink", kMgColWhite},
+                               {"Buffer", kMgColYellow},
                                {"Free", kMgColBlack}};
-    constexpr int kGap = 10;
-    constexpr int n = 4;
+    constexpr int kGap = 8;
+    constexpr int n = 5;
     int total = 0;
     for (int i = 0; i < n; ++i) {
         total += LagTextWidthPx(keys[i].text);
@@ -100,22 +104,25 @@ inline bool LagEmitBarRun(MgCanvas& c, int& x, int y, int tc, char ch, int count
 }
 
 inline void LagRenderBar(MgCanvas& c, int y, const LagSnapshot& s) {
-    float game = s.game_ms;
-    float cmd = s.cmd_ms;
-    float shell = s.shell_ms;
+    float sim = s.game_ms;
+    float eng = s.engine_ms;
+    float buf = s.cmd_ms;
+    float think = s.shell_ms;
     float spare = s.spare_ms;
-    LagNormalizeBreakdown(game, cmd, shell, spare);
+    LagNormalizeBreakdown(sim, eng, buf, think, spare);
 
-    int g = LagMsToBarChars(game);
-    int d = LagMsToBarChars(cmd);
-    int f = LagMsToBarChars(shell);
-    int used = g + d + f;
+    int a = LagMsToBarChars(sim);
+    int b = LagMsToBarChars(eng);
+    int d = LagMsToBarChars(buf);
+    int f = LagMsToBarChars(think);
+    int used = a + b + d + f;
     int free = kLagBarCharacters - used;
     if (free < 0)
         free = 0;
 
     int x = 160;
-    LagEmitBarRun(c, x, y, kMgColGreen, kLagBarFill, g);
+    LagEmitBarRun(c, x, y, kMgColGreen, kLagBarFill, a);
+    LagEmitBarRun(c, x, y, kMgColRed, kLagBarFill, b);
     LagEmitBarRun(c, x, y, kMgColYellow, kLagBarFill, d);
     LagEmitBarRun(c, x, y, kMgColWhite, kLagBarFill, f);
     LagEmitBarRun(c, x, y, kMgColBlack, kLagBarFree, free);
@@ -123,11 +130,12 @@ inline void LagRenderBar(MgCanvas& c, int y, const LagSnapshot& s) {
 
 inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasClear(canvas);
-    float game = snapshot.game_ms;
-    float cmd = snapshot.cmd_ms;
-    float shell = snapshot.shell_ms;
+    float sim = snapshot.game_ms;
+    float eng = snapshot.engine_ms;
+    float buf = snapshot.cmd_ms;
+    float think = snapshot.shell_ms;
     float spare = snapshot.spare_ms;
-    LagNormalizeBreakdown(game, cmd, shell, spare);
+    LagNormalizeBreakdown(sim, eng, buf, think, spare);
 
     MgCanvasTc(canvas, kMgColYellow);
     MgCanvasCenter(canvas, 320, 88, "SERVER TICK (100 ms)");
@@ -148,8 +156,8 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
         MgCanvasCenter(canvas, 320, 228, "busiest moment this map");
     }
 
-    std::snprintf(line, sizeof(line), "SV Tick %.0f  ClientThink %.0f  Buffer %.0f", game, shell,
-                  cmd);
+    std::snprintf(line, sizeof(line), "Sim %.0f  Engine %.0f  Think %.0f  Buf %.0f", sim, eng,
+                  think, buf);
     MgCanvasCenter(canvas, 320, 252, line);
 
     LagRenderLegend(canvas, 320, 276);

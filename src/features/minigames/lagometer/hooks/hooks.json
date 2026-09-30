@@ -6,6 +6,12 @@
     "priority": 3
   },
   {
+    "function": "SV_ReadPackets",
+    "callback": "lag_ReadPacketsPost",
+    "phase": "Post",
+    "priority": 3
+  },
+  {
     "function": "SV_ClientThink",
     "callback": "lag_SvClientThinkPre",
     "phase": "Pre",
