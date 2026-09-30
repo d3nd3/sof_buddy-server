@@ -63,6 +63,7 @@ struct State {
     bool   dripping = false;
     int    fillMax = 0;
     double cbufMaxMs = 0.0;
+    double cbufLastMs = 0.0;
     long long defers = 0;
     char* park = nullptr;
     int   parkLen = 0;
@@ -207,6 +208,7 @@ void RunDrain(detour_Cbuf_Execute::tCbuf_Execute original) {
     DrainCbuf(original);
     g.inCbuf = false;
     const double tookMs = g.clock.NowMs() - startMs;
+    g.cbufLastMs = tookMs;
     if (tookMs > g.cbufMaxMs)
         g.cbufMaxMs = tookMs;
     NoteFill();
@@ -423,7 +425,8 @@ void cmdpark_SvFramePost(int msec) {
         }
     }
     if (ticked)
-        SetOutputs(static_cast<float>(g.cbufMaxMs), g.defers, CmdTextBytes(), g.fillMax);
+        SetOutputs(static_cast<float>(g.cbufLastMs), static_cast<float>(g.cbufMaxMs),
+                   g.defers, CmdTextBytes(), g.fillMax);
     g.measuring = false;
 }
 

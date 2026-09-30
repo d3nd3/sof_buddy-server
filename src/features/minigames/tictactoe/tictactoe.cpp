@@ -15,6 +15,7 @@
 namespace {
 
 constexpr int kEndDisplayMs = 5000;
+constexpr char kTttGameId[] = "ttt";
 
 TttGame g_game;
 bool g_active = false;
@@ -32,8 +33,8 @@ void PushAll() {
     MgCanvas c;
     const int cur = (g_active && !g_resultPending && !g_game.over) ? g_game.cursor : -1;
     TttRenderBoard(g_game, c, g_resultLine[0] ? g_resultLine : nullptr, cur);
-    MgPushLayout(g_game.slotX, c);
-    MgPushLayout(g_game.slotO, c);
+    MgPushLayout(g_game.slotX, kTttGameId, c);
+    MgPushLayout(g_game.slotO, kTttGameId, c);
 }
 
 void ResetState() {
@@ -49,9 +50,9 @@ void ResetState() {
 
 void ShowIdleForPlayers() {
     if (g_resultSlotX >= 1)
-        MgShowIdleLayout(g_resultSlotX);
+        MgShowIdleLayout(g_resultSlotX, kTttGameId);
     if (g_resultSlotO >= 1 && g_resultSlotO != g_resultSlotX)
-        MgShowIdleLayout(g_resultSlotO);
+        MgShowIdleLayout(g_resultSlotO, kTttGameId);
 }
 
 void CompleteResult() {
@@ -82,9 +83,9 @@ void EndGameImmediate() {
         const int sx = g_resultSlotX ? g_resultSlotX : g_game.slotX;
         const int so = g_resultSlotO ? g_resultSlotO : g_game.slotO;
         if (sx >= 1)
-            MgClearLayout(sx);
+            MgClearLayout(sx, kTttGameId);
         if (so >= 1 && so != sx)
-            MgClearLayout(so);
+            MgClearLayout(so, kTttGameId);
     }
     ResetState();
 }
@@ -100,8 +101,8 @@ bool StartGame(int slotX, int slotO) {
     EndGameImmediate();
     TttReset(g_game, slotX, slotO);
     g_active = true;
-    MgShowLayout(slotX, true);
-    MgShowLayout(slotO, true);
+    MgShowLayout(slotX, kTttGameId, true);
+    MgShowLayout(slotO, kTttGameId, true);
     PushAll();
     g_dirty = false;
     Buddy_BroadcastPrintf(2,
@@ -255,7 +256,13 @@ void OnUserCmd(int slot1, MgUserCmdInput* in) {
         PlayCell(slot1, g_game.cursor + 1);
 }
 
-const MgGameOps kTttOps = {"ttt", OnClientCmd, OnUserCmd};
+void OnSessionEnd() {
+    if (!g_active && !g_resultPending)
+        return;
+    EndGameImmediate();
+}
+
+const MgGameOps kTttOps = {"ttt", OnClientCmd, OnUserCmd, OnSessionEnd};
 
 void TttTryRegister() {
     if (!Ttt_Enabled() || g_registered)
@@ -280,7 +287,7 @@ void ttt_OnGameDllLoaded(void* gameExport) {
 }
 
 void ttt_SvFramePost(int msec) {
-    if (!Ttt_Enabled() || !g_resultPending)
+    if (!Ttt_Enabled() || !MgRunningSession(kTttGameId) || !g_resultPending)
         return;
     g_endMsLeft -= msec;
     if (g_endMsLeft <= 0)
@@ -288,7 +295,7 @@ void ttt_SvFramePost(int msec) {
 }
 
 void ttt_ClientEndServerFramePost(void* ent) {
-    if (!Ttt_Enabled() || !ent)
+    if (!Ttt_Enabled() || !MgRunningSession(kTttGameId) || !ent)
         return;
     if (g_resultPending) {
         if (!MgSlotSpawned(g_resultSlotX) && !MgSlotSpawned(g_resultSlotO))

@@ -25,8 +25,12 @@ tricky pieces:
    `MgCanvasText/Center/Pic` (stock `xv`/`yv` tokens, 640x480, whole page
    capped at 1024 chars — far under the client's 0x400 `layout_string`).
 3. Register: `MgRegisterGame({"word", OnClientCmd})` on `GameDllLoaded`,
-   read words with `MgArgv(n)`, show with `MgShowLayout(slot, true)`,
-   send with `MgPushLayout(slot, canvas)`, hide with `MgClearLayout(slot)`.
+   read words with `MgArgv(n)`. One **display owner per client slot** — pass
+   your client word as `gameId` to `MgShowLayout` / `MgPushLayout` /
+   `MgClearLayout` (taking display preempts any other game on that slot).
+   **One running session server-wide** — the first `MgTakeDisplay` for a
+   `gameId` starts it; another `gameId` preempts via optional `onSessionEnd`
+   (stop timers / per-frame work). Session ends when that game has no slots left.
 4. Slots are 1-based. `MgSlotSpawned` / `MgEdictForSlot` validate;
    `MgMaxClients` bounds loops. Admin commands: `MgRegisterConsoleCommand`.
 5. Add `<game>: true` to `src/features/features.yaml`.
@@ -57,7 +61,8 @@ detour (wired in `DllMain` detach).
 |---------|---------|---------|
 | `_sofbuddy_minigames_enable` | `1` | Platform master switch (Tab cycle, `mg_*`, idle banner). `0` = no routing, no platform ghoul/sprites. |
 | `_sofbuddy_minigames_bg` | `0` | Idle/`mg_test` backdrop: `0` = `sb/mg/pn` tile, `1` = `sb/mg/bg` panel. |
-| `_sofbuddy_ttt_enable` | `0` | Tictactoe game. `0` = no `ttt` routing, no `ttt_*` commands, no `sb/tt/*` ghoul download. |
+| `_sofbuddy_ttt_enable` | `0` | Offer tictactoe on this server (`ttt`, `ttt_*`, `sb/tt/*`). Not “active game”; display is per-slot via `MgTakeDisplay`. |
+| `_sofbuddy_lagometer_enable` | `1` | Offer lagometer (`lag`, `lag_show`). Same: several enables may be `1`; only one game owns each player's screen at a time. |
 
 ## Console API for scripts (`mg_*`)
 

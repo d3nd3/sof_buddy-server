@@ -73,6 +73,7 @@ void FormatI64(char* out, std::size_t n, long long v) {
     out[i] = '\0';
 }
 
+OutputCvar g_outCbufLast;
 OutputCvar g_outCbufMax;
 OutputCvar g_outDefers;
 OutputCvar g_outCursize;
@@ -84,6 +85,7 @@ void* g_cvReserveMs  = nullptr;
 }  // namespace
 
 void InitCvars() {
+    g_outCbufLast.Bind("_sofbuddy_cmdpark_cbuf_last");
     g_outCbufMax.Bind("_sofbuddy_cmdpark_cbuf_max");
     g_outDefers.Bind("_sofbuddy_cmdpark_defers");
     g_outCursize.Bind("_sofbuddy_cmdpark_cbuf_cursize");
@@ -108,8 +110,10 @@ Config ReadConfig() {
     return c;
 }
 
-void SetOutputs(float cbufMaxMs, long long defers, int cursize, int fillMax) {
+void SetOutputs(float cbufLastMs, float cbufMaxMs, long long defers, int cursize, int fillMax) {
     char text[32];
+    std::snprintf(text, sizeof(text), "%.2f", static_cast<double>(cbufLastMs));
+    g_outCbufLast.Publish(cbufLastMs, text);
     std::snprintf(text, sizeof(text), "%.2f", static_cast<double>(cbufMaxMs));
     g_outCbufMax.Publish(cbufMaxMs, text);
     FormatI64(text, sizeof(text), defers);
@@ -121,6 +125,7 @@ void SetOutputs(float cbufMaxMs, long long defers, int cursize, int fillMax) {
 }
 
 void RestoreOutputs() {
+    g_outCbufLast.Restore();
     g_outCbufMax.Restore();
     g_outDefers.Restore();
     g_outCursize.Restore();

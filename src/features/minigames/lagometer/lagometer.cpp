@@ -1,0 +1,168 @@
+// lagometer: live server tick / drain diagnostic on the minigames layout tab.
+
+#include "cvar.h"
+#include "lagometer_logic.h"
+
+#include "buddy_import.h"
+#include "log.h"
+#include "../minigames_api.h"
+
+#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
+#include "../../cpu_optimizations/cmdtext_parking/cmdpark.h"
+#endif
+
+#include <cstdlib>
+#include <cstring>
+
+namespace {
+
+constexpr unsigned kCvarValueOfs = 0x18;
+
+bool g_registered = false;
+bool g_view[kMgMaxSlots + 1] = {};
+constexpr char kLagGameId[] = "lag";
+
+void* g_cvDedicated = nullptr;
+
+float CvarF(const char* name, float dflt) {
+    void* cv = Buddy_GetEngineCvar(name, nullptr, 0, nullptr);
+    if (!cv)
+        return dflt;
+    return *reinterpret_cast<volatile float*>(static_cast<char*>(cv) + kCvarValueOfs);
+}
+
+int CvarI(const char* name, int dflt) {
+    return static_cast<int>(CvarF(name, static_cast<float>(dflt)));
+}
+
+LagSnapshot ReadSnapshot() {
+    LagSnapshot s;
+    s.drainLastMs = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
+    s.drainMaxMs = CvarF("_sofbuddy_cmdpark_cbuf_max", 0.0f);
+    s.lateAvgMs = CvarF("_sofbuddy_tickpace_late_avg", 0.0f);
+    s.highclamps = static_cast<long long>(CvarF("_sofbuddy_highclamps", 0.0f));
+    s.lowclamps = static_cast<long long>(CvarF("_sofbuddy_lowclamps", 0.0f));
+    s.clampLastMs = CvarI("_sofbuddy_clamp_last", 0);
+    s.clampLostMs = static_cast<long long>(CvarF("_sofbuddy_clamp_lost_ms", 0.0f));
+    s.clampAvgMs = CvarF("_sofbuddy_clamp_avg", 0.0f);
+    s.lowclampWorstMs = CvarI("_sofbuddy_lowclamp_worst", 0);
+    s.tickpaceSaved = static_cast<long long>(CvarF("_sofbuddy_tickpace_saved", 0.0f));
+    s.parkDefers = static_cast<long long>(CvarF("_sofbuddy_cmdpark_defers", 0.0f));
+    s.cbufBytes = CvarI("_sofbuddy_cmdpark_cbuf_cursize", 0);
+    s.cbufFillMax = CvarI("_sofbuddy_cmdpark_cbuf_fill_max", 0);
+    s.cmdcostMaxMs = CvarF("_sofbuddy_cmdcost_max", 0.0f);
+#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
+    s.parkBytes = cmdpark::ParkBytes();
+#endif
+    if (!g_cvDedicated)
+        g_cvDedicated = Buddy_GetEngineCvar("dedicated", "0", 0, nullptr);
+    s.dedicated = static_cast<int>(Buddy_ReadCvarValue(g_cvDedicated, 0.0f));
+    s.cpuopt = CvarI("_sofbuddy_cpuopt", 1);
+    s.tickpace = CvarI("_sofbuddy_tickpace", 1);
+    s.tickpaceSettle = CvarI("_sofbuddy_tickpace_settle", 1);
+    s.spinMs = CvarI("_sofbuddy_tickpace_spin_ms", 0);
+    s.cmdpark = CvarI("_sofbuddy_cmdpark", 1);
+    s.cmdparkStrict = CvarI("_sofbuddy_cmdpark_strict", 1);
+    s.reserveMs = CvarI("_sofbuddy_cmdpark_reserve_ms", 0);
+    s.qpc = CvarI("_sofbuddy_qpc", 1);
+    return s;
+}
+
+void PushSlot(int slot1) {
+    LagSnapshot snap = ReadSnapshot();
+    MgCanvas c;
+    LagRender(snap, c);
+    MgPushLayout(slot1, kLagGameId, c);
+}
+
+void SetView(int slot1, bool on) {
+    if (slot1 < 1 || slot1 > kMgMaxSlots)
+        return;
+    g_view[slot1] = on;
+    if (on) {
+        MgShowLayout(slot1, kLagGameId, true);
+        PushSlot(slot1);
+    } else
+        MgClearLayout(slot1, kLagGameId);
+}
+
+extern "C" void __cdecl lag_Show_f();
+
+void OnSessionEnd() {
+    for (int s = 1; s <= kMgMaxSlots; ++s) {
+        if (!g_view[s])
+            continue;
+        g_view[s] = false;
+        if (MgDisplayOwnedBy(s, kLagGameId))
+            MgClearLayout(s, kLagGameId);
+    }
+}
+
+void LagTryRegister() {
+    if (!Lag_Enabled() || !MgEnabled() || g_registered)
+        return;
+    static const MgGameOps kOps = {"lag", [](int slot1) {
+                                       if (!Lag_Enabled())
+                                           return;
+                                       const bool on = !g_view[slot1];
+                                       SetView(slot1, on);
+                                       void* ent = MgEdictForSlot(slot1);
+                                       if (ent)
+                                           Buddy_ClientPrintf(
+                                               ent, 2, "Lagometer %s (type lag or +use+score)\n",
+                                               on ? "ON" : "off");
+                                   },
+                                   nullptr, OnSessionEnd};
+    MgRegisterGame(&kOps);
+    MgRegisterConsoleCommand("lag_show", reinterpret_cast<void*>(&lag_Show_f));
+    g_registered = true;
+    PrintOut(PRINT_LOG, "[lagometer] registered (_sofbuddy_lagometer_enable 1)\n");
+}
+
+}  // namespace
+
+extern "C" void __cdecl lag_Show_f() {
+    if (!Lag_Enabled() || !MgEnabled())
+        return;
+    LagTryRegister();
+    if (MgArgc() < 2) {
+        Buddy_DebugPrintf("usage: lag_show <slot 0-based>\n");
+        return;
+    }
+    const int slot = MgUserToInternal(std::atoi(MgArgv(1)));
+    if (!slot || !MgSlotSpawned(slot)) {
+        Buddy_DebugPrintf("[lagometer] slot not spawned\n");
+        return;
+    }
+    SetView(slot, true);
+}
+
+void lag_OnGameDllLoaded(void* gameExport) {
+    (void)gameExport;
+    LagTryRegister();
+}
+
+void lag_SvFramePost(int msec) {
+    (void)msec;
+    if (!Lag_Enabled() || !MgEnabled() || !MgRunningSession(kLagGameId))
+        return;
+    const LagSnapshot snap = ReadSnapshot();
+    const int n = MgMaxClients();
+    for (int slot = 1; slot <= n; ++slot) {
+        if (!g_view[slot] || !MgSlotSpawned(slot) || !MgDisplayOwnedBy(slot, kLagGameId))
+            continue;
+        MgCanvas c;
+        LagRender(snap, c);
+        MgPushLayout(slot, kLagGameId, c);
+    }
+}
+
+void lag_ClientEndServerFramePost(void* ent) {
+    if (!Lag_Enabled() || !ent)
+        return;
+    const int slot = MgSlotForEdict(ent);
+    if (slot < 1 || !g_view[slot])
+        return;
+    if (!MgSlotSpawned(slot) || !MgDisplayOwnedBy(slot, kLagGameId))
+        g_view[slot] = false;
+}

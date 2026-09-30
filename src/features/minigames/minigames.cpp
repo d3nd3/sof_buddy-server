@@ -68,6 +68,8 @@ constexpr unsigned kClientEdictOfs = 0x298;
 constexpr int kCsSpawned = 3;
 
 constexpr int kMaxGames = 8;
+constexpr int kMgGameIdLen = 16;
+constexpr char kMgScriptGameId[] = "mg";
 
 using clientcmd_fn = void(__cdecl*)(void*);
 using cmd_score_fn = void(__cdecl*)(void*);
@@ -84,6 +86,8 @@ void* g_cvMaxClients = nullptr;
 const MgGameOps* g_games[kMaxGames] = {};
 bool g_visible[kMgMaxSlots + 1] = {};
 char g_layoutCache[kMgMaxSlots + 1][kMgLayoutCap] = {};
+char g_displayOwner[kMgMaxSlots + 1][kMgGameIdLen] = {};
+char g_runningSession[kMgGameIdLen] = {};
 
 enum class MgView : unsigned char { Off = 0, Minigame = 1, StockScoreboard = 2 };
 MgView g_page[kMgMaxSlots + 1] = {};
@@ -529,9 +533,74 @@ void AppendCtfScoreboardHint(void* ent) {
 }
 
 const char* MinigameLayoutForSlot(int slot) {
-    (void)slot;
+    if (slot >= 1 && slot <= kMgMaxSlots && g_layoutCache[slot][0])
+        return g_layoutCache[slot];
     EnsurePlaceholderLayout();
     return g_placeholderLayout;
+}
+
+void CopyGameId(char* dst, int cap, const char* gameId) {
+    if (!dst || cap <= 0)
+        return;
+    dst[0] = '\0';
+    if (!gameId || !gameId[0])
+        return;
+    std::strncpy(dst, gameId, static_cast<std::size_t>(cap) - 1);
+    dst[cap - 1] = '\0';
+}
+
+bool DisplayOwnedBy(int slot, const char* gameId) {
+    if (slot < 1 || slot > kMgMaxSlots || !gameId || !gameId[0])
+        return false;
+    return g_displayOwner[slot][0] && SameNoCase(g_displayOwner[slot], gameId);
+}
+
+void ClearDisplayOwner(int slot) {
+    if (slot < 1 || slot > kMgMaxSlots)
+        return;
+    g_displayOwner[slot][0] = '\0';
+}
+
+int OwnerCountFor(const char* gameId) {
+    if (!gameId || !gameId[0])
+        return 0;
+    int n = 0;
+    for (int s = 1; s <= kMgMaxSlots; ++s) {
+        if (DisplayOwnedBy(s, gameId))
+            ++n;
+    }
+    return n;
+}
+
+bool RunningSession(const char* gameId) {
+    if (!gameId || !gameId[0] || !g_runningSession[0])
+        return false;
+    return SameNoCase(g_runningSession, gameId);
+}
+
+void FireSessionEnd(const char* gameId) {
+    if (!gameId || !gameId[0])
+        return;
+    for (const MgGameOps* g : g_games) {
+        if (g && g->command && g->onSessionEnd && SameNoCase(g->command, gameId))
+            g->onSessionEnd();
+    }
+}
+
+void SessionBegin(const char* gameId) {
+    if (!gameId || !gameId[0])
+        return;
+    if (g_runningSession[0] && SameNoCase(g_runningSession, gameId))
+        return;
+    if (g_runningSession[0])
+        FireSessionEnd(g_runningSession);
+    CopyGameId(g_runningSession, kMgGameIdLen, gameId);
+}
+
+void SessionEndIfIdle(const char* gameId) {
+    if (!RunningSession(gameId) || OwnerCountFor(gameId) > 0)
+        return;
+    g_runningSession[0] = '\0';
 }
 
 void ApplyLayoutClient(void* ent, bool on) {
@@ -980,7 +1049,43 @@ bool MgEnabled() {
     return MgPlatformEnabled();
 }
 
-void MgShowLayout(int slot1, bool on) {
+bool MgTakeDisplay(int slot1, const char* gameId) {
+    if (slot1 < 1 || slot1 > kMgMaxSlots || !gameId || !gameId[0])
+        return false;
+    char prev[kMgGameIdLen];
+    CopyGameId(prev, kMgGameIdLen, g_displayOwner[slot1]);
+    if (prev[0] && !SameNoCase(prev, gameId)) {
+        g_layoutCache[slot1][0] = '\0';
+        g_layoutDirty[slot1] = false;
+    }
+    CopyGameId(g_displayOwner[slot1], kMgGameIdLen, gameId);
+    if (prev[0] && !SameNoCase(prev, gameId))
+        SessionEndIfIdle(prev);
+    SessionBegin(gameId);
+    return true;
+}
+
+void MgReleaseDisplay(int slot1, const char* gameId) {
+    if (!DisplayOwnedBy(slot1, gameId))
+        return;
+    ClearDisplayOwner(slot1);
+    SessionEndIfIdle(gameId);
+}
+
+bool MgDisplayOwnedBy(int slot1, const char* gameId) {
+    return DisplayOwnedBy(slot1, gameId);
+}
+
+bool MgRunningSession(const char* gameId) {
+    return RunningSession(gameId);
+}
+
+void MgShowLayout(int slot1, const char* gameId, bool on) {
+    if (on) {
+        if (!MgTakeDisplay(slot1, gameId))
+            return;
+    } else if (DisplayOwnedBy(slot1, gameId))
+        MgReleaseDisplay(slot1, gameId);
     if (slot1 >= 1 && slot1 <= kMgMaxSlots)
         g_visible[slot1] = on;
     void* ent = MgEdictForSlot(slot1);
@@ -992,7 +1097,9 @@ void MgShowLayout(int slot1, bool on) {
         ApplyView(ent, slot1, MgView::Off);
 }
 
-void MgPushLayout(int slot1, const MgCanvas& canvas) {
+void MgPushLayout(int slot1, const char* gameId, const MgCanvas& canvas) {
+    if (!DisplayOwnedBy(slot1, gameId) || !RunningSession(gameId))
+        return;
     void* ent = MgEdictForSlot(slot1);
     if (!ent) {
         Buddy_DebugPrintf("[minigames] push layout: slot %d has no edict\n", slot1);
@@ -1014,7 +1121,9 @@ void MgPushLayout(int slot1, const MgCanvas& canvas) {
         PushLayoutPayload(ent, layout);
 }
 
-void MgClearLayout(int slot1) {
+void MgClearLayout(int slot1, const char* gameId) {
+    if (DisplayOwnedBy(slot1, gameId))
+        MgReleaseDisplay(slot1, gameId);
     if (slot1 >= 1 && slot1 <= kMgMaxSlots) {
         g_layoutCache[slot1][0] = '\0';
         g_layoutDirty[slot1] = false;
@@ -1025,9 +1134,11 @@ void MgClearLayout(int slot1) {
         ApplyView(ent, slot1, MgView::Off);
 }
 
-void MgShowIdleLayout(int slot1) {
+void MgShowIdleLayout(int slot1, const char* gameId) {
     if (slot1 < 1 || slot1 > kMgMaxSlots)
         return;
+    if (DisplayOwnedBy(slot1, gameId))
+        MgReleaseDisplay(slot1, gameId);
     g_layoutCache[slot1][0] = '\0';
     g_visible[slot1] = true;
     g_page[slot1] = MgView::Minigame;
@@ -1138,8 +1249,9 @@ extern "C" void __cdecl mg_Push_f() {
         Buddy_DebugPrintf("[minigames] mg_push: layout too long (1024 cap)\n");
         return;
     }
-    MgPushLayout(internal, c);
-    MgShowLayout(internal, true);
+    MgTakeDisplay(internal, kMgScriptGameId);
+    MgPushLayout(internal, kMgScriptGameId, c);
+    MgShowLayout(internal, kMgScriptGameId, true);
 }
 
 extern "C" void __cdecl mg_Show_f() {
@@ -1152,7 +1264,9 @@ extern "C" void __cdecl mg_Show_f() {
         Buddy_DebugPrintf("usage: mg_show <slot 0-based> <0|1>\n");
         return;
     }
-    MgShowLayout(internal, on != 0);
+    if (on)
+        MgTakeDisplay(internal, kMgScriptGameId);
+    MgShowLayout(internal, kMgScriptGameId, on != 0);
 }
 
 extern "C" void __cdecl mg_Clear_f() {
@@ -1164,7 +1278,7 @@ extern "C" void __cdecl mg_Clear_f() {
         Buddy_DebugPrintf("usage: mg_clear <slot 0-based>\n");
         return;
     }
-    MgClearLayout(internal);
+    MgClearLayout(internal, kMgScriptGameId);
 }
 
 extern "C" void __cdecl mg_Idle_f() {
@@ -1175,7 +1289,7 @@ extern "C" void __cdecl mg_Idle_f() {
         Buddy_DebugPrintf("usage: mg_idle <slot 0-based>\n");
         return;
     }
-    MgShowIdleLayout(internal);
+    MgShowIdleLayout(internal, kMgScriptGameId);
 }
 
 // Lists non-empty CS_GHOULFILES slots (sofree sf_sv_ghoul_list equivalent).
@@ -1373,7 +1487,8 @@ extern "C" void __cdecl mg_Test_f() {
         Buddy_DebugPrintf("usage: mg_test <slot 0-based>\n");
         return;
     }
-    MgShowLayout(internal, true);
+    MgTakeDisplay(internal, kMgScriptGameId);
+    MgShowLayout(internal, kMgScriptGameId, true);
 }
 
 void mg_OnGameDllLoaded(void* gameExport) {
@@ -1485,7 +1600,9 @@ void mg_SvClientThinkPre(void*& client, void*& cmd) {
     MgUserCmdInput in = {};
     MgParseUserCmd(slot, cmd, &in);
     for (const MgGameOps* g : g_games) {
-        if (!g || !g->onUserCmd)
+        if (!g || !g->onUserCmd || !g->command)
+            continue;
+        if (!DisplayOwnedBy(slot, g->command) || !RunningSession(g->command))
             continue;
         g->onUserCmd(slot, &in);
     }
@@ -1531,6 +1648,9 @@ extern "C" void Minigames_Shutdown() {
         d = false;
     for (MgView& p : g_page)
         p = MgView::Off;
+    for (char* row : g_displayOwner)
+        row[0] = '\0';
+    g_runningSession[0] = '\0';
     g_placeholderLayout[0] = '\0';
     g_ctfSbHintLayout[0] = '\0';
     g_sobuddySpReady = false;

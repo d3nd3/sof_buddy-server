@@ -1,0 +1,14 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "lag_SvFramePost",
+    "phase": "Post",
+    "priority": 2
+  },
+  {
+    "function": "ClientEndServerFrame",
+    "callback": "lag_ClientEndServerFramePost",
+    "phase": "Post",
+    "priority": 2
+  }
+]

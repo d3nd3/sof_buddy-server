@@ -157,7 +157,8 @@ inline bool MgCanvasRaw(MgCanvas& c, const char* tokens) {
 struct MgGameOps {
     const char* command;
     void (*onClientCmd)(int slot1);
-    void (*onUserCmd)(int slot1, MgUserCmdInput* in);  // optional
+    void (*onUserCmd)(int slot1, MgUserCmdInput* in);       // optional
+    void (*onSessionEnd)(void);                             // optional; preempt / idle stop
 };
 
 // Returns false when the parent is disabled or the name is taken.
@@ -186,20 +187,32 @@ int MgRegisterGhoulFile(const char* path);
 // Current CS_MAPCHECKSUM (empty if unavailable).
 const char* MgMapChecksum();
 
+// One minigame display per client slot. `gameId` is the registered client word
+// ("ttt", "lag", …) or "mg" for script mg_push. Taking display preempts any
+// other game on that slot; pushes/updates are ignored unless `gameId` owns it.
+bool MgTakeDisplay(int slot1, const char* gameId);
+void MgReleaseDisplay(int slot1, const char* gameId);
+bool MgDisplayOwnedBy(int slot1, const char* gameId);
+
+// Server-wide: at most one minigame session doing per-frame work. Starts on the
+// first MgTakeDisplay for a gameId; ends when it has no display slots left, or
+// when another gameId takes display (the loser gets onSessionEnd).
+bool MgRunningSession(const char* gameId);
+
 // Layout visibility for a slot. Re-asserts ps.stats[STAT_LAYOUTS] every server
 // frame for visible slots (stock G_SetStats clears it). Minigame svc_layout is
 // sent only when the canvas changes (MgPushLayout / dirty), not every tick.
-void MgShowLayout(int slot1, bool on);
+void MgShowLayout(int slot1, const char* gameId, bool on);
 
 // Sends the whole canvas to one slot as svc_layout (replaces layout_string).
 // On the minigame tab, transmits immediately when visible; otherwise cached.
-void MgPushLayout(int slot1, const MgCanvas& canvas);
+void MgPushLayout(int slot1, const char* gameId, const MgCanvas& canvas);
 
 // Hides the board and clears the client's stored layout.
-void MgClearLayout(int slot1);
+void MgClearLayout(int slot1, const char* gameId);
 
 // Minigame score tab with the idle placeholder (no active board).
-void MgShowIdleLayout(int slot1);
+void MgShowIdleLayout(int slot1, const char* gameId);
 
 // Slot numbering: user-facing commands use 0-based slots (same as stufftext).
 // Mg* helpers below take the internal 1-based edict index.

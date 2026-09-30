@@ -64,6 +64,7 @@ Sleep skip when strict or `reserve_ms` is on.
 
 | cvar | unit | what it tells you |
 |---|---|---|
+| `_sofbuddy_cmdpark_cbuf_last` | ms | Last tick drain |
 | `_sofbuddy_cmdpark_cbuf_max` | ms | Worst drain |
 | `_sofbuddy_cmdpark_defers` | count | Pre-frame queues moved aside |
 | `_sofbuddy_cmdpark_cbuf_cursize` | bytes | Current 8 KB occupancy |

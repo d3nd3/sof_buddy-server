@@ -11,7 +11,7 @@ struct Config {
 
 void InitCvars();
 Config ReadConfig();
-void SetOutputs(float cbufMaxMs, long long defers, int cursize, int fillMax);
+void SetOutputs(float cbufLastMs, float cbufMaxMs, long long defers, int cursize, int fillMax);
 void RestoreOutputs();
 
 }  // namespace cmdpark

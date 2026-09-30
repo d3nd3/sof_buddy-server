@@ -55,6 +55,7 @@ Watched g_watched[] = {
     {nullptr, "[cmdtext_parking]", 0, nullptr},
     {"_sofbuddy_cmdpark", "1", kCvarFlagArchive, "park inserts near the tick, drip one chunk per safe sub-tick"},
     {"_sofbuddy_cmdpark_reserve_ms", "0", kCvarFlagArchive, "strict-style protection within this many ms of the tick"},
+    {"_sofbuddy_cmdpark_cbuf_last", "0", kCvarFlagNoSet, "last tick drain wall time (ms)"},
     {"_sofbuddy_cmdpark_cbuf_max", "0", kCvarFlagNoSet, "worst single drain (ms)"},
     {"_sofbuddy_cmdpark_defers", "0", kCvarFlagNoSet, "pre-frame queues moved aside instead of run"},
     {"_sofbuddy_cmdpark_cbuf_cursize", "0", kCvarFlagNoSet, "current cmd_text occupancy (bytes)"},
