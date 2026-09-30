@@ -56,6 +56,35 @@ inline void LagFillRun(char* out, int capacity, char ch, int count) {
     out[count] = '\0';
 }
 
+inline int LagTextWidthPx(const char* s) {
+    return s ? static_cast<int>(std::strlen(s)) * 8 : 0;
+}
+
+inline void LagRenderLegend(MgCanvas& c, int centerX, int y) {
+    struct Key {
+        const char* text;
+        int tc;
+    };
+    static const Key keys[] = {{"Play", kMgColGreen},
+                               {"Console", kMgColYellow},
+                               {"Overhead", kMgColWhite},
+                               {"Free", kMgColBlack}};
+    constexpr int kGap = 20;
+    constexpr int n = 4;
+    int total = 0;
+    for (int i = 0; i < n; ++i) {
+        total += LagTextWidthPx(keys[i].text);
+        if (i + 1 < n)
+            total += kGap;
+    }
+    int x = centerX - total / 2;
+    for (int i = 0; i < n; ++i) {
+        MgCanvasTc(c, keys[i].tc);
+        MgCanvasText(c, x, y, keys[i].text);
+        x += LagTextWidthPx(keys[i].text) + kGap;
+    }
+}
+
 inline bool LagEmitBarRun(MgCanvas& c, int& x, int y, int tc, char ch, int count) {
     if (count <= 0)
         return true;
@@ -115,19 +144,7 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     std::snprintf(line, sizeof(line), "Play %.0f  Console %.0f  Overhead %.0f", game, cmd, shell);
     MgCanvasCenter(canvas, 320, 252, line);
 
-    int lx = 88;
-    int ly = 276;
-    MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasText(canvas, lx, ly, "Play");
-    lx += 48;
-    MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasText(canvas, lx, ly, "Console");
-    lx += 72;
-    MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasText(canvas, lx, ly, "Overhead");
-    lx += 80;
-    MgCanvasTc(canvas, kMgColBlack);
-    MgCanvasText(canvas, lx, ly, "Free");
+    LagRenderLegend(canvas, 320, 276);
 
     MgCanvasTc(canvas, kMgColGreen);
     MgCanvasCenter(canvas, 320, 304, "score cycles  |  +use+score normal");
