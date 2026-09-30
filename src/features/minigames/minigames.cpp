@@ -26,7 +26,6 @@
 #include "generated_detours.h"
 #include "generated_engine_pointers.h"
 #include "log.h"
-#include "tictactoe/cvar.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -46,20 +45,22 @@ constexpr unsigned kEdictClientOfs = 0x74;
 constexpr unsigned kEdictInuseOfs = 0x78;
 constexpr unsigned kClientStatsOfs = 164;
 constexpr unsigned kClientShowscoresOfs = 0x470;  // gclient_t.showscores
+constexpr unsigned kClientButtonsOfs = 0x47C;     // gclient_t.buttons (ClientThink)
 constexpr unsigned kClientShowinventoryOfs = 0x474;
 constexpr unsigned kClientShowhelpTimeOfs = 0x568;  // gclient_t.showhelp_time (float)
 constexpr unsigned kEdictEnemyOfs = 0x804;
 constexpr unsigned kRvaDeathmatchClass = 0x15C4D8;
-constexpr unsigned kRvaCmdScoreF = 0xF6710;  // cmd_score_f @ gamex86+ (sofree hooks here)
+constexpr unsigned kRvaCmdScoreF = 0xF6710;  // cmd_score_f @ gamex86+
+constexpr unsigned kRvaDmctfScoreboard = 0x71D70;  // dmctf_c::clientScoreboardMessage
 constexpr unsigned kRvaLevelIntermissiontime = 0x15D1C8;  // level.intermissiontime @ G_SetStats
-constexpr unsigned kRvaScoreboardPulseMask = 0xF9E2F;  // ClientEndServerFrame: test level.framenum, imm8
-constexpr unsigned char kMgScoreboardPulseMask = 0x1F;   // stock &31 (~3.2s); not SoFree's &0
 constexpr int kPmDead = 3;                               // pmtype_t PM_DEAD
 constexpr unsigned kClientPmTypeOfs = 0;                 // gclient.ps.pmove.pm_type
 constexpr unsigned kClientPersHealthOfs = 0x2FC;         // gclient.pers.health @ G_SetStats+764
 constexpr int kStatLayouts = 9;
 constexpr int kSvcLayout = 2;  // svc_layout → client layout_string (Com_sprintf replace)
 constexpr unsigned short kDmLayoutReset = 0x002b;  // dm_generic LAYOUT_RESET ("*"), always on clients
+constexpr unsigned short kSobuddyLayoutRaw = 0x0700;  // index 0 — SP_FLAG_LAYOUT "%s"
+constexpr unsigned short kSobuddyCreditRaw = 0x0701;  // index 1 — SP_FLAG_CREDIT "%s" (future)
 
 constexpr unsigned kRvaSvClients = 0x396EEC;
 constexpr unsigned kClientStride = 0xD2AC;
@@ -70,10 +71,12 @@ constexpr int kMaxGames = 8;
 
 using clientcmd_fn = void(__cdecl*)(void*);
 using cmd_score_fn = void(__cdecl*)(void*);
+using dmctf_scoreboard_fn = void(__thiscall*)(void*, void*, void*, int);
 
 clientcmd_fn g_originalClientCommand = nullptr;
 void* g_geClientCommandSlot = nullptr;
 void* g_scoreTrampoline = nullptr;
+void* g_dmctfScoreTrampoline = nullptr;
 char* g_edicts = nullptr;
 int g_edictSize = 0;
 void* g_cvMaxClients = nullptr;
@@ -82,11 +85,15 @@ const MgGameOps* g_games[kMaxGames] = {};
 bool g_visible[kMgMaxSlots + 1] = {};
 char g_layoutCache[kMgMaxSlots + 1][kMgLayoutCap] = {};
 
-enum class MgScorePage : unsigned char { Off = 0, Scoreboard = 1, Minigame = 2 };
-MgScorePage g_page[kMgMaxSlots + 1] = {};
+enum class MgView : unsigned char { Off = 0, Minigame = 1, StockScoreboard = 2 };
+MgView g_page[kMgMaxSlots + 1] = {};
 bool g_layoutDirty[kMgMaxSlots + 1] = {};
 char g_placeholderLayout[kMgLayoutCap] = {};
-int g_placeholderBg = -1;
+char g_ctfSbHintLayout[kMgLayoutCap] = {};
+bool g_sobuddySpReady = false;
+char g_sobuddyRegisterName[64] = {};
+unsigned long g_sobuddyFailMs = 0;
+constexpr unsigned long kSobuddyRetryMs = 5000;
 
 struct PrevUserCmd {
     short forward = 0;
@@ -94,9 +101,6 @@ struct PrevUserCmd {
     unsigned char buttons = 0;
 };
 PrevUserCmd g_prevCmd[kMgMaxSlots + 1] = {};
-
-constexpr int kMgPanelCTile = 256;
-constexpr int kMgIdleBannerH = 128;
 
 HMODULE ExeMod() {
     if (HMODULE h = GetModuleHandleA("SoF.exe"))
@@ -196,13 +200,20 @@ bool ClientWantsStockScoreboard(void* ent) {
 }
 
 void ApplyLayoutClient(void* ent, bool on);
-void ApplyScorePage(void* ent, int slot, MgScorePage page);
+void ApplyView(void* ent, int slot, MgView view);
+
+bool ClientUseHeld(void* ent) {
+    void* client = ClientForEnt(ent);
+    if (!client || !Readable(static_cast<char*>(client) + kClientButtonsOfs, sizeof(int)))
+        return false;
+    return (*reinterpret_cast<int*>(static_cast<char*>(client) + kClientButtonsOfs) & kMgBtnUse) != 0;
+}
 
 void EnsureScoreboardPage(void* ent, int slot) {
     if (slot < 1 || slot > kMgMaxSlots)
         return;
-    if (g_page[slot] != MgScorePage::Scoreboard)
-        ApplyScorePage(ent, slot, MgScorePage::Scoreboard);
+    if (g_page[slot] != MgView::StockScoreboard)
+        ApplyView(ent, slot, MgView::StockScoreboard);
     else
         ApplyLayoutClient(ent, true);
 }
@@ -238,6 +249,7 @@ void SuppressStockLayoutRefresh(void* client) {
 }
 
 void PushLayoutPayload(void* ent, const char* layout);
+void UnicastLayout(void* ent, const char* layout);
 
 void SendMinigameLayout(void* ent, int slot, const char* layout) {
     if (!ent || slot < 1 || !layout || !layout[0])
@@ -246,56 +258,278 @@ void SendMinigameLayout(void* ent, int slot, const char* layout) {
     g_layoutDirty[slot] = false;
 }
 
-// Stock ClientEndServerFrame gates scoreboard on level.framenum & imm8 (@ gamex86+0xF9E2F).
-// SoFree patches imm8 to 0 (every tick). We keep &31 for the scoreboard tab only.
-void EnsureScoreboardPulse() {
-    HMODULE h = GameMod();
-    if (!h || !IsValidModuleRva(h, kRvaScoreboardPulseMask, 1))
-        return;
-    char* p = reinterpret_cast<char*>(h) + kRvaScoreboardPulseMask;
-    if (!Readable(p, 1))
-        return;
-    if (static_cast<unsigned char>(*p) == kMgScoreboardPulseMask)
-        return;
-    DWORD old = 0;
-    if (!VirtualProtect(p, 1, PAGE_READWRITE, &old))
-        return;
-    *p = static_cast<char>(kMgScoreboardPulseMask);
-    VirtualProtect(p, 1, old, &old);
-    PrintOut(PRINT_LOG, "[minigames] scoreboard pulse set to &%u (stock rate)\n", kMgScoreboardPulseMask);
-}
-
-void MgCanvasBackground(MgCanvas& c) {
-    if (MgBgUseBlack640()) {
-        MgCanvasPic(c, 0, 0, kMgSbMgBg);
-        return;
-    }
-    const int px = (kMgVirtW - kMgPanelCTile * 2) / 2;
-    const int py = (kMgVirtH - kMgPanelCTile) / 2;
-    MgCanvasPic(c, px, py, kMgSbMgPn);
-    MgCanvasPic(c, px + kMgPanelCTile, py, kMgSbMgPn);
-}
-
 void EnsurePlaceholderLayout() {
-    const int bg = MgBgUseBlack640() ? 1 : 0;
-    if (g_placeholderLayout[0] && g_placeholderBg == bg)
+    if (g_placeholderLayout[0])
         return;
-    g_placeholderBg = bg;
     MgCanvas c;
     MgCanvasClear(c);
-    MgCanvasBackground(c);
-    MgCanvasPic(c, 0, (kMgVirtH - kMgIdleBannerH) / 2, kMgSbMgId);
-    MgCanvasTc(c, kMgColYellow);
-    MgCanvasCenter(c, 320, 240, "SOF BUDDY");
-    MgCanvasTc(c, kMgColGreen);
-    MgCanvasCenter(c, 320, 268, "No minigame active");
+    MgCanvasTc(c, kMgColWhite);
+    MgCanvasCenter(c, 320, 240, "Hello World");
     std::strncpy(g_placeholderLayout, c.text, kMgLayoutCap);
     g_placeholderLayout[kMgLayoutCap - 1] = '\0';
 }
 
+namespace {
+
+constexpr unsigned kCvarStringOfs = 4;
+constexpr int kCsStringPackages = 1463;  // CS_STRING_PACKAGES @ 0x5B7 (retail SoF.exe)
+constexpr int kMaxStringPackages = 30;
+constexpr const char* kSobuddyBaseName = "sofbuddy";
+
+// SoFree-shaped body: \r\n line endings; no tabs/blank lines. File text uses "%s"
+// (SoFree's C source uses "%%s" only because that char[] is a C string literal).
+static const char kSobuddySpBody[] =
+    "VERSION 1\r\n"
+    "ID 7\r\n"
+    "REFERENCE SOFBUDDY\r\n"
+    "DESCRIPTION \"SoF Buddy\"\r\n"
+    "COUNT 2\r\n"
+    "INDEX 0\r\n"
+    "{\r\n"
+    "  REFERENCE LAYOUT_RAW\r\n"
+    "  FLAGS SP_FLAG_LAYOUT\r\n"
+    "  TEXT_ENGLISH \"%s\"\r\n"
+    "}\r\n"
+    "INDEX 1\r\n"
+    "{\r\n"
+    "  REFERENCE CREDIT_RAW\r\n"
+    "  FLAGS SP_FLAG_CREDIT\r\n"
+    "  TEXT_ENGLISH \"%s\"\r\n"
+    "}\r\n";
+
+const char* CvarStr(void* cv) {
+    if (!cv)
+        return "";
+    const char* s = *reinterpret_cast<const char**>(static_cast<char*>(cv) + kCvarStringOfs);
+    return (s && s[0]) ? s : "";
+}
+
+char* SvConfigstringsEarly() {
+    HMODULE h = ExeMod();
+    if (!h)
+        return nullptr;
+    constexpr unsigned kRva = 0x3A2374;
+    char* base = reinterpret_cast<char*>(h) + kRva;
+    if (!Readable(base, 64))
+        return nullptr;
+    return base;
+}
+
+const char* FindStringPackageCs(const char* name) {
+    if (!name || !name[0])
+        return "";
+    char* strings = SvConfigstringsEarly();
+    if (!strings)
+        return "";
+    for (int i = 1; i <= kMaxStringPackages; ++i) {
+        char* cs = strings + static_cast<unsigned>(kCsStringPackages + i) * 64;
+        if (!Readable(cs, 64) || !cs[0])
+            continue;
+        if (std::strcmp(cs, name) == 0)
+            return cs;
+    }
+    return "";
+}
+
+bool StripVisibleToFs(const char* fs_path) {
+    void* buf = nullptr;
+    const int len = Buddy_FS_LoadFile(fs_path, &buf, false);
+    if (len < 0)
+        return false;
+    if (buf)
+        Buddy_FS_FreeFile(buf);
+    return true;
+}
+
+uint32_t Crc32(const unsigned char* data, int len) {
+    uint32_t c = 0xFFFFFFFFu;
+    for (int i = 0; i < len; ++i) {
+        c ^= data[i];
+        for (int b = 0; b < 8; ++b)
+            c = (c >> 1) ^ (0xEDB88320u & static_cast<uint32_t>(-(static_cast<int>(c & 1u))));
+    }
+    return ~c;
+}
+
+void UserDirPath(char* out, std::size_t cap, const char* rel) {
+    if (!out || cap == 0)
+        return;
+    out[0] = '\0';
+    const char* user = Buddy_FS_Userdir();
+    if (!user[0])
+        user = CvarStr(Buddy_GetEngineCvar("user", "User", 0, nullptr));
+    if (!user[0])
+        user = "User";
+    std::snprintf(out, cap, "%s/%s", user, rel);
+}
+
+char g_sobuddyDiskBuf[4096];
+int g_sobuddyDiskLen = 0;
+
+bool WriteUserStripFile(const char* disk_path) {
+    if (!disk_path || !disk_path[0])
+        return false;
+    Buddy_FS_CreatePath(disk_path);
+    FILE* f = std::fopen(disk_path, "wb");
+    if (!f)
+        return false;
+    const std::size_t n = std::strlen(kSobuddySpBody);
+    const bool ok = std::fwrite(kSobuddySpBody, 1, n, f) == n;
+    std::fclose(f);
+    return ok;
+}
+
+void SeedSobuddyDiskTemplate() {
+    char path[384];
+    UserDirPath(path, sizeof(path), "strip/sofbuddy.sp");
+    FILE* f = std::fopen(path, "rb");
+    if (f) {
+        std::fclose(f);
+        return;
+    }
+    WriteUserStripFile(path);
+}
+
+bool SobuddyTemplateBytes(const void** body, int* len) {
+    if (!body || !len)
+        return false;
+    char path[384];
+    UserDirPath(path, sizeof(path), "strip/sofbuddy.sp");
+    FILE* f = std::fopen(path, "rb");
+    if (f) {
+        if (std::fseek(f, 0, SEEK_END) == 0) {
+            const long n = std::ftell(f);
+            if (n > 0 && n < static_cast<long>(sizeof(g_sobuddyDiskBuf)) &&
+                std::fseek(f, 0, SEEK_SET) == 0 &&
+                std::fread(g_sobuddyDiskBuf, 1, static_cast<std::size_t>(n), f) ==
+                    static_cast<std::size_t>(n) &&
+                std::strstr(g_sobuddyDiskBuf, "REFERENCE SOFBUDDY")) {
+                g_sobuddyDiskLen = static_cast<int>(n);
+                *body = g_sobuddyDiskBuf;
+                *len = g_sobuddyDiskLen;
+                std::fclose(f);
+                return true;
+            }
+        }
+        std::fclose(f);
+    }
+    *body = kSobuddySpBody;
+    *len = static_cast<int>(std::strlen(kSobuddySpBody));
+    return true;
+}
+
+bool BuildSobuddyRegisterName(char* reg, std::size_t cap) {
+    if (!reg || cap < 16)
+        return false;
+    const void* body = nullptr;
+    int len = 0;
+    if (!SobuddyTemplateBytes(&body, &len) || !body || len <= 0)
+        return false;
+    const uint32_t crc = Crc32(static_cast<const unsigned char*>(body), len);
+    std::snprintf(reg, cap, "%s-%08X", kSobuddyBaseName, crc);
+    return true;
+}
+
+bool PublishChecksumStrip(const char* reg_name, const void* body, int len) {
+    if (!reg_name || !body || len <= 0)
+        return false;
+    char fs_rel[128];
+    std::snprintf(fs_rel, sizeof(fs_rel), "strip/%s.sp", reg_name);
+    if (StripVisibleToFs(fs_rel))
+        return true;
+    char disk[384];
+    UserDirPath(disk, sizeof(disk), fs_rel);
+    Buddy_FS_CreatePath(disk);
+    FILE* f = std::fopen(disk, "wb");
+    if (!f)
+        return false;
+    const bool ok = std::fwrite(body, 1, static_cast<std::size_t>(len), f) == static_cast<std::size_t>(len);
+    std::fclose(f);
+    return ok && StripVisibleToFs(fs_rel);
+}
+
+bool SobuddyNeedsRegister() {
+    if (g_sobuddySpReady && g_sobuddyRegisterName[0] &&
+        FindStringPackageCs(g_sobuddyRegisterName)[0])
+        return false;
+    return true;
+}
+
+constexpr int kCtfSbHintY = 48;  // layout yv -72, just above CTF team header (yv -64)
+
+void EnsureCtfScoreboardHintLayout() {
+    if (g_ctfSbHintLayout[0])
+        return;
+    MgCanvas c;
+    MgCanvasClear(c);
+    MgCanvasAltCenter(c, 320, kCtfSbHintY, "Hold +use (open door) + score for minigame view");
+    std::strncpy(g_ctfSbHintLayout, c.text, kMgLayoutCap);
+    g_ctfSbHintLayout[kMgLayoutCap - 1] = '\0';
+}
+
+void EnsureSobuddyStringPackage() {
+    if (!Buddy_GetGameImport())
+        return;
+    if (!SobuddyNeedsRegister() && g_sobuddySpReady) {
+        EnsureCtfScoreboardHintLayout();
+        return;
+    }
+    const unsigned long now = GetTickCount();
+    if (g_sobuddyFailMs && (now - g_sobuddyFailMs) < kSobuddyRetryMs)
+        return;
+    g_sobuddySpReady = false;
+    g_sobuddyRegisterName[0] = '\0';
+    SeedSobuddyDiskTemplate();
+    const void* body = nullptr;
+    int blen = 0;
+    if (!SobuddyTemplateBytes(&body, &blen) || !body || blen <= 0) {
+        PrintOut(PRINT_BAD, "[minigames] sofbuddy template unavailable\n");
+        g_sobuddyFailMs = now;
+        return;
+    }
+    char reg[64];
+    if (!BuildSobuddyRegisterName(reg, sizeof(reg))) {
+        PrintOut(PRINT_BAD, "[minigames] sofbuddy register name build failed\n");
+        g_sobuddyFailMs = now;
+        return;
+    }
+    if (!PublishChecksumStrip(reg, body, blen)) {
+        PrintOut(PRINT_BAD, "[minigames] strip/%s.sp publish failed\n", reg);
+        g_sobuddyFailMs = now;
+        return;
+    }
+    if (!Buddy_SP_Register(reg)) {
+        PrintOut(PRINT_BAD, "[minigames] SP_Register(%s) failed\n", reg);
+        g_sobuddyFailMs = now;
+        return;
+    }
+    std::strncpy(g_sobuddyRegisterName, reg, sizeof(g_sobuddyRegisterName) - 1);
+    g_sobuddyRegisterName[sizeof(g_sobuddyRegisterName) - 1] = '\0';
+    if (!FindStringPackageCs(reg)[0]) {
+        g_sobuddyRegisterName[0] = '\0';
+        PrintOut(PRINT_BAD, "[minigames] SP_Register(%s): no CS_STRING_PACKAGES entry\n", reg);
+        g_sobuddyFailMs = now;
+        return;
+    }
+    g_sobuddyFailMs = 0;
+    g_sobuddySpReady = true;
+    EnsureCtfScoreboardHintLayout();
+    PrintOut(PRINT_LOG, "[minigames] registered strip/%s.sp (checksum name)\n", reg);
+}
+
+}  // namespace
+
+void AppendCtfScoreboardHint(void* ent) {
+    if (!ent)
+        return;
+    EnsureSobuddyStringPackage();
+    if (!g_sobuddySpReady || !g_ctfSbHintLayout[0])
+        return;
+    Buddy_SP_PrintLayout(ent, kSobuddyLayoutRaw, g_ctfSbHintLayout);
+}
+
 const char* MinigameLayoutForSlot(int slot) {
-    if (slot >= 1 && slot <= kMgMaxSlots && g_visible[slot] && g_layoutCache[slot][0])
-        return g_layoutCache[slot];
+    (void)slot;
     EnsurePlaceholderLayout();
     return g_placeholderLayout;
 }
@@ -330,19 +564,19 @@ void PaintScoreboard(void* ent) {
     fn(dm, ent, killer, 0);
 }
 
-void ApplyScorePage(void* ent, int slot, MgScorePage page) {
+void ApplyView(void* ent, int slot, MgView view) {
     void* client = ClientForEnt(ent);
     if (!client || slot < 1 || slot > kMgMaxSlots)
         return;
-    g_page[slot] = page;
-    switch (page) {
-    case MgScorePage::Off:
+    g_page[slot] = view;
+    switch (view) {
+    case MgView::Off:
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, false);
         PushLayoutPayload(ent, "");
         break;
-    case MgScorePage::Scoreboard:
+    case MgView::StockScoreboard:
         if (Readable(static_cast<char*>(client) + kClientShowinventoryOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowinventoryOfs) = 0;
         if (Readable(static_cast<char*>(client) + kClientShowhelpTimeOfs, sizeof(float)))
@@ -352,7 +586,7 @@ void ApplyScorePage(void* ent, int slot, MgScorePage page) {
         ApplyLayoutClient(ent, true);
         PaintScoreboard(ent);
         break;
-    case MgScorePage::Minigame:
+    case MgView::Minigame:
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, true);
@@ -361,23 +595,22 @@ void ApplyScorePage(void* ent, int slot, MgScorePage page) {
     }
 }
 
-void CycleScorePage(void* ent, int slot) {
-    if (slot < 1)
-        return;
-    const unsigned next =
-        (static_cast<unsigned>(g_page[slot]) + 1u) % (static_cast<unsigned>(MgScorePage::Minigame) + 1u);
-    ApplyScorePage(ent, slot, static_cast<MgScorePage>(next));
-}
-
 void __cdecl HkCmd_Score_f(void* ent) {
     if (MgPlatformEnabled() && ent) {
         const int slot = MgSlotForEdict(ent);
         if (slot >= 1) {
-            if (ClientWantsStockScoreboard(ent))
-                ApplyScorePage(ent, slot, MgScorePage::Scoreboard);
-            else
-                CycleScorePage(ent, slot);
-            return;
+            if (ClientWantsStockScoreboard(ent)) {
+                ApplyView(ent, slot, MgView::StockScoreboard);
+                return;
+            }
+            if (g_page[slot] == MgView::Minigame) {
+                ApplyView(ent, slot, MgView::Off);
+                return;
+            }
+            if (ClientUseHeld(ent)) {
+                ApplyView(ent, slot, MgView::Minigame);
+                return;
+            }
         }
     }
     if (auto original = reinterpret_cast<cmd_score_fn>(g_scoreTrampoline))
@@ -478,9 +711,37 @@ void InstallCmdScoreHook() {
         return;
     g_scoreTrampoline = DetourCreate(target, reinterpret_cast<void*>(&HkCmd_Score_f), DETOUR_TYPE_JMP, 6);
     if (g_scoreTrampoline)
-        PrintOut(PRINT_LOG, "[minigames] Cmd_Score_f hooked (3-page score cycle)\n");
+        PrintOut(PRINT_LOG, "[minigames] Cmd_Score_f hooked (use+score=minigame, score=close)\n");
     else
         PrintOut(PRINT_BAD, "[minigames] Cmd_Score_f hook failed\n");
+}
+
+void __thiscall HkDmctfScoreboard(void* thisp, void* ent, void* killer, int log_file) {
+    if (auto original = reinterpret_cast<dmctf_scoreboard_fn>(g_dmctfScoreTrampoline))
+        original(thisp, ent, killer, log_file);
+    if (MgPlatformEnabled() && ent && !log_file)
+        AppendCtfScoreboardHint(ent);
+}
+
+void InstallDmctfScoreboardHook() {
+    if (g_dmctfScoreTrampoline)
+        return;
+    HMODULE h = GameMod();
+    if (!h || !IsValidModuleRva(h, kRvaDmctfScoreboard, 8))
+        return;
+    void* target = reinterpret_cast<char*>(h) + kRvaDmctfScoreboard;
+    MEMORY_BASIC_INFORMATION mbi = {0};
+    if (VirtualQuery(target, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+        return;
+    const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (!(mbi.Protect & exec))
+        return;
+    g_dmctfScoreTrampoline =
+        DetourCreate(target, reinterpret_cast<void*>(&HkDmctfScoreboard), DETOUR_TYPE_JMP, 6);
+    if (g_dmctfScoreTrampoline)
+        PrintOut(PRINT_LOG, "[minigames] dmctf scoreboard hooked (hotkey hint)\n");
+    else
+        PrintOut(PRINT_BAD, "[minigames] dmctf scoreboard hook failed\n");
 }
 
 }  // namespace
@@ -573,104 +834,6 @@ const char* MgMapChecksum() {
         return "";
     char* cs = strings + static_cast<unsigned>(kCsMapChecksum) * kMaxQpath;
     return Readable(cs, kMaxQpath) ? cs : "";
-}
-
-constexpr char kMgSbMgBgGhoul[] = "sb/mg/bg.m32";
-constexpr char kMgSbMgPnGhoul[] = "sb/mg/pn.m32";
-constexpr char kMgSbMgIdGhoul[] = "sb/mg/id.m32";
-
-bool MgIsBuddyGhoulPath(const char* path) {
-    return path && (std::strncmp(path, "sb/mg/", 6) == 0 || std::strncmp(path, "sb/tt/", 6) == 0);
-}
-
-void MgStripBuddyGhoulFiles() {
-    char* strings = SvConfigstrings();
-    if (!strings)
-        return;
-    struct Entry {
-        int idx;
-        char path[kMaxQpath + 1];
-    };
-    Entry list[32];
-    int n = 0;
-    for (int i = 1; i < kMaxGhoulFiles && n < static_cast<int>(sizeof(list) / sizeof(list[0])); ++i) {
-        char* slot = strings + static_cast<unsigned>(kCsGhoulFiles + i) * kMaxQpath;
-        if (!Readable(slot, kMaxQpath) || slot[0] == '\0')
-            continue;
-        if (!MgIsBuddyGhoulPath(slot))
-            continue;
-        list[n].idx = kCsGhoulFiles + i;
-        std::memcpy(list[n].path, slot, kMaxQpath);
-        list[n].path[kMaxQpath] = '\0';
-        ++n;
-    }
-    for (int a = 0; a < n; ++a) {
-        for (int b = a + 1; b < n; ++b) {
-            if (list[b].idx > list[a].idx) {
-                Entry t = list[a];
-                list[a] = list[b];
-                list[b] = t;
-            }
-        }
-    }
-    for (int i = 0; i < n; ++i)
-        (void)Buddy_RemoveIndex(list[i].path, kCsGhoulFiles, kMaxGhoulFiles);
-}
-
-void MgRegisterPlatformGhoulFiles() {
-    if (!MgPlatformEnabled())
-        return;
-    const int black = MgRegisterGhoulFile(kMgSbMgBgGhoul);
-    const int panel = MgRegisterGhoulFile(kMgSbMgPnGhoul);
-    const int idle = MgRegisterGhoulFile(kMgSbMgIdGhoul);
-    (void)MgRegisterImage(kMgSbMgBg);
-    (void)MgRegisterImage(kMgSbMgPn);
-    (void)MgRegisterImage(kMgSbMgId);
-    if (black && panel && idle)
-        Buddy_DebugPrintf("[minigames] platform ghoul mg bg=%d pn=%d id=%d\n", black, panel, idle);
-    else
-        Buddy_DebugPrintf("[minigames] platform ghoul register failed\n");
-}
-
-extern void TttRegisterGhoulFiles();
-extern void TttOnEnabled();
-
-void MgSyncGhoulFiles() {
-    char* strings = SvConfigstrings();
-    if (!strings)
-        return;
-    char* cs = strings + static_cast<unsigned>(kCsMapChecksum) * kMaxQpath;
-    if (!Readable(cs, kMaxQpath) || cs[0] == '\0')
-        return;
-    static char lastMap[kMaxQpath + 1] = {};
-    if (std::strncmp(lastMap, cs, kMaxQpath) == 0)
-        return;
-    std::memcpy(lastMap, cs, kMaxQpath);
-    lastMap[kMaxQpath] = '\0';
-    MgStripBuddyGhoulFiles();
-    MgRegisterPlatformGhoulFiles();
-    TttRegisterGhoulFiles();
-    Buddy_DebugPrintf("[minigames] ghoul table synced (map %s)\n", lastMap);
-}
-
-// Mid-map cvar 0→1: append missing ghoul/image entries only (MgRegisterGhoulFile
-// is idempotent). Disable/switch never removes — map change compacts via sync.
-void MgAppendGhoulFilesOnEnable() {
-    static int prevPlatform = -1;
-    static int prevTtt = -1;
-    const bool plat = MgPlatformEnabled();
-    const bool ttt = Ttt_Enabled();
-    if (prevPlatform < 0) {
-        prevPlatform = plat ? 1 : 0;
-        prevTtt = ttt ? 1 : 0;
-        return;
-    }
-    if (plat && !prevPlatform)
-        MgRegisterPlatformGhoulFiles();
-    if (ttt && !prevTtt)
-        TttOnEnabled();
-    prevPlatform = plat ? 1 : 0;
-    prevTtt = ttt ? 1 : 0;
 }
 
 int MgMaxClients() {
@@ -823,10 +986,10 @@ void MgShowLayout(int slot1, bool on) {
     void* ent = MgEdictForSlot(slot1);
     if (!ent)
         return;
-    if (on && g_layoutCache[slot1][0])
-        ApplyScorePage(ent, slot1, MgScorePage::Minigame);
-    else if (!on)
-        ApplyScorePage(ent, slot1, MgScorePage::Off);
+    if (on)
+        ApplyView(ent, slot1, MgView::Minigame);
+    else
+        ApplyView(ent, slot1, MgView::Off);
 }
 
 void MgPushLayout(int slot1, const MgCanvas& canvas) {
@@ -840,14 +1003,15 @@ void MgPushLayout(int slot1, const MgCanvas& canvas) {
         g_layoutCache[slot1][kMgLayoutCap - 1] = '\0';
         g_layoutDirty[slot1] = true;
     }
-    if (!canvas.text[0])
+    const char* layout = MinigameLayoutForSlot(slot1);
+    if (!layout[0])
         return;
-    if (g_visible[slot1] && g_page[slot1] == MgScorePage::Minigame)
-        SendMinigameLayout(ent, slot1, canvas.text);
-    else if (g_visible[slot1] && g_page[slot1] == MgScorePage::Off)
-        ApplyScorePage(ent, slot1, MgScorePage::Minigame);
+    if (g_visible[slot1] && g_page[slot1] == MgView::Minigame)
+        SendMinigameLayout(ent, slot1, layout);
+    else if (g_visible[slot1] && g_page[slot1] == MgView::Off)
+        ApplyView(ent, slot1, MgView::Minigame);
     else if (!g_visible[slot1])
-        PushLayoutPayload(ent, canvas.text);
+        PushLayoutPayload(ent, layout);
 }
 
 void MgClearLayout(int slot1) {
@@ -855,10 +1019,10 @@ void MgClearLayout(int slot1) {
         g_layoutCache[slot1][0] = '\0';
         g_layoutDirty[slot1] = false;
         g_visible[slot1] = false;
-        g_page[slot1] = MgScorePage::Off;
+        g_page[slot1] = MgView::Off;
     }
     if (void* ent = MgEdictForSlot(slot1))
-        ApplyScorePage(ent, slot1, MgScorePage::Off);
+        ApplyView(ent, slot1, MgView::Off);
 }
 
 void MgShowIdleLayout(int slot1) {
@@ -866,9 +1030,9 @@ void MgShowIdleLayout(int slot1) {
         return;
     g_layoutCache[slot1][0] = '\0';
     g_visible[slot1] = true;
-    g_page[slot1] = MgScorePage::Minigame;
+    g_page[slot1] = MgView::Minigame;
     if (void* ent = MgEdictForSlot(slot1))
-        ApplyScorePage(ent, slot1, MgScorePage::Minigame);
+        ApplyView(ent, slot1, MgView::Minigame);
 }
 
 // ---- engine entry points (wired via hooks/callbacks json) ----
@@ -1206,15 +1370,9 @@ extern "C" void __cdecl mg_Test_f() {
         return;
     const int internal = MgUserToInternal(std::atoi(Buddy_ClientArgv(1)));
     if (!internal || !MgSlotSpawned(internal)) {
-        Buddy_DebugPrintf("usage: mg_test <slot 0-based>  (bg panel + label; see _sofbuddy_minigames_bg)\n");
+        Buddy_DebugPrintf("usage: mg_test <slot 0-based>\n");
         return;
     }
-    MgCanvas c;
-    MgCanvasClear(c);
-    MgCanvasBackground(c);
-    MgCanvasTc(c, kMgColYellow);
-    MgCanvasCenter(c, 320, 240, "MINIGAME TEST");
-    MgPushLayout(internal, c);
     MgShowLayout(internal, true);
 }
 
@@ -1231,7 +1389,7 @@ void mg_OnGameDllLoaded(void* gameExport) {
         g_edictSize = static_cast<int>(kEdictStrideDefault);
     InstallClientCommandHook(gameExport);
     InstallCmdScoreHook();
-    EnsureScoreboardPulse();
+    InstallDmctfScoreboardHook();
     MgRegisterConsoleCommand("mg_push", reinterpret_cast<void*>(&mg_Push_f));
     MgRegisterConsoleCommand("mg_show", reinterpret_cast<void*>(&mg_Show_f));
     MgRegisterConsoleCommand("mg_clear", reinterpret_cast<void*>(&mg_Clear_f));
@@ -1257,17 +1415,17 @@ void MaintainLayoutClient(void* ent, int slot) {
         EnsureScoreboardPage(ent, slot);
         return;
     }
-    if (g_page[slot] == MgScorePage::Minigame) {
+    if (g_page[slot] == MgView::StockScoreboard) {
+        ApplyView(ent, slot, MgView::Off);
+        return;
+    }
+    if (g_page[slot] == MgView::Minigame) {
         if (void* client = ClientForEnt(ent))
             SuppressStockLayoutRefresh(client);
         ApplyLayoutClient(ent, true);
-        // svc_layout only when the canvas changed — not every server tick.
         if (g_layoutDirty[slot])
             SendMinigameLayout(ent, slot, MinigameLayoutForSlot(slot));
-        return;
     }
-    if (g_page[slot] == MgScorePage::Scoreboard)
-        ApplyLayoutClient(ent, true);  // stock ClientEndServerFrame refreshes at &31
 }
 
 void mg_ClientEndServerFramePre(void*& ent) {
@@ -1280,7 +1438,7 @@ void mg_ClientEndServerFramePre(void*& ent) {
         EnsureScoreboardPage(ent, slot);
         return;
     }
-    if (g_page[slot] != MgScorePage::Minigame)
+    if (g_page[slot] != MgView::Minigame)
         return;
     if (void* client = ClientForEnt(ent))
         SuppressStockLayoutRefresh(client);
@@ -1290,13 +1448,13 @@ void mg_ClientEndServerFramePost(void* ent) {
     if (!MgPlatformEnabled() || !ent)
         return;
     const int slot = MgSlotForEdict(ent);
-    if (slot < 1 || g_page[slot] == MgScorePage::Off)
+    if (slot < 1 || g_page[slot] == MgView::Off)
         return;
     if (!MgSlotSpawned(slot)) {
         g_visible[slot] = false;
         g_layoutCache[slot][0] = '\0';
         g_layoutDirty[slot] = false;
-        g_page[slot] = MgScorePage::Off;
+        g_page[slot] = MgView::Off;
         return;
     }
     MaintainLayoutClient(ent, slot);
@@ -1307,7 +1465,7 @@ void mg_CL_SendClientMessagesPre() {
         return;
     const int n = MgMaxClients();
     for (int slot = 1; slot <= n; ++slot) {
-        if (g_page[slot] == MgScorePage::Off)
+        if (g_page[slot] == MgView::Off)
             continue;
         if (void* ent = MgEdictForSlot(slot)) {
             if (LevelIntermission() || ClientWantsStockScoreboard(ent))
@@ -1337,8 +1495,14 @@ void mg_SvClientThinkPre(void*& client, void*& cmd) {
 
 void mg_SvFramePost(int msec) {
     (void)msec;
-    MgSyncGhoulFiles();
-    MgAppendGhoulFilesOnEnable();
+    if (!MgPlatformEnabled())
+        return;
+    if (!g_sobuddySpReady) {
+        EnsureSobuddyStringPackage();
+        return;
+    }
+    if (SobuddyNeedsRegister())
+        EnsureSobuddyStringPackage();
 }
 
 extern "C" void Minigames_Shutdown() {
@@ -1353,6 +1517,10 @@ extern "C" void Minigames_Shutdown() {
         DetourRemove(&g_scoreTrampoline);
         g_scoreTrampoline = nullptr;
     }
+    if (g_dmctfScoreTrampoline) {
+        DetourRemove(&g_dmctfScoreTrampoline);
+        g_dmctfScoreTrampoline = nullptr;
+    }
     g_edicts = nullptr;
     g_edictSize = 0;
     for (bool& v : g_visible)
@@ -1361,8 +1529,10 @@ extern "C" void Minigames_Shutdown() {
         row[0] = '\0';
     for (bool& d : g_layoutDirty)
         d = false;
-    for (MgScorePage& p : g_page)
-        p = MgScorePage::Off;
+    for (MgView& p : g_page)
+        p = MgView::Off;
     g_placeholderLayout[0] = '\0';
-    g_placeholderBg = -1;
+    g_ctfSbHintLayout[0] = '\0';
+    g_sobuddySpReady = false;
+    g_sobuddyRegisterName[0] = '\0';
 }

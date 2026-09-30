@@ -58,6 +58,7 @@ struct State {
     bool   inCbuf = false;
     int    nestedCbuf = 0;
     bool   inReadPackets = false;
+    bool   passLevelChange = false;  // rest of this ReadPackets stays in cmd_text
     bool   inSvFrame = false;
     bool   dripping = false;
     int    fillMax = 0;
@@ -99,6 +100,43 @@ bool InWindow() {
         return false;
     const int msec = g.inFrame ? g.qcfMsec : 0;
     return MsUntilTickDue(msec) <= static_cast<double>(g.cfg.reserveMs);
+}
+
+// `map` / `gamemap` at a command boundary. SoFPlus queues
+// `;map @real@ #_sp_sv_info_map_next;` from inside SV_ReadPackets; parking
+// that appends it behind the drip backlog (one newline chunk per tick).
+bool IsMapToken(const char* s, int n) {
+    int i = 0;
+    while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r'))
+        ++i;
+    auto word = [&](const char* w, int wn) {
+        if (i + wn > n || std::memcmp(s + i, w, static_cast<std::size_t>(wn)) != 0)
+            return false;
+        const int e = i + wn;
+        return e == n || s[e] == ' ' || s[e] == '\t' || s[e] == ';' ||
+               s[e] == '\n' || s[e] == '\r' || s[e] == '\0';
+    };
+    return word("gamemap", 7) || word("map", 3);
+}
+
+bool TextHasLevelChange(const char* s, int n) {
+    if (!s || n <= 0)
+        return false;
+    for (int i = 0; i < n;) {
+        if (IsMapToken(s + i, n - i))
+            return true;
+        while (i < n && s[i] != ';' && s[i] != '\n')
+            ++i;
+        if (i < n)
+            ++i;
+    }
+    return false;
+}
+
+bool QueueHasLevelChange() {
+    const int n = CmdTextBytes();
+    unsigned char* data = CmdTextData();
+    return n > 0 && data && TextHasLevelChange(reinterpret_cast<const char*>(data), n);
 }
 
 bool ShouldPark() {
@@ -233,6 +271,14 @@ bool Take(char* text) {
         g.cfg = ReadConfig();
     if (!ShouldPark())
         return false;
+    // Level change stays in cmd_text so the next drain starts the map. Later
+    // inserts in this ReadPackets stay too: SoFPlus InsertText's map_on_rotate
+    // in front of `;map @real@ ...`, and parking only the script would reorder it.
+    if (g.passLevelChange ||
+        (text && TextHasLevelChange(text, static_cast<int>(std::strlen(text))))) {
+        g.passLevelChange = true;
+        return false;
+    }
     Park(text);
     return true;
 }
@@ -325,7 +371,9 @@ void cmdpark_CbufExecute(detour_Cbuf_Execute::tCbuf_Execute original) {
     // Strict moves every pre-frame queue aside (no between-tick execution);
     // otherwise move only inside the window. Either way the bytes rejoin the
     // one park and come back through DripOne after the tick.
-    if (g.cfg.dedicated && (g.cfg.strict || inWindow))
+    // A queued map/gamemap runs on this drain. Moving it aside would put the
+    // level change behind the one-chunk-per-tick drip.
+    if (g.cfg.dedicated && (g.cfg.strict || inWindow) && !QueueHasLevelChange())
         MoveQueueToPark();
     // Safe pre-frame drips are the non-strict path: strict runs its backlog
     // post-tick only (see SvFramePost), so dripping here would reintroduce
@@ -340,6 +388,7 @@ void cmdpark_ReadPacketsPre() {
 }
 void cmdpark_ReadPacketsPost() {
     cmdpark::g.inReadPackets = false;
+    cmdpark::g.passLevelChange = false;
 }
 void cmdpark_SvFramePre(int& msec) {
     using namespace cmdpark;

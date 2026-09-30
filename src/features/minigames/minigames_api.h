@@ -102,11 +102,32 @@ inline bool MgCanvasText(MgCanvas& c, int x, int y, const char* s) {
 }
 
 inline bool MgCanvasCenter(MgCanvas& c, int x, int y, const char* s) {
-    char token[256];
-    std::snprintf(token, sizeof(token), "xv %d yv %d cstring \"%s\" ", MgLayoutXv(x), MgLayoutYv(y),
-                  s ? s : "");
+    if (!s)
+        s = "";
+    const int w = static_cast<int>(std::strlen(s)) * 8;
+    return MgCanvasText(c, x - w / 2, y, s);
+}
+
+inline bool MgCanvasAltText(MgCanvas& c, int x, int y, const char* s) {
+    if (!s)
+        s = "";
+    char toggled[256];
+    int n = 0;
+    for (; s[n] && n < static_cast<int>(sizeof(toggled) - 1); ++n)
+        toggled[n] = static_cast<char>(static_cast<unsigned char>(s[n]) | 0x80u);
+    toggled[n] = '\0';
+    char token[512];
+    std::snprintf(token, sizeof(token), "xv %d yv %d altstring \"%s\" ", MgLayoutXv(x), MgLayoutYv(y),
+                  toggled);
     token[sizeof(token) - 1] = '\0';
     return MgCanvasAppend(c, token);
+}
+
+inline bool MgCanvasAltCenter(MgCanvas& c, int x, int y, const char* s) {
+    if (!s)
+        s = "";
+    const int w = static_cast<int>(std::strlen(s)) * 8;
+    return MgCanvasAltText(c, x - w / 2, y, s);
 }
 
 inline bool MgCanvasPic(MgCanvas& c, int x, int y, const char* pic) {
@@ -160,7 +181,7 @@ int MgRegisterGhoulFile(const char* path);
 
 // On CS_MAPCHECKSUM change: strip sb/mg/* + sb/tt/* ghoul slots (tail-first
 // via SV_RemoveIndex), then re-register platform + enabled game files compactly.
-void MgSyncGhoulFiles();
+// (Platform auto-registration disabled — use mg_ghoul_register manually if needed.)
 
 // Current CS_MAPCHECKSUM (empty if unavailable).
 const char* MgMapChecksum();

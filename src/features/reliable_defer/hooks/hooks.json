@@ -15,6 +15,11 @@
     "override": true
   },
   {
+    "function": "MSG_WriteLong",
+    "callback": "reldef_MSG_WriteLong",
+    "override": true
+  },
+  {
     "function": "MSG_WriteString",
     "callback": "reldef_MSG_WriteString",
     "override": true
@@ -23,6 +28,12 @@
     "function": "CL_SendClientMessages",
     "callback": "reldef_CL_SendClientMessagesPre",
     "phase": "Pre",
+    "priority": 5
+  },
+  {
+    "function": "CL_SendClientMessages",
+    "callback": "reldef_CL_SendClientMessagesPost",
+    "phase": "Post",
     "priority": 5
   }
 ]

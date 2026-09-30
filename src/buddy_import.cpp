@@ -383,16 +383,75 @@ int Buddy_ImageIndex(const char* name) {
     return f(name);
 }
 
+using fs_loadfile_fn = int (*)(char*, void**, bool);
+using fs_freefile_fn = void (*)(void*);
+using fs_createpath_fn = void (*)(char*);
+
+int Buddy_FS_LoadFile(const char* path, void** buffer, bool override_pak) {
+    if (!path || !path[0])
+        return -1;
+    auto f = ResolveGiSlot<fs_loadfile_fn>(93u, "FS_LoadFile");
+    if (!f)
+        return -1;
+    return f(const_cast<char*>(path), buffer, override_pak);
+}
+
+void Buddy_FS_FreeFile(void* buffer) {
+    if (!buffer)
+        return;
+    auto f = ResolveGiSlot<fs_freefile_fn>(94u, "FS_FreeFile");
+    if (!f)
+        return;
+    f(buffer);
+}
+
+void Buddy_FS_CreatePath(const char* path) {
+    if (!path || !path[0])
+        return;
+    auto f = ResolveGiSlot<fs_createpath_fn>(96u, "FS_CreatePath");
+    if (!f)
+        return;
+    f(const_cast<char*>(path));
+}
+
+using fs_userdir_fn = char* (*)();
+
+const char* Buddy_FS_Userdir() {
+    auto f = ResolveGiSlot<fs_userdir_fn>(95u, "FS_Userdir");
+    if (!f)
+        return "";
+    const char* s = f();
+    return (s && s[0]) ? s : "";
+}
+
 // gi.SP_Register — slot 47: void (*SP_Register)(const char *Package).
 using sp_register_fn = void (*)(const char*);
 
 bool Buddy_SP_Register(const char* package) {
     if (!package || !package[0])
         return false;
+    const char* reg = package;
+    char base[128];
+    const char* dot = std::strchr(package, '.');
+    if (dot && dot > package) {
+        const std::size_t n = static_cast<std::size_t>(dot - package);
+        if (n >= sizeof(base))
+            return false;
+        std::memcpy(base, package, n);
+        base[n] = '\0';
+        reg = base;
+    }
+    char fs_path[160];
+    std::snprintf(fs_path, sizeof(fs_path), "strip/%s.sp", reg);
+    if (Buddy_FS_LoadFile(fs_path, nullptr, false) < 0) {
+        std::snprintf(fs_path, sizeof(fs_path), "strip/%s", reg);
+        if (Buddy_FS_LoadFile(fs_path, nullptr, false) < 0)
+            return false;
+    }
     auto f = ResolveGiSlot<sp_register_fn>(47u, "SP_Register");
     if (!f)
         return false;
-    f(package);
+    f(reg);
     return true;
 }
 

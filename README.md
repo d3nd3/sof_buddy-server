@@ -270,10 +270,12 @@ and configstring that lands in `client->netchan.message` in the same tick — or
 while an earlier reliable is still unacked — into **one** byte stream per UDP
 packet. Bursts can overflow staging or crowd out the entity frame.
 
-`reliable_defer` hooks `SZ_Write` and `MSG_WriteByte` / `Short` / `String`,
-classifies each append, and queues deferred blobs in buddy memory. One blob
-drips into `message` per client per tick when the reliable lane is open.
-Connect/join traffic (`client->state < cs_spawned`) always passes through stock.
+`reliable_defer` hooks `SZ_Write` and `MSG_WriteByte` / `Short` / `Long` /
+`String`, classifies each append, and queues deferred blobs in buddy memory.
+One blob drips into `message` per client per tick when the reliable lane is
+open. Connect/join traffic (`client->state < cs_spawned`) always passes
+through stock. Read-only gauges: `_sofbuddy_reldef_queued`, `_dripped`,
+`_dropped`, `_capture_bytes`, `_oldest_wait`.
 
 **Settings** (you set these) — all `ARCHIVE`, read live:
 

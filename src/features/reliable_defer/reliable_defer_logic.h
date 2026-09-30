@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 constexpr int kRelDefMsgInlineReserve = 16;  // Netchan_Setup: message.maxsize = buffersize - 16
 constexpr int kRelDefWireHdrBytes = 8;       // seq+ack on server→client (qport non-zero after connect)
@@ -106,6 +107,146 @@ inline bool RelDef_CanDrip(int reliableLength, int msgCursize, int blobLen,
     return true;
 }
 
+// End offset of the last complete message in [p, p+n), or 0.
+// Stops at the first incomplete or opaque opcode — never guesses a cut
+// inside a message (that cut is "Illegible server message" on the client).
+// 0x24/0x25/0x27 are length-prefixed: SP_Print plants them with SZ_GetSpace,
+// and the counted payload may contain 0x0B and NUL.
+// Layouts match CL_ParseServerMessage (SoF.exe 0x2000ee30 / sof-bin 0x80ca8a8).
+// MSG_ReadString @ 0x2001E3B0 stops on 0x00 and 0xFF.
+inline int RelDef_CStrEnd(const std::uint8_t* p, int n, int i) {
+    for (; i < n; ++i) {
+        const std::uint8_t c = p[i];
+        if (!c || c == 0xFF)
+            return i + 1;
+    }
+    return -1;
+}
+
+// svc_ric (clientRICBuf::ReadRICs): count, then that many records.
+// Low nibble is the type. Types 0-4 carry one arg; its size is the low
+// two bits of the high nibble (0..3 => 1..4 bytes). Type 5 and unknown
+// types carry nothing. Payload is binary, so do not stop on NUL.
+inline int RelDef_RicEnd(const std::uint8_t* p, int n, int i) {
+    if (i >= n)
+        return -1;
+    const int count = p[i++];
+    for (int r = 0; r < count; ++r) {
+        if (i >= n)
+            return -1;
+        const int raw = p[i++];
+        if ((raw & 0x0f) > 4)
+            continue;
+        const int nbytes = ((raw >> 4) & 3) + 1;
+        if (i + nbytes > n)
+            return -1;
+        i += nbytes;
+    }
+    return i;
+}
+
+inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
+    if (!p || i < 0 || i >= n)
+        return -1;
+    const int op = p[i++];
+    auto need = [&](int k) { return i + k <= n ? i + k : -1; };
+    auto str = [&]() { return RelDef_CStrEnd(p, n, i); };
+    switch (op) {
+    case 0x02: case 0x0D: case 0x11:          // layout, stufftext, centerprint: string
+        return str();
+    case 0x0B:                                // print: level + string
+        if (i >= n) return -1;
+        ++i;
+        return str();
+    case 0x0C:                                // nameprint: client, team, string
+        if (need(2) < 0) return -1;
+        i += 2;
+        return str();
+    case 0x0F:                                // configstring: short + string
+        if (need(2) < 0) return -1;
+        i += 2;
+        return str();
+    case 0x20:                                // cinprint: short, short, byte, string
+        if (need(5) < 0) return -1;
+        i += 5;
+        return str();
+    case 0x08: case 0x12: case 0x22: case 0x23:  // word / short (0x22 = sp_print)
+        return need(2);
+    case 0x24: case 0x27: {                   // sp_print_data_1 / obit: short + byte n + n
+        // SP_Print copies the whole packet via SZ_GetSpace, so it shows up
+        // in capture only after absorb. Payload is binary (0x0B, NUL).
+        if (need(3) < 0) return -1;
+        const int count = p[i + 2];
+        i += 3;
+        return need(count);
+    }
+    case 0x25: {                              // sp_print_data_2: short + short n + n
+        if (need(4) < 0) return -1;
+        const int count = p[i + 2] | (p[i + 3] << 8);
+        i += 4;
+        return need(count);
+    }
+    case 0x19:                                // damagetexture: short + byte
+        return need(3);
+    case 0x1D:                                // restart_predn: byte
+        return need(1);
+    case 0x1A: {                              // ghoul reliable: short n + n bytes
+        // Payload is a bit packet (string table). A 0x0B or NUL inside it
+        // is not a message boundary.
+        if (need(2) < 0) return -1;
+        const int count = p[i] | (p[i + 1] << 8);
+        i += 2;
+        return need(count);
+    }
+    case 0x1C:                                // ric: count + records
+        return RelDef_RicEnd(p, n, i);
+    case 0x07: case 0x09: case 0x26: case 0x28:  // nop, reconnect, welcome, force
+        return i;
+    default:                                  // equip/countdown/binary: opaque
+        return -1;
+    }
+}
+
+inline int RelDef_LastCompleteEnd(const std::uint8_t* p, int n) {
+    if (!p || n <= 0)
+        return 0;
+    int pos = 0, last = 0;
+    while (pos < n) {
+        const int end = RelDef_MsgEnd(p, n, pos);
+        if (end <= pos)
+            break;
+        pos = last = end;
+    }
+    return last;
+}
+
+// How much of a capture may be queued. A tail that does not open with an
+// opcode is dropped: it would ride out after a finished svc_layout and the
+// client would report "Illegible server message (Last command was svc_layout)".
+inline int RelDef_SealEnd(const std::uint8_t* p, int n) {
+    if (!p || n <= 0)
+        return 0;
+    const int end = RelDef_LastCompleteEnd(p, n);
+    if (end >= n)
+        return n;
+    if (end <= 0) {
+        if (p[0] < 1 || p[0] > 0x28)
+            return 0;
+        const int msgEnd = RelDef_MsgEnd(p, n, 0);
+        return (msgEnd > 0 && msgEnd <= n) ? n : 0;
+    }
+    if (p[end] < 1 || p[end] > 0x28)
+        return end;
+    const int msgEnd = RelDef_MsgEnd(p, n, end);
+    return (msgEnd > end && msgEnd <= n) ? n : end;
+}
+
+// A MSG_WriteString continues the opcode already in staging. Staging that
+// already ends on a message boundary (a finished layout) must not take it.
+inline bool RelDef_StringContinues(const std::uint8_t* p, int n) {
+    return p && n > 0 && RelDef_LastCompleteEnd(p, n) < n;
+}
+
 inline void RelDef_CaptureAppend(std::uint8_t* dst, int& dstLen, int dstCap,
                                  const void* src, int srcLen) {
     if (!dst || !src || srcLen <= 0 || dstLen < 0 || dstCap <= dstLen)
@@ -113,16 +254,13 @@ inline void RelDef_CaptureAppend(std::uint8_t* dst, int& dstLen, int dstCap,
     const int n = srcLen < dstCap - dstLen ? srcLen : dstCap - dstLen;
     if (n <= 0)
         return;
-    const auto* s = static_cast<const std::uint8_t*>(src);
-    for (int i = 0; i < n; ++i)
-        dst[dstLen++] = s[i];
+    std::memcpy(dst + dstLen, src, static_cast<std::size_t>(n));
+    dstLen += n;
 }
 
-// Lockstep bypass for binary multi-write messages: svc_download (0x13) and
-// svc_sp_print_data_1/_data_2 (0x24/0x25) are Byte(op) + Short + Byte|Short +
-// SZ_Write(raw binary), written atomically in one engine call. The payload
-// is binary (fake 0x0B/NULs) and each unit must hit staging stock-immediate
-// and atomic — capture/split/delay corrupts it.
+// Lockstep bypass for svc_download (0x13): Byte(op) + Short + Byte +
+// SZ_Write(raw binary), written atomically in one engine call. SP_Print
+// (0x24/0x25) ships via SZ_GetSpace+SZ_Write — RelDef_MsgEnd keeps it whole.
 // phase: 0 = off, 3..2 = header bypasses remaining, 1 = data-or-new-message
 // (a short "file not found" message has no data: the next non-SZ write
 // disarms and classifies normally).
@@ -132,7 +270,49 @@ enum RelDefDlOutcome : std::uint8_t {
 };
 
 inline bool RelDef_IsLockstepOp(unsigned char b) {
-    return b == 0x13 || b == 0x24 || b == 0x25;
+    return b == 0x13;
+}
+
+// svc_ghoulreliable: MSG_WriteByte(0x1A) then SZ_GetSpace of the short and
+// the body into the same mailbox. The opcode has to land in that buffer;
+// capturing it alone makes the client unpack a header with no body
+// (Ghoul :StringTable underflowed).
+inline bool RelDef_WriteThroughOp(unsigned char b) {
+    return b == 0x1A;
+}
+
+// SV_Map broadcasts these as one SZ_Write (opcode + text + NUL) while the
+// client is still spawned, then flushes before SpawnServer. "changing" is
+// what makes the client run "menu loading"; without it the load screen
+// never starts and "cmd begin" has nothing to finish.
+inline bool RelDef_IsLevelChange(const std::uint8_t* p, int n) {
+    auto at = [&](const char* s, int sn) {
+        if (!p || n != sn + 1 || p[0] != 0x0D)
+            return false;
+        for (int i = 0; i < sn; ++i)
+            if (p[i + 1] != static_cast<unsigned char>(s[i]))
+                return false;
+        return true;
+    };
+    return at("changing\n", 10) || at("reconnect\n", 11);
+}
+
+// True when this mailbox is exactly a level-change packet, or one was
+// appended after other mail already sitting there.
+inline bool RelDef_HasLevelChange(const std::uint8_t* p, int n) {
+    if (RelDef_IsLevelChange(p, n))
+        return true;
+    if (n > 11 && RelDef_IsLevelChange(p + (n - 11), 11))
+        return true;
+    return n > 12 && RelDef_IsLevelChange(p + (n - 12), 12);
+}
+
+// SV_Map flushes while the client is still spawned, so the snapshot is parsed
+// after "changing" and spends the client's one-shot menu close on the old
+// servercount. Drop spawned to connected for that send: the engine then
+// transmits the mailbox with no snapshot. Caller restores spawned afterwards.
+inline bool RelDef_SuppressSnapshot(int clientState, bool hasLevelChange) {
+    return clientState >= kCsSpawned && hasLevelChange;
 }
 
 inline RelDefDlOutcome RelDef_DlStep(int& phase, bool isBulk) {

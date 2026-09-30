@@ -7,16 +7,15 @@ tricky pieces:
 1. **Input routing** — detours the stock game DLL's `ClientCommand` and
    delivers client console words (`ttt ...`) to the registered game.
    Everything else passes through to stock untouched.
-2. **Layout channel** — `svc_layout` (opcode `0x2`) unicast per player.
-   `reliable_defer` carries each board as one whole blob, so pictures can
-   never arrive torn (the robustness win over script-driven layouts).
+2. **Layout channel** — two server paths hit the same client `layout_string`
+   buffer (cap `0x400`). See [Layout delivery](#layout-delivery-svc_layout-vs-sp_print)
+   below for when to use each.
 3. **Visibility** — re-asserts `ps.stats[STAT_LAYOUTS]` every server frame
    for visible slots, because stock `G_SetStats` rewrites stats each frame.
-4. **Score pages** — hooks stock `cmd_score_f` @ `0xF6710` (same as sofree
-   `alternate_scoreboard`) so Tab cycles **off → scoreboard → minigame → off**
-   while alive. **Death** (`player_die` → `Cmd_Score_f`, `PM_DEAD`) and
-   **intermission** (`level.intermissiontime`) force the stock scoreboard page
-   (same as vanilla `showscores` + `clientScoreboardMessage`), not a Tab cycle.
+4. **Minigame view** — hooks stock `cmd_score_f` @ `0xF6710`: **+use + score**
+   opens the minigame layout (idle banner or active board); **score alone**
+   closes it when open. Score without use falls through to stock DM scoreboard
+   toggle. Death/intermission still force the vanilla scoreboard layout.
 
 ## Writing a new game (chess, ...)
 
@@ -43,6 +42,7 @@ tricky pieces:
 | `player_state_t.stats` | `ps+164`, `short` elems | Offsets compiled from the game source (x86) |
 | `STAT_LAYOUTS` | `stats[9]` | Game + engine agree; client draws layout while bit 0 set |
 | `gclient.pers.health` | `client+0x2FC` | `G_SetStats` layout gate (dead) |
+| `gclient.buttons` | `client+0x47C` | `+use` held check for use+score open |
 | `gclient.ps.pmove.pm_type` | `client+0` | `PM_DEAD` (=3) before `player_die` sets `health=-1` |
 | `level.intermissiontime` | `gamex86+0x15D1C8` | `G_SetStats` layout gate + intermission scoreboard |
 | `gi.argc` / `gi.argv` | import slots 9 / 10 | Source field order (`bprintf` lands on 12, as existing wrappers confirm) |
@@ -69,7 +69,7 @@ the server, where the platform routes the registered word to its game.
 
 | Command | Meaning |
 |---------|---------|
-| `mg_push <slot> <tokens...>` | Send a pre-composed layout token stream to one slot (`xv/yv/string/cstring/pic n/tc`, spaces allowed — everything after the slot is the canvas, 1024 cap) |
+| `mg_push <slot> <tokens...>` | Send a pre-composed layout token stream to one slot (`xv/yv/string/picn/tc`, spaces allowed — everything after the slot is the canvas, 1024 cap) |
 | `mg_show <slot> <0\|1>` | Turn layout visibility on/off for a slot (minigame page while on) |
 | `mg_clear <slot>` | Hide the board and wipe the client's stored layout |
 | `mg_idle <slot>` | Minigame tab with idle placeholder (post-game timeout target) |
@@ -88,21 +88,33 @@ Rules still live in C (or in script logic calling the game's own
 commands, e.g. `ttt_start` / `ttt_move` / `ttt_end`): the `mg_*` layer is
 canvas + visibility + push + resource registration + screen text.
 
-## Score pages (Tab / `score`)
+## Minigame view (Tab / `score`)
 
-When the buddy minigames platform is enabled, **`cmd_score_f` is detoured**
-(sofree `alternate_scoreboard` style — not the stock on/off `showscores`
-flip) and cycles three views:
+When the buddy minigames platform is enabled, **`cmd_score_f` is detoured**:
 
-| Page | What the client sees |
-|------|----------------------|
-| **Off** | Normal HUD (layout cleared) |
-| **Scoreboard** | Stock DM scoreboard (`showscores`, vtable paint) |
-| **Minigame** | Active game layout, or the idle **SoF Buddy** banner when nothing is streaming |
+| Input | Minigame open? | Result |
+|-------|----------------|--------|
+| **Score only** | Yes | Close minigame view (normal HUD) |
+| **+use + score** | No | Open minigame view (board or idle banner) |
+| **Score only** | No | Stock DM scoreboard toggle (vanilla) |
 
-Cycle order: **off → scoreboard → minigame → off**. Starting a game
-(`MgShowLayout(..., true)`) lands on **minigame** so the board shows
-immediately; Tab steps through scoreboard and back to game view.
+Starting a game (`MgShowLayout(..., true)`) opens the minigame view directly.
+Death and intermission bypass this and show the stock scoreboard.
+
+CTF scoreboard hotkey reminder (when minigames enabled): after stock
+`dmctf_c::clientScoreboardMessage` runs, the hint is **appended** to the
+existing layout via **`Buddy_SP_PrintLayout(ent, 0x0700, tokens)`** — layout
+append via **`strip/sofbuddy.sp`**. On first use the server creates
+`strip/sofbuddy.sp` if missing (package ID **7** — retail-empty slot between
+6 and 8 — index **0**, `SP_FLAG_LAYOUT`, `TEXT "%s"`), CRCs the template bytes,
+publishes **`strip/sofbuddy-<CRC>.sp`**, and registers **`sofbuddy-<CRC>`**
+(SoF++-nix pattern: clients re-download when content changes). Registration:
+`FS_LoadFile("strip/sofbuddy-<CRC>")` precheck, then `SP_Register("sofbuddy-<CRC>")`
+(`SP_RegisterServer` @ `0x20057F20`), which sets a `CS_STRING_PACKAGES` entry
+(the configstring **value** is `sofbuddy-<CRC>`; clients fetch
+`strip/sofbuddy-<CRC>.sp`). Requires client `allow_download_stringpackage 1`
+(stock stufftext sends this).
+See [Layout delivery](#layout-delivery-svc_layout-vs-sp_print).
 
 ### Layout sprites (`assets/sb/`)
 
@@ -161,12 +173,11 @@ SoF ships a String Package system (see the Jedi Outcast SDK
 with flags, formatted with `%hu %hd %d %p %s` (plus `%n`), sent via
 `SP_Print_` as `svc_sp_print` (`0x22`), `svc_sp_print_data_1` (`0x24`,
 short id + byte len + bytes) or `svc_sp_print_data_2` (`0x25`, short id +
-short len + bytes), unicast or broadcast. We deliberately do **not** call
-`SP_Print_` from scripts — it needs a 52-argument call — and instead drive
-`svc_layout` directly for boards. For free-form screen text use
-`mg_print` / `mg_center`; for SP-flagged captions use `mg_caption` after
-`mg_sp_register` (or ship a `.sp` under `strip/` and register it the
-SoFree way: one `%%s` entry per message template).
+short len + bytes), unicast or broadcast. Minigame **full pages** use
+`SP_Print(LAYOUT_RESET)` + **`svc_layout`** (see [Layout delivery](#layout-delivery-svc_layout-vs-sp_print)).
+For free-form screen text use `mg_print` / `mg_center`; for SP-flagged
+captions use `mg_caption` after `mg_sp_register` (or ship a `.sp` under
+`strip/` and register it the SoFree way: one `%%s` entry per message template).
 
 | SP flag | Value | Meaning |
 |---------|-------|---------|
@@ -177,6 +188,60 @@ SoFree way: one `%%s` entry per message template).
 | `SP_FLAG_LAYOUT` | `0x10` | Layout string. A leading `*` is the trick: bare `*` **clears** the layout, `*<text>` **replaces** it, anything else **appends** (capped at 0x400) |
 | `SP_FLAG_ALWAYS_PRINT` | `0x40` | Forces `CAPTIONED` output |
 | (none) | — | Falls through to `Com_Printf` (console) |
+
+## Layout delivery: `svc_layout` vs `SP_Print`
+
+Both paths end up in the client's `layout_string`, which
+`SCR_ExecuteLayoutString` draws while `stats[STAT_LAYOUTS]` bit 0 is set.
+They differ in **merge semantics** and **what belongs on the wire**.
+
+| Path | Opcode / API | Client effect |
+|------|----------------|---------------|
+| **`svc_layout`** | `0x2` + `WriteString` | **Replaces** the whole `layout_string` (`Com_sprintf` into the 0x400 buffer). Anything already there (e.g. a stock scoreboard) is wiped. |
+| **`SP_Print` + `SP_FLAG_LAYOUT`** | `0x22` / `0x24` / `0x25` | **Merge**: bare `*` clears; `*tokens` replaces; any other text **appends** (space-separated, capped at 0x400). Stock DM/CTF scoreboards are built entirely this way (`dm_generic` / `dm_ctf` layout entries). |
+
+Verified in retail client disassembly: `svc_layout` handler @ `CL_ParseServerMessage`
+case `0x2`; SP layout merge @ `Print_SP_Message` when flag `0x10` is set.
+
+### When to use which
+
+| Goal | Use |
+|------|-----|
+| **Own the full screen** (minigame page, Hello World placeholder) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
+| **Add tokens to an existing layout** (e.g. one line on a stock scoreboard) | **`SP_Print` layout append** only. A trailing `svc_layout` would destroy the scoreboard. Needs a registered `.sp` entry with `SP_FLAG_LAYOUT` and `%s`; minigames auto-create **`strip/sofbuddy.sp`** (`0x0700`) when missing. |
+
+### String package IDs (`strip/*.sp`)
+
+Retail ships fixed `ID N` values inside each `.sp`; the high byte of
+`SP_Print` ids is that package id (`0x0700` = package **7**, index **0**).
+The **configstring slot** for download is assigned by `SV_FindIndex` (first free
+slot in `CS_STRING_PACKAGES+1 … +30`, base **1463** / `0x5B7`) — not the same
+number as the `.sp` `ID` field, though retail leaves **ID 7** unused in `.sp`
+files. The remaining **empty** retail **ID** slots include:
+
+`0–6`, `8–14`, `50–55`, `57–68`, `99–130`, `150–195`, `200`, `203`, `205–208`,
+`210–239`, `241–244`, `246–248`, `251–253`, …
+
+**`sofbuddy.sp` uses ID 7** — the unused gap between retail slots 6 and 8 —
+so it does not collide with stock packages. Format matches SoFree's `sofree.sp`
+shape: **`COUNT 2`**, index **0** = `SP_FLAG_LAYOUT` + `TEXT "%s"` (`0x0700`
+append), index **1** = `SP_FLAG_CREDIT` + `TEXT "%s"` (`0x0701`, reserved for
+custom credit images later). In a C char array SoFree writes `"%%s"` so the file
+gets a single `%`; we `fwrite` the body directly so the literal is already
+`"%s"`. The server keeps **`strip/sofbuddy.sp`** as the editable template;
+registration uses **`sofbuddy-<CRC32>.sp`** / **`SP_Register("sofbuddy-<CRC32>")`**
+so a content change gets a new configstring name and clients fetch the new file.
+Registered on the first `SV_Frame` when minigames are enabled so
+clients download the checksum-named strip during connect, not on first scoreboard.
+| **Text outside the layout channel** | `mg_center` / `centerprintf`, captions, etc. — separate opcodes, no merge rules. Not used for the CTF scoreboard hint (layout append only). |
+
+### Wire size (why append matters)
+
+- **Full replace (`svc_layout`)**: one message carries the **entire** layout string. Fine when the server owns the whole page (~100–1000 chars for a minigame board).
+- **Stock scoreboard**: already sent as **many small SP layout messages** during `clientScoreboardMessage` (reset, team rows, clients, spectators). The client holds the merged result; the server does **not** keep a copy.
+- **Append one line after scoreboard**: send **only the hint tokens** (~100 bytes) via SP layout append. Re-sending the scoreboard plus hint in a single `svc_layout` would be much larger and requires reconstructing layout the server never stored.
+
+`reliable_defer` applies to both families: each `svc_layout` or SP print should arrive as one whole reliable parcel (no torn layout tokens mid-packet).
 
 `.sp` files may also carry a `NOTES` field, and colour names `$P_WHITE`,
 `$P_RED`, `$P_GREEN`, `$P_YELLOW`, `$P_BLUE`, `$P_PURPLE`, `$P_CYAN`,

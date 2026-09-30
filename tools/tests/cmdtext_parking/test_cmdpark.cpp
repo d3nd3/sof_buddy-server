@@ -223,6 +223,19 @@ extern "C" void PrintOutImpl(int, const char* msg, ...) {
     fake::logs.push_back(buf);
 }
 
+void* CpuOpt_MasterCvar() {
+    return Buddy_GetEngineCvar("_sofbuddy_cpuopt", "1", 1, nullptr);
+}
+void* CpuOpt_StrictCvar() {
+    return Buddy_GetEngineCvar("_sofbuddy_cmdpark_strict", "1", 1, nullptr);
+}
+bool CpuOpt_Enabled() {
+    return Buddy_ReadCvarValue(CpuOpt_MasterCvar(), 1.0f) != 0.0f;
+}
+bool CpuOpt_Strict() {
+    return CpuOpt_Enabled() && Buddy_ReadCvarValue(CpuOpt_StrictCvar(), 1.0f) != 0.0f;
+}
+
 #include "../../../src/features/cpu_optimizations/cmdtext_parking/engine.cpp"
 #include "../../../src/features/cpu_optimizations/cmdtext_parking/cvar.cpp"
 #include "../../../src/features/cpu_optimizations/cmdtext_parking/cmdpark.cpp"
@@ -676,6 +689,53 @@ void Test_ReserveParksEveryInsert() {
     CHECK(g_addCalls == 1, "EXEC_NOW was parked");
 }
 
+void Test_LevelChangeDoesNotWaitOnPark() {
+    ResetCvars();
+    SetCvar("_sofbuddy_cmdpark_strict", 1);
+    g_sim = Sim();
+    g_run = Run();
+    cmdpark::FreePark();
+    cmdpark::g = cmdpark::State();
+    fake::ClearCommands();
+    fake::SvState() = 2;
+    fake::SvsInit() = 1;
+    fake::Realtime() = 200000;
+    fake::SvTime() = static_cast<std::uint32_t>(fake::Realtime()) + 100;
+
+    // Rcon is inside SV_ReadPackets. Strict would park every insert there and
+    // drip one newline chunk per tick — the map line waits behind the backlog.
+    cmdpark_ReadPacketsPre();
+    char backlog[] = "echo parked\n";
+    CHECK(cmdpark::Take(backlog), "backlog insert was not parked");
+    const int parked = cmdpark::ParkBytes();
+    char mapcmd[] = ";map @real@ #_sp_sv_info_map_next;";
+    CHECK(!cmdpark::Take(mapcmd), "map insert was parked");
+    CHECK(cmdpark::ParkBytes() == parked, "map bytes entered the park");
+    char rot[] = "echo rotate\n";
+    CHECK(!cmdpark::Take(rot), "map_on_rotate insert was parked");
+    cmdpark_ReadPacketsPost();
+
+    cmdpark_ReadPacketsPre();
+    char later[] = "echo later\n";
+    CHECK(cmdpark::Take(later), "insert after the burst was not parked");
+    cmdpark_ReadPacketsPost();
+
+    // What InsertText does once Take refuses: rotate in front of the map line.
+    const int rn = static_cast<int>(std::strlen(rot));
+    const int mn = static_cast<int>(std::strlen(mapcmd));
+    std::memcpy(fake::cmdBuf, rot, static_cast<std::size_t>(rn));
+    std::memcpy(fake::cmdBuf + rn, mapcmd, static_cast<std::size_t>(mn));
+    fake::CmdCursize() = rn + mn;
+
+    int msec = 1;
+    cmdpark_QcommonFrame(msec);
+    cmdpark_CbufExecute(&FakeCbufOriginal);
+    CHECK(g_run.cmdsRun == 2, "level change did not drain (%d)", g_run.cmdsRun);
+    CHECK(fake::CmdCursize() == 0, "map line still queued");
+    CHECK(cmdpark::g.defers == 0, "level change was moved aside");
+    CHECK(cmdpark::ParkBytes() > parked, "backlog was pulled into the map drain");
+}
+
 void Test_StrictRunsNothingBetweenTicks() {
     ResetCvars();
     SetCvar("_sofbuddy_cmdpark_strict", 1);
@@ -848,6 +908,7 @@ int main() {
     Test_DrainsAreNeverSplit();
     Test_StartGateIsBounded();
     Test_ReserveParksEveryInsert();
+    Test_LevelChangeDoesNotWaitOnPark();
     Test_StrictRunsNothingBetweenTicks();
     Test_NestedDrainRunsWhole();
     Test_BehindServerStillDrains();

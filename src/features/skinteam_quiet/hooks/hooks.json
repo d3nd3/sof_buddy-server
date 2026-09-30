@@ -1,0 +1,17 @@
+[
+  {
+    "function": "PB_InitBody",
+    "callback": "skinteam_PbInitBody",
+    "override": true
+  },
+  {
+    "function": "player_die",
+    "callback": "skinteam_PlayerDie",
+    "override": true
+  },
+  {
+    "function": "configstring",
+    "callback": "skinteam_Configstring",
+    "override": true
+  }
+]

@@ -84,13 +84,25 @@ bool Buddy_RemoveIndex(const char* path, int start, int max_count);
 /** gi.imageindex (slot 3): precache a pic/model/sound name, returns index. */
 int Buddy_ImageIndex(const char* name);
 
-/** gi.SP_Register (slot 47): load a StringPackage by reference name (no .sp suffix). */
+/** gi.FS_LoadFile (slot 93): load a file into memory; returns length or -1. */
+int Buddy_FS_LoadFile(const char* path, void** buffer, bool override_pak);
+
+/** gi.FS_FreeFile (slot 94): release FS_LoadFile buffer. */
+void Buddy_FS_FreeFile(void* buffer);
+
+/** gi.FS_CreatePath (slot 96): create parent dirs for a file path. */
+void Buddy_FS_CreatePath(const char* path);
+
+/** gi.FS_Userdir (slot 95): writable user directory (e.g. "User"). */
+const char* Buddy_FS_Userdir();
+
+/** gi.SP_Register (slot 47 / SP_RegisterServer): FS_LoadFile("strip/name") then register. */
 bool Buddy_SP_Register(const char* package);
 
 /** gi.SP_Print (slot 48): StringPackage print; id is (package_id<<8)|index. */
 void Buddy_SP_Print(void* ent, unsigned short id);
 
-/** SP_Print with one layout "%s" arg (sofree-style custom package entry). */
+/** SP_Print with one layout "%s" arg (sofbuddy.sp LAYOUT_RAW entry). */
 void Buddy_SP_PrintLayout(void* ent, unsigned short id, const char* text);
 
 #ifdef __cplusplus

@@ -20,8 +20,11 @@ Sleep skip when strict or `reserve_ms` is on.
   (park arrivals, move the queued buffer aside) applied when the tick is
   within this many ms. Pure X — `0` = off. Larger ducks earlier at the cost
   of a few ms of script latency.
-- Client text from `SV_ReadPackets` is always parked until after the tick
-  (then dripped). That is `.COMMAND` / stringcmd.
+- Client text from `SV_ReadPackets` is parked until after the tick
+  (then dripped). That is `.COMMAND` / stringcmd. A `map` / `gamemap`
+  command (SoFPlus `;map @real@ …` included) stays in `cmd_text`, and so
+  does the rest of that `SV_ReadPackets`, so the next drain starts the
+  level change instead of dripping it one chunk per tick.
 - **`_sofbuddy_cmdpark_strict`**: park all inter-tick inserts (not during
   `SV_Frame`), move every pre-frame queue aside, run everything post-tick. No
   between-tick execution at all. Clamp violations log one console line in

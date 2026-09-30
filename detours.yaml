@@ -271,6 +271,91 @@ functions:
       - type: int
         name: serverframe
 
+  # dmctf_c::AssignTeam body (retail gamex86 @ 0x5006d070). Profiles filters
+  # collapsed/garbage team_red_blue so team-menu changes don't run twice
+  # (kill + restore echo) before the guid-bearing value is pushed back.
+  - name: orig_AssignTeam
+    module: GameDll
+    identifier: "0x6D070"
+    return_type: void
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: void*
+        name: ent
+      - type: char*
+        name: userinfo
+
+  - name: PB_InitBody
+    module: GameDll
+    identifier: "0xEFE50"
+    return_type: bool
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: userinfo
+
+  - name: PB_GetActualSkinName
+    module: GameDll
+    identifier: "0xEFBC0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: out
+
+  - name: PB_GetActualTeamName
+    module: GameDll
+    identifier: "0xEFCA0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: out
+
+  - name: player_die
+    module: GameDll
+    identifier: "0xF2A30"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: self
+      - type: void*
+        name: inflictor
+      - type: void*
+        name: attacker
+      - type: int
+        name: damage
+      - type: float*
+        name: point
+
+  # SV_Configstring. CS_PLAYERSKINS (0x587) is name\team\skin\bit. A leading
+  # * on team is the client "doesn't recognise teamname" line.
+  - name: configstring
+    module: SofExe
+    identifier: "0x5CA40"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: num
+      - type: char*
+        name: s
+
   # ---------------------------------------------------------------------
   # Zone allocator (SoF.exe). Z_Malloc/Z_Free are the engine's single
   # allocation chokepoint - 36 and 56 call sites respectively - and every
@@ -440,6 +525,18 @@ functions:
       - type: int
         name: c
 
+  - name: MSG_WriteLong
+    module: SofExe
+    identifier: "0x2001CBF0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
   - name: MSG_WriteString
     module: SofExe
     identifier: "0x2001CD00"
@@ -451,6 +548,21 @@ functions:
         name: sb
       - type: char*
         name: s
+
+  # SV_GhoulFileIndex(name): SV_FindIndex(name, 1497, 2048, create=1).
+  # Registers a file in CS_GHOULFILES (first-free slot, multicasts the
+  # update); the client's connect-time precache walk requests every
+  # non-empty entry verbatim, which is how pipe.func auto-downloads.
+  # Pointer-only (never detoured). Verified: SoF.exe 0x2005D5B0.
+  - name: SV_GhoulFileIndex
+    module: SofExe
+    identifier: "0x2005D5B0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: name
 
   - name: SZ_Clear
     module: SofExe

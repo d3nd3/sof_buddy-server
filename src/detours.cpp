@@ -84,6 +84,8 @@ void* DetourSystem::ResolveAddress(void* address, DetourModule module, bool supp
     
     if (module_name_str) {
         void* dll_base = GetModuleBase(module_name_str);
+        if (!dll_base && module == DetourModule::SofExe)
+            dll_base = GetModuleBase("SoF-spsv.exe");
         if (dll_base) {
             void* resolved = (void*)((uintptr_t)dll_base + rva_value);
             return resolved;

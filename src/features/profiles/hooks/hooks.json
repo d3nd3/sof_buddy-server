@@ -1,0 +1,7 @@
+[
+  {
+    "function": "orig_AssignTeam",
+    "callback": "profiles_AssignTeam",
+    "override": true
+  }
+]

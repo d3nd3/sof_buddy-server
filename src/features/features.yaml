@@ -12,6 +12,9 @@ features:
   reliable_defer: true
   print_guard: true
   minigames: true
+  clsv_pipe: true
+  profiles: true
+  skinteam_quiet: true
   # my_feature: false
 
 # Alternative: list only enabled names (merged with `features:` above if both present).

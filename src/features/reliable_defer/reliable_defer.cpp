@@ -1,8 +1,8 @@
 // reliable_defer: queue server→client reliable staging (netchan.message).
 // Hooks SZ_Write + MSG_Write* so every path is covered. Within a frame, all
 // client appends for one slot accumulate in a capture; blobs are cut only at
-// complete svc_print (0x0B) boundaries so a blob never ends mid-message
-// (orphan opcode+level = "Illegible server message" on the client).
+// complete message boundaries (RelDef_LastCompleteEnd). A cut mid-message
+// makes the next blob start on payload bytes ("Illegible server message").
 
 #include "cvar.h"
 #include "engine.h"
@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <vector>
 #include <windows.h>
 
@@ -22,14 +23,19 @@ namespace reldef_internal {
 constexpr int kMaxSlots = 64;
 
 struct SlotQueue {
-    std::vector<std::vector<std::uint8_t>> blobs;
-    std::vector<int> enqueued;  // sv_framenum when each blob was queued
+    std::deque<std::vector<std::uint8_t>> blobs;
+    std::deque<int> enqueued;  // sv_framenum when each blob was queued
     int bytes = 0;
 };
 
 struct State {
     bool ready = false;
+    bool enabled = true;
+    int maxClients = 8;
     RelDefPolicy policy;
+    RelDefLimits limits;
+    char* clientsBase = nullptr;
+    void* msgSb[kMaxSlots] = {};
     SlotQueue slot[kMaxSlots];
     int captureSlot = 0;
     std::vector<std::uint8_t> capture;
@@ -38,6 +44,7 @@ struct State {
     // Per-slot lockstep bypass phase (see RelDef_DlStep): binary multi-write
     // messages started at a message boundary skip classification entirely.
     int dlPhase[kMaxSlots] = {};
+    bool holdSnapshot[kMaxSlots] = {};
     long long deferred = 0;
     long long queued = 0;
     long long dripped = 0;
@@ -56,12 +63,6 @@ T* Rva(unsigned rva) {
     return reinterpret_cast<T*>(EngineBase() + rva);
 }
 
-int MaxClients() {
-    void* cv = Buddy_GetEngineCvar("maxclients", "8", 0, nullptr);
-    const int n = static_cast<int>(Buddy_ReadCvarValue(cv, 8.0f));
-    return n > 0 && n <= kMaxSlots ? n : 8;
-}
-
 int EngineBuffersize() {
     int* p = Rva<int>(kRvaBuffersize);
     if (p && *p > 0)
@@ -72,52 +73,46 @@ int EngineBuffersize() {
     return mc == 1 ? 16384 : 1400;
 }
 
-RelDefLimits CurrentLimits() {
-    g.policy = RelDef_ReadPolicy();
-    return RelDef_ComputeLimits(EngineBuffersize(), g.policy);
+int CaptureMax() {
+    return g.limits.msgMaxsize > 0 ? g.limits.msgMaxsize : 1384;
 }
 
-int CaptureMax() {
-    const RelDefLimits lim = CurrentLimits();
-    return lim.msgMaxsize > 0 ? lim.msgMaxsize : 1384;
+void RefreshCache() {
+    void* cv = Buddy_GetEngineCvar("_sofbuddy_reldef", "1", 1, nullptr);
+    g.enabled = Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
+    g.policy = RelDef_ReadPolicy();
+    g.limits = RelDef_ComputeLimits(EngineBuffersize(), g.policy);
+    void* mcv = Buddy_GetEngineCvar("maxclients", "8", 0, nullptr);
+    const int n = static_cast<int>(Buddy_ReadCvarValue(mcv, 8.0f));
+    g.maxClients = n > 0 && n <= kMaxSlots ? n : 8;
+    g.clientsBase = *Rva<char*>(kRvaSvsClients);
+    for (int slot = 1; slot <= kMaxSlots; ++slot) {
+        if (slot > g.maxClients || !g.clientsBase)
+            g.msgSb[slot - 1] = nullptr;
+        else
+            g.msgSb[slot - 1] = g.clientsBase +
+                                static_cast<unsigned>(slot - 1) * kClientStride +
+                                kClientMessageOfs;
+    }
 }
 
 char* ClientBase(int slot1) {
-    if (slot1 < 1 || slot1 > kMaxSlots)
+    if (slot1 < 1 || slot1 > kMaxSlots || !g.clientsBase)
         return nullptr;
-    char* clients = *Rva<char*>(kRvaSvsClients);
-    if (!clients)
-        return nullptr;
-    return clients + static_cast<unsigned>(slot1 - 1) * kClientStride;
+    return g.clientsBase + static_cast<unsigned>(slot1 - 1) * kClientStride;
 }
 
 int SlotFromMessage(void* sb) {
     if (!sb)
         return -1;
-    char* clients = *Rva<char*>(kRvaSvsClients);
-    if (!clients)
-        return -1;
-    const auto sbAddr = reinterpret_cast<std::uintptr_t>(sb);
-    const auto baseAddr = reinterpret_cast<std::uintptr_t>(clients);
-    if (sbAddr < baseAddr + kClientMessageOfs)
-        return -1;
-    const auto diff = sbAddr - baseAddr;
-    const auto rel = diff - kClientMessageOfs;
-    if (rel % kClientStride != 0)
-        return -1;
-    const int slot0 = static_cast<int>(rel / kClientStride);
-    if (slot0 < 0 || slot0 >= MaxClients())
-        return -1;
-    return slot0 + 1;
+    for (int slot = 1; slot <= g.maxClients; ++slot)
+        if (g.msgSb[slot - 1] == sb)
+            return slot;
+    return -1;
 }
 
 int ReadInt(const char* base, unsigned ofs) {
     return *reinterpret_cast<const int*>(base + ofs);
-}
-
-bool Enabled() {
-    void* cv = Buddy_GetEngineCvar("_sofbuddy_reldef", "1", 1, nullptr);
-    return Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
 }
 
 int EngineFramenum() {
@@ -129,7 +124,6 @@ bool QueuePush(int slot1, const void* data, int len) {
     if (slot1 < 1 || slot1 > kMaxSlots || len <= 0 || !data)
         return false;
     SlotQueue& q = g.slot[slot1 - 1];
-    g.policy = RelDef_ReadPolicy();
     if (g.policy.maxQueue > 0 && static_cast<int>(q.blobs.size()) >= g.policy.maxQueue) {
         ++g.dropped;
         return false;
@@ -137,8 +131,8 @@ bool QueuePush(int slot1, const void* data, int len) {
     if (g.policy.maxQueueBytes > 0 && q.bytes + len > g.policy.maxQueueBytes) {
         if (!q.blobs.empty()) {
             q.bytes -= static_cast<int>(q.blobs.front().size());
-            q.blobs.erase(q.blobs.begin());
-            q.enqueued.erase(q.enqueued.begin());
+            q.blobs.pop_front();
+            q.enqueued.pop_front();
             ++g.dropped;
         }
         if (q.bytes + len > g.policy.maxQueueBytes) {
@@ -182,21 +176,26 @@ void FlushCaptureToMessage(int slot1) {
     g.captureSlot = 0;
 }
 
+void RescueLevelChange(int slot1);
+
 RelDefAction ClassifySlot(int slot1, int incomingLen) {
     char* cl = ClientBase(slot1);
     if (!cl)
         return RELDEF_WRITE_NOW;
     const int state = ReadInt(cl, kClientStateOfs);
     if (state < kCsSpawned) {
+        // SpawnServer drops the client to connected before the next send.
+        // A changing/reconnect that a drip pushed back onto the queue would
+        // be deleted here, and the client would never open the load menu.
+        RescueLevelChange(slot1);
         ClearSlotPending(slot1);
         return RELDEF_WRITE_NOW;
     }
     char* msg = cl + kClientMessageOfs;
-    const RelDefLimits lim = CurrentLimits();
     SlotQueue& q = g.slot[slot1 - 1];
     return RelDef_Classify(ReadInt(msg, kSzCursize), incomingLen,
                            ReadInt(cl, kClientReliableLenOfs),
-                           static_cast<int>(q.blobs.size()), q.bytes, lim, g.policy,
+                           static_cast<int>(q.blobs.size()), q.bytes, g.limits, g.policy,
                            state);
 }
 
@@ -204,11 +203,16 @@ void FlushCapture() {
     if (g.captureSlot <= 0 || g.capture.empty())
         return;
     const int slot = g.captureSlot;
-    const int len = static_cast<int>(g.capture.size());
-    if (QueuePush(slot, g.capture.data(), len))
-        ++g.deferred;
-    else
-        Buddy_DebugPrintf("reldef: drop capture slot %d len %d\n", slot, len);
+    const int n = static_cast<int>(g.capture.size());
+    const int end = RelDef_SealEnd(g.capture.data(), n);
+    if (end > 0) {
+        if (QueuePush(slot, g.capture.data(), end))
+            ++g.deferred;
+        else
+            Buddy_DebugPrintf("reldef: drop capture slot %d len %d\n", slot, end);
+    }
+    if (end < n)
+        Buddy_DebugPrintf("reldef: drop tail slot %d len %d\n", slot, n - end);
     g.capture.clear();
     g.captureSlot = 0;
 }
@@ -237,8 +241,10 @@ void AbsorbMessageIntoCapture(int slot1) {
     char* data = *reinterpret_cast<char**>(msg + kSzData);
     if (!data)
         return;
-    if (g.captureSlot != slot1)
+    if (g.captureSlot != slot1) {
         g.capture.clear();
+        g.capture.reserve(CaptureMax());
+    }
     g.captureSlot = slot1;
     g.capture.insert(g.capture.end(),
                      reinterpret_cast<std::uint8_t*>(data),
@@ -246,40 +252,17 @@ void AbsorbMessageIntoCapture(int slot1) {
     ClearMessageStaging(msg);
 }
 
-constexpr std::uint8_t kSvcPrint = 0x0B;  // SV_BroadcastPrintf opcode (IDA 0x200618D0)
-
-// End offset of the last complete svc_print in capture, or 0 when the first
-// message is incomplete/unknown. Capture always starts at a message boundary,
-// so scanning forward from 0 is sound.
-int LastCompletePrintEnd() {
-    const int n = static_cast<int>(g.capture.size());
-    const std::uint8_t* p = g.capture.data();
-    int pos = 0;
-    int lastEnd = 0;
-    while (pos < n) {
-        if (p[pos] != kSvcPrint)
-            break;
-        if (pos + 2 > n)
-            break;  // need opcode + level
-        int k = pos + 2;
-        while (k < n && p[k] != 0)
-            ++k;
-        if (k >= n)
-            break;  // string runs past the buffer: incomplete
-        pos = k + 1;
-        lastEnd = pos;
-    }
-    return lastEnd;
-}
-
-// Queue the complete-print prefix of capture, keep the incomplete tail for
-// the slot. Falls back to a whole flush when nothing parseable is present.
+// Queue the complete-message prefix of capture; keep an incomplete tail.
+// An unparseable buffer is left intact — flushing it would ship a partial
+// message (the old svc_print-only scan did that for stufftext/layout/etc.).
 void FlushCompletePrefix() {
     if (g.captureSlot <= 0 || g.capture.empty())
         return;
-    const int end = LastCompletePrintEnd();
     const int n = static_cast<int>(g.capture.size());
-    if (end <= 0 || end >= n) {
+    const int end = RelDef_LastCompleteEnd(g.capture.data(), n);
+    if (end <= 0)
+        return;
+    if (end >= n) {
         FlushCapture();
         return;
     }
@@ -289,7 +272,15 @@ void FlushCompletePrefix() {
     else
         Buddy_DebugPrintf("reldef: drop capture slot %d len %d\n", slot, end);
     g.capture.erase(g.capture.begin(), g.capture.begin() + end);
-    // captureSlot stays: the tail belongs to the same slot.
+    // A non-opcode tail is payload with no header. Keeping it would ship
+    // after the finished messages ("Illegible", last command svc_layout).
+    if (g.capture.empty() || g.capture[0] < 1 || g.capture[0] > 0x28) {
+        if (!g.capture.empty())
+            Buddy_DebugPrintf("reldef: drop tail slot %d len %d\n", slot,
+                              static_cast<int>(g.capture.size()));
+        g.capture.clear();
+        g.captureSlot = 0;
+    }
 }
 
 // Append one engine write atomically; flush capture when the next write won't fit.
@@ -304,25 +295,21 @@ bool CaptureAppend(int slot, const void* data, int len) {
     if (g.captureSlot != slot) {
         g.captureSlot = slot;
         g.capture.clear();
-    }
+        g.capture.reserve(capMax);
+    } else if (g.capture.capacity() < static_cast<std::size_t>(capMax))
+        g.capture.reserve(capMax);
     int room = capMax - static_cast<int>(g.capture.size());
     if (len > room) {
-        // Split at the last complete svc_print so no blob ends mid-message
-        // (a blob ending with orphan opcode+level breaks the client parser).
+        // Peel complete messages. Never flush the leftover tail: it is the
+        // header of the message this write belongs to, and sealing it would
+        // put the payload in the next blob (client: Illegible).
         FlushCompletePrefix();
         if (g.captureSlot != slot) {
             g.captureSlot = slot;
             g.capture.clear();
+            g.capture.reserve(capMax);
         }
         room = capMax - static_cast<int>(g.capture.size());
-    }
-    if (len > room) {
-        FlushCapture();
-        if (g.captureSlot != slot) {
-            g.captureSlot = slot;
-            g.capture.clear();
-        }
-        room = capMax;
     }
     if (len > room)
         return false;
@@ -355,13 +342,12 @@ bool QueuePopWrite(int slot1) {
     const int cursize = ReadInt(msg, kSzCursize);
     const auto& blob = q.blobs.front();
     const int blobLen = static_cast<int>(blob.size());
-    const RelDefLimits lim = CurrentLimits();
     int wait = 0;
     if (!q.enqueued.empty())
         wait = EngineFramenum() - q.enqueued.front();
     if (wait < 0)
         wait = 0;
-    if (!RelDef_CanDrip(relLen, cursize, blobLen, lim, g.policy.frameFirst,
+    if (!RelDef_CanDrip(relLen, cursize, blobLen, g.limits, g.policy.frameFirst,
                         wait, g.policy.maxDripWaitTicks))
         return false;
     if (!detour_SZ_Write::oSZ_Write)
@@ -372,17 +358,94 @@ bool QueuePopWrite(int slot1) {
         static_cast<int>(blob.size()));
     --g.bypass;
     q.bytes -= static_cast<int>(blob.size());
-    q.blobs.erase(q.blobs.begin());
-    if (!q.enqueued.empty())
-        q.enqueued.erase(q.enqueued.begin());
+    q.blobs.pop_front();
+    q.enqueued.pop_front();
     ++g.dripped;
     return true;
 }
 
+// Pull changing/reconnect out of the queue and put them in front of whatever
+// is already staged. Caller clears the queue afterwards.
+void RescueLevelChange(int slot1) {
+    if (slot1 < 1 || slot1 > kMaxSlots || !detour_SZ_Write::oSZ_Write)
+        return;
+    char* cl = ClientBase(slot1);
+    if (!cl)
+        return;
+    std::vector<std::uint8_t> keep;
+    for (const auto& b : g.slot[slot1 - 1].blobs)
+        if (RelDef_IsLevelChange(b.data(), static_cast<int>(b.size())))
+            keep.insert(keep.end(), b.begin(), b.end());
+    if (g.captureSlot == slot1 &&
+        RelDef_IsLevelChange(g.capture.data(), static_cast<int>(g.capture.size())))
+        keep.insert(keep.end(), g.capture.begin(), g.capture.end());
+    if (keep.empty())
+        return;
+    char* msg = cl + kClientMessageOfs;
+    const int maxs = ReadInt(msg, kSzMaxsize);
+    const int n = ReadInt(msg, kSzCursize);
+    std::vector<std::uint8_t> cur;
+    if (n > 0) {
+        char* raw = *reinterpret_cast<char**>(msg + kSzData);
+        if (raw)
+            cur.assign(reinterpret_cast<std::uint8_t*>(raw),
+                       reinterpret_cast<std::uint8_t*>(raw) + n);
+    }
+    if (maxs > 0 && static_cast<int>(keep.size() + cur.size()) > maxs)
+        cur.clear();
+    ClearMessageStaging(msg);
+    ++g.bypass;
+    detour_SZ_Write::oSZ_Write(msg, keep.data(), static_cast<int>(keep.size()));
+    if (!cur.empty())
+        detour_SZ_Write::oSZ_Write(msg, cur.data(), static_cast<int>(cur.size()));
+    --g.bypass;
+}
+
+// Older queued blobs must leave before this frame's staging bytes. Dripping
+// onto a staging buffer that already holds a layout puts the next blob's
+// first byte after that layout's NUL.
+void DripSlot(int slot1) {
+    char* cl = ClientBase(slot1);
+    if (!cl || !detour_SZ_Write::oSZ_Write)
+        return;
+    char* msg = cl + kClientMessageOfs;
+    const int n = ReadInt(msg, kSzCursize);
+    char* raw = n > 0 ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
+    // The SV_Map flush is about to transmit this buffer, then SpawnServer
+    // drops the client below spawned and the queue is discarded. Lifting
+    // "changing" out to drip a scoreboard deletes the packet that starts
+    // the client's loading menu.
+    if (raw && RelDef_HasLevelChange(reinterpret_cast<const std::uint8_t*>(raw), n))
+        return;
+    std::vector<std::uint8_t> now;
+    if (raw)
+        now.assign(reinterpret_cast<std::uint8_t*>(raw),
+                   reinterpret_cast<std::uint8_t*>(raw) + n);
+    ClearMessageStaging(msg);
+    while (QueuePopWrite(slot1)) {
+    }
+    if (now.empty())
+        return;
+    const int maxs = ReadInt(msg, kSzMaxsize);
+    const int cur = ReadInt(msg, kSzCursize);
+    if (maxs > 0 && cur + static_cast<int>(now.size()) > maxs) {
+        if (!QueuePush(slot1, now.data(), static_cast<int>(now.size())))
+            Buddy_DebugPrintf("reldef: drop staging slot %d len %d\n", slot1,
+                              static_cast<int>(now.size()));
+        else
+            ++g.deferred;
+        return;
+    }
+    ++g.bypass;
+    detour_SZ_Write::oSZ_Write(msg, now.data(), static_cast<int>(now.size()));
+    --g.bypass;
+}
+
 template <typename WriteNow>
 void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow,
-                        bool canArmOpcode = false, bool isBulk = false) {
-    if (!g.ready || !Enabled() || g.bypass) {
+                        bool canArmOpcode = false, bool isBulk = false,
+                        bool isStringWrite = false) {
+    if (!g.ready || !g.enabled || g.bypass) {
         writeNow();
         return;
     }
@@ -391,7 +454,31 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
         writeNow();
         return;
     }
+    // Ghoul reliable's body is SZ_GetSpace'd into this buffer immediately
+    // after the opcode. It must be written here even when capture holds
+    // older mail, or the client unpacks the opcode against the wrong bytes.
+    if (canArmOpcode && len == 1 && data &&
+        RelDef_WriteThroughOp(*static_cast<const unsigned char*>(data))) {
+        writeNow();
+        return;
+    }
+    // Level-change stufftext jumps the queue. Older scoreboards and prints
+    // are for the map that is about to go away.
+    if (data && RelDef_IsLevelChange(static_cast<const std::uint8_t*>(data), len)) {
+        writeNow();
+        return;
+    }
+    // Still joining: serverdata, configstrings, and "cmd begin" are two or
+    // more writes into this mailbox. They
+    // must not join a capture left over from the previous map — the next
+    // send deletes that capture once the client is no longer spawned, and
+    // the client sits on the loading menu with no begin.
+    bool joining = false;
     if (slot >= 1 && slot <= kMaxSlots) {
+        char* cl = ClientBase(slot);
+        joining = cl && ReadInt(cl, kClientStateOfs) < kCsSpawned;
+    }
+    if (!joining && slot >= 1 && slot <= kMaxSlots) {
         int& phase = g.dlPhase[slot - 1];
         if (phase > 0) {
             // Lockstep unit in progress (download/SP-data): every byte goes
@@ -403,13 +490,15 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
             // else: data never came (short message) — classify normally below.
         } else if (canArmOpcode && len == 1 && data) {
             // Arm only at a message boundary: staging and capture both empty
-            // means this byte opens a new message, so 0x13/0x24/0x25 here is
-            // really a lockstep opcode (a level byte mid-print never qualifies).
+            // means this byte opens a new message, so 0x13 here is really
+            // download (a level byte mid-print never qualifies).
             const unsigned char op = *static_cast<const unsigned char*>(data);
             char* cl = ClientBase(slot);
             char* msg = cl ? cl + kClientMessageOfs : nullptr;
             const bool stagingEmpty = !msg || ReadInt(msg, kSzCursize) <= 0;
             const bool captureEmpty = g.captureSlot != slot || g.capture.empty();
+            // Both must be empty. Arming while capture still holds older mail
+            // writes the new packet into staging and it goes out first.
             if (RelDef_IsLockstepOp(op) && stagingEmpty && captureEmpty) {
                 phase = 3;
                 writeNow();
@@ -417,14 +506,16 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
             }
         }
     }
-    if (g.captureSlot > 0 && g.captureSlot != slot)
+    if (!joining && g.captureSlot > 0 && g.captureSlot != slot)
         FlushCapture();
 
     // Once this tick's capture holds bytes for a slot, every later write for
     // that slot must join the capture. Letting a later write go NOW while
     // older bytes sit in capture/queue would ship newer bytes first
     // (reorder) and could leave a blob ending mid-svc_*.
-    if (g.captureSlot == slot && !g.capture.empty()) {
+    // Joining clients skip this: classify below write-nows and drops the
+    // stale capture instead of appending "cmd begin" onto it.
+    if (!joining && g.captureSlot == slot && !g.capture.empty()) {
         if (!CaptureAppend(slot, data, len)) {
             ++g.dropped;
             Buddy_DebugPrintf("reldef: drop write slot %d len %d\n", slot, len);
@@ -434,7 +525,20 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
         return;
     }
 
-    const RelDefAction act = ClassifySlot(slot, len);
+    RelDefAction act = ClassifySlot(slot, len);
+    if (act == RELDEF_WRITE_NOW && isStringWrite) {
+        // Unicast layout is one SZ_Write and already ends on its NUL. A later
+        // string whose opcode is elsewhere must not be appended after it.
+        char* cl = ClientBase(slot);
+        char* msg = cl ? cl + kClientMessageOfs : nullptr;
+        const int n = msg ? ReadInt(msg, kSzCursize) : 0;
+        const char* staged = (n > 0 && msg) ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
+        if (!RelDef_StringContinues(reinterpret_cast<const std::uint8_t*>(staged), n)) {
+            ++g.dropped;
+            Buddy_DebugPrintf("reldef: drop orphan string slot %d len %d\n", slot, len);
+            return;
+        }
+    }
     if (act == RELDEF_WRITE_NOW) {
         if (g.captureSlot == slot)
             FlushCaptureToMessage(slot);
@@ -462,11 +566,94 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
     Buddy_DebugPrintf("reldef: drop write slot %d len %d\n", slot, len);
 }
 
+// Classifier-only MSG_WriteLong hook: when equip/countdown continues a
+// deferred capture, append 4 B here. No engine fixture — build + cutter
+// tests cover the stream shape; this path is integration-only.
+bool AppendLongToCapture(void* sb, int c) {
+    if (!g.ready || !g.enabled || g.bypass)
+        return false;
+    const int slot = SlotFromMessage(sb);
+    if (slot < 0)
+        return false;
+    char* cl = ClientBase(slot);
+    if (!cl || ReadInt(cl, kClientStateOfs) < kCsSpawned)
+        return false;
+    if (g.captureSlot != slot || g.capture.empty())
+        return false;
+    char* msg = cl + kClientMessageOfs;
+    if (ReadInt(msg, kSzCursize) > 0)
+        AbsorbMessageIntoCapture(slot);
+    const unsigned char b[4] = {static_cast<unsigned char>(c),
+                                static_cast<unsigned char>(c >> 8),
+                                static_cast<unsigned char>(c >> 16),
+                                static_cast<unsigned char>(c >> 24)};
+    if (!CaptureAppend(slot, b, 4)) {
+        ++g.dropped;
+        Buddy_DebugPrintf("reldef: drop long slot %d\n", slot);
+        return true;
+    }
+    ++g.captured;
+    return true;
+}
+
+bool MessageHasLevelChange(char* cl) {
+    char* msg = cl + kClientMessageOfs;
+    const int n = ReadInt(msg, kSzCursize);
+    if (n <= 0)
+        return false;
+    char* raw = *reinterpret_cast<char**>(msg + kSzData);
+    return raw && RelDef_HasLevelChange(reinterpret_cast<const std::uint8_t*>(raw), n);
+}
+
+void SuppressLevelChangeSnapshots() {
+    const int n = g.maxClients;
+    for (int slot = 1; slot <= n; ++slot) {
+        g.holdSnapshot[slot - 1] = false;
+        char* cl = ClientBase(slot);
+        if (!cl || !RelDef_SuppressSnapshot(ReadInt(cl, kClientStateOfs),
+                                            MessageHasLevelChange(cl)))
+            continue;
+        *reinterpret_cast<int*>(cl + kClientStateOfs) = kCsConnected;
+        g.holdSnapshot[slot - 1] = true;
+    }
+}
+
+void RestoreLevelChangeSnapshots() {
+    const int n = g.maxClients;
+    for (int slot = 1; slot <= n; ++slot) {
+        if (!g.holdSnapshot[slot - 1])
+            continue;
+        g.holdSnapshot[slot - 1] = false;
+        char* cl = ClientBase(slot);
+        if (cl && ReadInt(cl, kClientStateOfs) == kCsConnected)
+            *reinterpret_cast<int*>(cl + kClientStateOfs) = kCsSpawned;
+    }
+}
+
+void PublishTickGauges() {
+    int oldest = 0;
+    const int now = EngineFramenum();
+    for (int slot = 1; slot <= g.maxClients; ++slot) {
+        const SlotQueue& q = g.slot[slot - 1];
+        if (!q.enqueued.empty()) {
+            int w = now - q.enqueued.front();
+            if (w < 0)
+                w = 0;
+            if (w > oldest)
+                oldest = w;
+        }
+    }
+    const int captureBytes =
+        g.captureSlot > 0 ? static_cast<int>(g.capture.size()) : 0;
+    RelDef_PublishGauges(g.queued, g.dripped, g.dropped, captureBytes, oldest);
+}
+
 }  // namespace reldef_internal
 
 void reldef_OnGameDllLoaded(void* game_export) {
     (void)game_export;
-    reldef_internal::g.policy = RelDef_ReadPolicy();
+    RelDef_InitCvars();
+    reldef_internal::RefreshCache();
     reldef_internal::g.ready = true;
 }
 
@@ -498,6 +685,14 @@ void reldef_MSG_WriteShort(void* sb, int c,
                                           [&] { original(sb, c); });
 }
 
+void reldef_MSG_WriteLong(void* sb, int c,
+                          detour_MSG_WriteLong::tMSG_WriteLong original) {
+    if (!original)
+        return;
+    if (!reldef_internal::AppendLongToCapture(sb, c))
+        original(sb, c);
+}
+
 void reldef_MSG_WriteString(void* sb, char* s,
                             detour_MSG_WriteString::tMSG_WriteString original) {
     if (!original)
@@ -505,28 +700,35 @@ void reldef_MSG_WriteString(void* sb, char* s,
     const int len = s ? static_cast<int>(std::strlen(s)) + 1 : 1;
     reldef_internal::HandleMessageWrite(
         sb, s ? static_cast<const void*>(s) : "", len,
-        [&] { original(sb, s); });
+        [&] { original(sb, s); }, false, false, true);
 }
 void reldef_CL_SendClientMessagesPre() {
-    if (!reldef_internal::g.ready || !reldef_internal::Enabled())
+    if (!reldef_internal::g.ready)
         return;
-    // Lockstep units never span ticks (engine writes each atomically in one
-    // frame); disarm stale phases so an aborted unit can't bypass later mail.
-    for (int i = 0; i < reldef_internal::kMaxSlots; ++i)
-        reldef_internal::g.dlPhase[i] = 0;
-    const int n = reldef_internal::MaxClients();
-    for (int slot = 1; slot <= n; ++slot) {
-        if (!reldef_internal::SlotIsSpawned(slot))
-            reldef_internal::ClearSlotPending(slot);
-    }
-    reldef_internal::FlushCapture();
-    for (int slot = 1; slot <= n; ++slot) {
-        if (!reldef_internal::SlotIsSpawned(slot))
-            continue;
-        // Drain in FIFO order while the lane is open and the next blob fits
-        // staging. Blobs hold whole messages (prints, svc_equip, ...), so
-        // filling staging reassembles the original byte order exactly.
-        while (reldef_internal::QueuePopWrite(slot)) {
+    reldef_internal::RefreshCache();
+    if (reldef_internal::g.enabled) {
+        // Lockstep units never span ticks (engine writes each atomically in one
+        // frame); disarm stale phases so an aborted unit can't bypass later mail.
+        for (int i = 0; i < reldef_internal::kMaxSlots; ++i)
+            reldef_internal::g.dlPhase[i] = 0;
+        const int n = reldef_internal::g.maxClients;
+        for (int slot = 1; slot <= n; ++slot) {
+            if (!reldef_internal::SlotIsSpawned(slot)) {
+                reldef_internal::RescueLevelChange(slot);
+                reldef_internal::ClearSlotPending(slot);
+            }
         }
+        reldef_internal::FlushCapture();
+        for (int slot = 1; slot <= n; ++slot) {
+            if (!reldef_internal::SlotIsSpawned(slot))
+                continue;
+            reldef_internal::DripSlot(slot);
+        }
+        reldef_internal::SuppressLevelChangeSnapshots();
     }
+    reldef_internal::PublishTickGauges();
+}
+
+void reldef_CL_SendClientMessagesPost() {
+    reldef_internal::RestoreLevelChangeSnapshots();
 }

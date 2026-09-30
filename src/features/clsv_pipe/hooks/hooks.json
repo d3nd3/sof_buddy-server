@@ -1,0 +1,7 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "clsv_SvFramePost",
+    "phase": "Post"
+  }
+]

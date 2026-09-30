@@ -41,45 +41,47 @@ lets the snapshot jump the queue.
 
 ## Every reliable packet type, and what the defer does with it
 
-Packet numbers and layouts below are read straight from the engine's own
-mail sorter (`CL_ParseServerMessage` @ `0x2000ee30`: opcodes `1`–`0x28`,
-anything else = `Illegible server message`). Opcodes `0x3`, `0x15`, `0x16`
-are unused and read as `nop`.
+Packet numbers and layouts below are read from the client's mail sorter
+(`CL_ParseServerMessage` @ `0x2000ee30` / sof-bin `0x80ca8a8`). Opcodes `1`–`0x28`
+are the legal set. Anything else, including `0x00` and `0x03`, is
+`Illegible server message (Last command was %s)`. Opcodes `0x14`–`0x16` are
+legal numbers but the client still errors (`Out of place frame data`). The
+`%s` is the previous command in that same message, not the previous packet.
 
-A rule of thumb for the whole table: **small packets usually sail straight
-through** (written now, sent this tick). **Only when the lane is busy**
-(unacked mail in flight), **a queue has formed**, or the **mailbox is nearly
-full** does a packet get held back — and then it always travels as one whole,
-unbroken message.
+A rule of thumb: **small writes usually sail straight through** (written now,
+sent this tick). **When the lane is busy**, **a queue has formed**, or the
+**mailbox is nearly full**, the write is held. Held mail is cut only on a
+boundary the client would also accept. Several whole messages from one tick
+often share one parcel; a parcel is not one message.
 
 ### Text you read (chat, notices, announcements)
 
 | # | Packet | What it is, in plain words | How the defer treats it |
 |---|--------|----------------------------|-------------------------|
-| `0x0B` | `svc_print` | An ordinary text line: kills, notices, script output, chat. Built in 3 steps: label, level, text. | Each print becomes **its own parcel**, sealed right after its text. Five prints in one frame = five parcels, sent oldest-first over the next ticks. A parcel is never cut between its label and its text (that cut is exactly what used to cause `Illegible server message`). |
-| `0x0C` | `svc_nameprint` | A chat line with player names attached (the "(name) : text" you see in chat). | Same as `svc_print`: one whole parcel per message. |
-| `0x11` | `svc_centerprint` | Big text in the middle of the screen. | Arrives at the mailbox already whole (one delivery), so it is kept whole: written now when there is room, otherwise held as one parcel. |
-| `0x12` | `svc_captionprint` | A captioned center-screen line (a short ID the client looks up). | Tiny; sails through, or waits one parcel behind the queue like everything else. |
-| `0x26` | `svc_welcomeprint` | "Print the welcome buffer" — no text inside, just the order. | One byte; effectively never held back on its own. |
-| `0x02` | `svc_layout` | A screen-layout string (scores, menus). | One parcel ending at its text, like a print. |
-| `0x20` | `svc_cinprint` | A cinematic subtitle line (two IDs, a channel, a text). | One parcel ending at its text. Rare and small. |
+| `0x0B` | `svc_print` | An ordinary text line: kills, notices, script output, chat. Wire: opcode, level byte, text, NUL. Three hooked writes (`MSG_WriteByte` twice, then `MSG_WriteString`). | Kept whole. Several prints may share one parcel. The cut is never between the opcode and the text. |
+| `0x0C` | `svc_nameprint` | A chat line with player names. Wire: opcode, client byte, team byte, text, NUL. A team byte of `0` is not the end of the message. | Kept whole, same as a print. |
+| `0x11` | `svc_centerprint` | Big text in the middle of the screen. Wire: opcode + text + NUL. | Kept whole. |
+| `0x12` | `svc_captionprint` | A captioned center-screen line. Wire: opcode + short string id. | Tiny; sails through, or waits behind the queue. |
+| `0x26` | `svc_welcomeprint` | "Print the welcome buffer" — no text on the wire. | One byte. |
+| `0x02` | `svc_layout` | A screen-layout string (scores, menus). Wire: opcode + text + NUL. `MSG_ReadString` stops at NUL or `0xFF`. Bytes `0x80`–`0xFE` (altstring) stay inside the text. | Game code writes this into `sv.multicast`, then `PF_Unicast` copies the finished message onto the mailbox with **one** `SZ_Write`. The defer sees that one write, not the earlier `WriteByte`/`WriteString`. |
+| `0x20` | `svc_cinprint` | A cinematic subtitle. Wire: two shorts, a byte, then text + NUL. | Kept whole. Rare. |
 
 ### Single-player campaign messages (`0x22`–`0x27`)
 
 | # | Packet | What it is, in plain words | How the defer treats it |
 |---|--------|----------------------------|-------------------------|
-| `0x22` | `svc_sp_print` | "Show campaign message number N." | Tiny (a short ID); sails through, or queues whole. |
-| `0x24` | `svc_sp_print_data_1` | One data chunk of a campaign message (ID + page + bytes). | Kept whole per tick; long sequences drip over ticks, chunk by chunk, in order. |
-| `0x25` | `svc_sp_print_data_2` | Same, second page format (two IDs + bytes). | Same as above. |
-| `0x27` | `svc_sp_print_orbit` | Same, orbiter format. | Same as above. |
+| `0x22` | `svc_sp_print` | "Show campaign message number N." Wire: opcode + short id. No payload. | `SP_Print` builds the packet off to the side, copies it onto `sv.multicast` with `SZ_GetSpace`, then `PF_Unicast` delivers it as one `SZ_Write`. Sails through, or queues as that one write. |
+| `0x24` | `svc_sp_print_data_1` | Same, with format arguments, payload ≤ 255 bytes. Wire: opcode, short id, **byte** count, then that many bytes. The bytes are binary (they may contain `0x0B` and NUL). | Same delivery as `0x22`. The cutter skips `count` bytes. It does not look for a NUL. |
+| `0x25` | `svc_sp_print_data_2` | Same, payload > 255 bytes (up to the 1024-byte format buffer). Wire: opcode, short id, **short** count, then that many bytes. | Same as `0x24`. |
+| `0x27` | `svc_sp_print_obit` | Obituary. Same wire shape as `0x24` (short id, byte count, bytes). | Same delivery and same cutter rule as `0x24`. |
 
 ### Commands the client must run
 
 | # | Packet | What it is, in plain words | How the defer treats it |
 |---|--------|----------------------------|-------------------------|
-| `0x0D` | `svc_stufftext` | A console command the server makes *your* game run (e.g. `cmd baselines …`, `precache …`, stuff from admins/mods). A text line, like a print. | One parcel per command, sealed after its text. Order with other mail is strictly preserved — a held command never jumps ahead of older parcels, and newer mail never jumps ahead of it. |
-| `0x1F` | `svc_countdown` | A countdown timer value. | Tiny; sails through. |
-| `0x21` | `svc_playernamecols` | Scoreboard name colours (a count + colour bytes). | Small; sails through, or one whole parcel when held. |
+| `0x0D` | `svc_stufftext` | A console command the server makes *your* game run (e.g. `cmd baselines …`, `precache …`, stuff from admins/mods). Wire: opcode + text + NUL. | Kept whole. May share a parcel with other whole messages. Order with older mail is preserved (see delivery day). `changing` and `reconnect` are the exception: `SV_Map` writes each as one `SZ_Write` and flushes before the map load, so those two go straight into the mailbox even when a fat parcel is waiting, and that flush does not lift them back out. `changing` is the client's cue to run `menu loading`. |
+| `0x1F` | `svc_countdown` | A countdown timer. The client reads a **long**, not a byte. Stock writes `WriteByte` + `WriteLong` into multicast (unreliable). | Reliable mailbox: `MSG_WriteLong` @ `0x2001CBF0` joins an in-flight capture (classifier-only); empty capture → stock. |
+| `0x21` | `svc_playernamecols` | Scoreboard name colours. Wire: a count, then either a single index or a start/end run. Not a C string. | Not parsed. A capture that *starts* with it is sealed whole. A capture that *contains* it after a parsed message stops at the colour block, and the block rides along only because its first byte looks like an opcode. |
 
 ### World & player setup (joining and spawning)
 
@@ -90,9 +92,9 @@ unbroken message.
 | `0x23` | `svc_removeconfigstring` | "Forget world setting N." | Tiny; sails through, or queues whole. |
 | `0x10` | `svc_spawnbaseline` | The starting state of one entity (so the client can predict it). | **Partly visible:** the defer sees the label byte, but the entity body is written straight into the mailbox by a writer the hooks cannot see — so the body always goes through immediately. In practice baselines flow during the join (bypassed anyway). |
 | `0x13` | `svc_download` | A chunk of a downloading file (a short header + raw bytes). | **Bypasses the defer entirely** (see below) — downloads are lockstep request→chunk→request and the payload is binary. |
-| `0x1A` | `svc_ghoulreliable` | Ghoul (model animation) data that must arrive (a length + raw bytes). | **Partly visible:** like baselines, the defer sees the label but the raw bytes go straight through a writer the hooks cannot see. The label never gets separated from its bytes by *this* feature. |
-| `0x06` | `svc_equip` | Your current equipment. | Tiny; sails through, or queues whole. |
-| `0x1C` | `svc_ric` | Reset prediction bookkeeping. | Tiny; sails through. |
+| `0x1A` | `svc_ghoulreliable` | Ghoul data that must arrive. Wire: opcode, a short byte-count, then that many bytes. `SV_SendClientDatagram` writes the opcode with `MSG_WriteByte`, then the count and the bytes with `SZ_GetSpace` into the same mailbox. | **Written through.** The opcode is not captured. Holding it would send a header whose body stayed behind, and the client dies with `Ghoul :StringTable underflowed`. When the whole message later sits in a parcel, the cutter skips the counted bytes, including a `0x0B` or NUL inside them. |
+| `0x06` | `svc_equip` | Equipment. Wire, when the sub-byte is `1`: three count bytes, each followed by that many (string + long) pairs. Other sub-bytes are just opcode + that one byte. | Not parsed at seal time; deferred strings stay in capture and each `WriteLong` appends 4 B via the Long classifier when capture is non-empty. |
+| `0x1C` | `svc_ric` | Remote inventory commands: a count, then that many records. Types 0–4 carry one sized argument (1–4 bytes); type 5 and unknown types carry none. | Parsed. The cut is the count, so a `0x0B` or NUL inside an argument stays in the record. |
 | `0x1D` | `svc_restart_predn` | Restart prediction (one byte). | Tiny; sails through. |
 | `0x1E` | `svc_rebuild_pred_inv` | Rebuild prediction inventory. | Small; sails through, or queues whole. |
 | `0x19` | `svc_damagetexture` | "Mark this texture damaged" (an ID + a byte). | Tiny; sails through. |
@@ -119,7 +121,7 @@ exactly as stock sends them:
 | `0x04` | `svc_sound_info` | Sound bookkeeping for the frame. |
 | `0x05` | `svc_effect` | A visual effect event. |
 | `0x0A` | `svc_sound` | A positioned sound. |
-| `0x14` | `svc_deltapacketentities` | (Never valid here — the client errors if it shows up in this lane.) |
+| `0x14`–`0x16` | `svc_playerinfo`, `svc_packetentities`, `svc_deltapacketentities` | The client errors (`Out of place frame data`) if any of these show up in this lane. |
 | `0x17` | `svc_frame` | The entity frame itself — the snapshot. |
 | `0x18` | `svc_culledEvent` | A visibility-culled event. |
 | `0x1B` | `svc_ghoulunreliable` | Animation data that may be lost (re-sent next frame anyway). |
@@ -134,11 +136,11 @@ session).
 One honest footnote: the hooks decide by *mailbox*, not by *packet type*.
 If a mod routes one of the snapshot packets through the reliable mailbox,
 it gets the same fair treatment as everything else (small → now, big or
-busy → whole parcels, in order). And the two "partly visible" packets above
-(`svc_spawnbaseline`, `svc_ghoulreliable`) write most of their bytes through
-a back door (`SZ_GetSpace` / delta writers) the hooks cannot intercept — so
-for those, the feature only ever sees the label byte and never delays the
-body.
+busy → whole parcels, in order). `svc_spawnbaseline` writes most of its
+bytes through a back door (`SZ_GetSpace` / delta writers) the hooks cannot
+intercept, and it only happens during join, which is passed through anyway.
+`svc_ghoulreliable` uses that same back door for its body, so its opcode is
+written straight into the mailbox (see the table) and is not deferred.
 
 ## How it decides, step by step
 
@@ -186,20 +188,36 @@ The checkpoint, in order (first match wins):
 - While a parcel for a player is being packed, every further delivery for
   that player *that tick* joins the same parcel — newer mail can never ship
   ahead of older mail.
-- A parcel is sealed the moment a **text message ends** (the string at the
-  end of a print, a stufftext command, a configstring…). So a parcel never
-  ends halfway through a message — half a message is what used to make
-  clients print `Illegible server message`.
-- If a parcel would grow past the mailbox size, it is cut at the end of the
-  last *complete* print inside it; the unfinished rest stays back until its
-  text arrives.
+- A parcel is **not** sealed when a text message ends. Bytes accumulate in
+  the capture until the mailbox would overflow, or until the send tick.
+  The cut (`RelDef_LastCompleteEnd`) walks opcodes the client understands
+  and stops at the first one it cannot finish. `0x24` / `0x25` / `0x27`
+  skip a counted payload; a NUL or `0x0B` inside that payload is not a cut.
+- On overflow, a tail that does not start with an opcode (`0x01`–`0x28`) is
+  **dropped**, not held. That tail is what used to ride out after a finished
+  `svc_layout` and make the client report `Illegible server message (Last
+  command was svc_layout)`. A tail that does start with an opcode stays in
+  the capture so the rest of that message can join it.
+- At the send tick the whole capture is sealed with `RelDef_SealEnd`. A
+  leading fragment (first byte not an opcode) is dropped. A tail that starts
+  with an opcode is shipped with the parcel, even if that message is not
+  finished yet. An orphan string (`MSG_WriteString` while staging already
+  ends on a complete message, and the capture is empty) is dropped instead
+  of being appended after the layout.
 
-**Delivery day** is the start of every server send tick, per player:
+**Delivery day** is the send tick, per player, after that frame's game
+writes have already landed:
 
-1. Seal any parcel still being packed → join the waiting line.
-2. While the lane is open (last parcel signed for) and the next parcel fits
-   in the mailbox, load it — oldest first. Leftover parcels wait for the
-   next tick.
+1. Seal the capture onto the waiting line (rules above).
+2. Lift whatever is already in the mailbox (this frame's "deliver now"
+   bytes) off to the side.
+3. Load waiting parcels into the empty mailbox, oldest first, while the
+   lane is open and the next parcel fits. Then put the lifted bytes back
+   on the end. If they no longer fit, they rejoin the waiting line instead
+   of being stuck in front of older mail.
+
+Older held mail therefore leaves before this frame's direct writes. A
+queued fragment is not glued on after a layout that was written now.
 
 Then stock builds the snapshot and sends **mail + newspaper in one van**
 (`Netchan_Transmit`), exactly as it always has.
@@ -224,6 +242,24 @@ ships anyway and sacrifices that one frame. In short:
 
 Turn it off (`set _sofbuddy_reldef_frame_first 0`) only if chat latency
 matters more to your server than snapshot smoothness.
+
+`changing` and `reconnect` do not take this wait. They are written into
+the mailbox immediately, and the flush that `SV_Map` does before
+`SpawnServer` leaves that mailbox alone — a drip must not lift `changing`
+out to make room for a scoreboard. That flush is also the one send where
+the client is still spawned, so the engine would attach a snapshot.
+The client parses `changing` and then that snapshot, spends its one-shot
+loading-menu close while the servercount is still the old map's, and the
+menu stays up until a later `reconnect` — which waits on the ack, and an
+alt-tabbed client acks slowly. For that send only, a spawned client whose
+mailbox contains `changing` or `reconnect` is treated as connected, so the
+engine transmits the mailbox with no snapshot, then the state is restored
+before `SpawnServer`. `changing` is what makes the client run `menu loading`.
+Once the client drops below spawned the rest of the old-map queue is
+discarded, but a `changing` or `reconnect` still sitting on it is written
+out first. Join traffic after that (`serverdata`, configstrings, `cmd begin`)
+is written straight through, never appended onto a capture left from the
+previous map, or the client sits on the loading menu with no `begin`.
 
 #### For developers: `frame_first` mechanics (exact)
 
@@ -288,10 +324,12 @@ WRITE_NOW                                            (unreachable when =1)
   with the flag off, small writes still accumulate in staging until the
   reserve trips; with it on, the second write of a tick already diverts to
   capture.
-- Everything downstream is unchanged: atomic `CaptureAppend`,
-  flush-after-`MSG_WriteString`, `svc_print`-boundary prefix splits, FIFO
-  order, and the full drip gate (including `frame_first`). So `=1` cannot
-  corrupt messages — it only delays and multiplies them.
+- Downstream of classification: atomic `CaptureAppend`, message-boundary
+  prefix splits, the orphan-string drop, FIFO drip (older parcels, then
+  this frame's staging), and the full drip gate (including `frame_first`).
+  There is no flush after `MSG_WriteString`. `=1` still depends on the
+  cutter understanding every opcode in the capture. An opcode it does not
+  parse can be sealed together with whatever follows.
 - Costs, which is why it stays off: **+1 tick minimum latency** on all
   reliable mail (nothing ships the same tick it is written; everything waits
   for the next Pre + an open lane); **queue pressure** — a chatty tick that
@@ -334,8 +372,10 @@ maxDripBytes     = buffersize - 8 - frameReserve
 
 The **8-byte** header is the sequence + acknowledgement numbers on
 server→client mail. `maxDripBytes` is only an estimate of how much mail can
-ride along without squeezing the newspaper out — it never blocks delivery
-(blocking it once deadlocked join bursts bigger than the estimate).
+ride along without squeezing the newspaper out. With `frame_first` on it
+**does** hold a parcel that would exceed that estimate, until
+`max_drip_wait` ticks have passed. It is not a reason to drop mail, and it
+does not apply while a player is still joining (that path never queues).
 
 Per-player mailbox layout:
 
@@ -358,14 +398,29 @@ Per-player mailbox layout:
 | `_sofbuddy_reldef_frame_first` | `1` | `1` = snapshots jump the queue (fat parcels wait for room — smooth game, slightly later big prints). `0` = mail first (big parcels ship at once, frames may skip — faster chat, possible hitching). |
 | `_sofbuddy_reldef_max_drip_wait` | `10` | Ticks a held parcel waits before shipping anyway (starvation escape). |
 
+Read-only gauges (updated each `CL_SendClientMessages` tick, `CVAR_NOSET`):
+
+| cvar | meaning |
+|------|---------|
+| `_sofbuddy_reldef_queued` | Parcels pushed to the defer queue since boot |
+| `_sofbuddy_reldef_dripped` | Parcels dripped into mailboxes since boot |
+| `_sofbuddy_reldef_dropped` | Writes/parcels dropped since boot |
+| `_sofbuddy_reldef_capture_bytes` | Bytes in the in-frame capture buffer (usually `0` after send) |
+| `_sofbuddy_reldef_oldest_wait` | Max ticks the front parcel on any slot has waited |
+
 ## If something looks wrong
 
 | What you see | What it means / what to try |
 |--------------|-----------------------------|
-| `CL_ParseServerMessage: Illegible server message` when joining | Restart the whole server after deploying (not just the map); check `_sofbuddy_reldef_one_per_tick` is `0`; try live `set _sofbuddy_reldef 0` — if the error stops, the deferral is involved, please report it with the log. |
+| `Illegible server message (Last command was svc_layout)` | The layout itself parsed (opcode, text, NUL). The **next byte in that same message** was not a command. That is a fragment glued on after the layout, not the layout's opcode and text split apart (a split string starts the *next* message, and the last command would be `svc_bad`). Confirm with `set _sofbuddy_reldef 0`. Watch the debug log for `drop orphan string` and `drop tail`. |
+| `Illegible server message (Last command was svc_bad)` | The first byte of the message was not a command. A parcel was queued that began mid-payload. |
+| `Illegible server message` while joining | Restart the whole server after deploying (not just the map). Check `_sofbuddy_reldef_one_per_tick` is `0`. Join traffic should not be deferred; if `set _sofbuddy_reldef 0` stops it, report the log. |
 | Chat/prints arrive late | Expected while earlier mail is still waiting for signatures or parcels are queued — the line is draining. Fix the script burst (fewer/smaller prints), or raise the queue caps. |
 | Game hitches during big print floods | Fat reliable parcels are crowding out snapshots (`Netchan_Transmit: dumped unreliable` on the server). Snapshots already get priority by default; if you turned `_sofbuddy_reldef_frame_first` off, turn it back on (`1`). |
-| `reldef: drop write` in the debug log | One parcel was bigger than the whole mailbox (1384 B on MP) or a queue cap was hit — chunk large script output into smaller prints. |
+| `reldef: drop write` | One write was bigger than the mailbox (1384 B on MP), or it would not fit without cutting a message, or a queue cap was hit. |
+| `reldef: drop tail` | Bytes after the last complete message did not start with an opcode and were discarded. |
+| `reldef: drop orphan string` | A `MSG_WriteString` arrived with no unfinished message in staging. It was not appended after a finished layout. |
+| `reldef: drop staging` | This frame's direct mailbox bytes did not fit after older parcels were dripped, and the queue would not take them either. |
 
 Remember: on dedicated MP a single parcel can never hold more than **1384
 bytes**. Five 1000-character prints will always need several ticks — that is
@@ -378,38 +433,52 @@ the feature working, not failing.
 ## For developers: where the hooks sit
 
 Hooks are on **`SZ_Write`** plus **`MSG_WriteByte` / `MSG_WriteShort` /
-`MSG_WriteString`** — the stock reliable paths (`SV_BroadcastPrintf`,
-configstrings, `SV_Multicast(..., MULTICAST_*_R)`, `gi.unicast(..., true)`,
-`PF_centerprintf`, stufftext). Only writes whose buffer is a connected
-player's `netchan.message` are considered; `sv.multicast` staging,
-`datagram`, demo buffers and everything else pass through untouched.
-`MSG_WriteLong`, delta-entity and `SZ_GetSpace` bulk writers are *not*
-hooked (see the `svc_spawnbaseline` / `svc_ghoulreliable` notes above).
+`MSG_WriteLong` / `MSG_WriteString`** (`SoF.exe` `0x2001CB00` / `0x2001CB70` /
+`0x2001CBF0` / `0x2001CD00`). Only writes into a connected player's
+`netchan.message` are classified; `sv.multicast` staging, `datagram`, demo
+buffers, and delta-entity `SZ_GetSpace` traffic pass through untouched.
 
-### Lockstep bypass: binary multi-write messages go stock-immediate
+**`MSG_WriteLong` (classifier-only).** When a slot already has bytes in the
+in-frame capture (typical mid-`svc_equip` / `svc_countdown`), the hook
+absorbs any staged prefix and appends four bytes atomically instead of
+letting the long land in the mailbox alone. If capture is empty, the write
+is stock-immediate. No extra queue rules.
 
-`svc_download` (`0x13`) and `svc_sp_print_data_1/_data_2` (`0x24`/`0x25`)
-are `Byte(op)` + `Short` + `Byte|Short` + `SZ_Write(raw binary)`, each
-written atomically in one engine call (`SV_NextDownload` @ `0x20063040`,
-`SP_Print_` @ `0x20058280`). The payload is binary — it can contain
-`0x0B` and `NUL` bytes that look like print boundaries but aren't — and
-each unit must hit staging stock-immediate and atomic:
+**Strings (`RelDef_CStrEnd`).** Matches `MSG_ReadString` @ `0x2001E3B0`: a
+C string ends on `0x00` or `0xFF`. Counted payloads (`0x24` / `0x25` /
+`0x1A` / `0x1C`) do not use that scan.
 
-- a **split** (capture cap cutting mid-chunk at a fake boundary) hands the
-  client fewer bytes than the header's `size` promises → corrupt file;
-- a **delay** (chunk queued behind chat) stalls the lockstep
-  request→chunk→request protocol, which only advances per received chunk.
+**Seal (`RelDef_SealEnd`).** A tail that starts with opcode `0x01`–`0x28`
+is kept only when `RelDef_MsgEnd` can finish that message inside the
+buffer. Otherwise the seal stops at the last complete message and drops
+the orphan header (avoids `svc_bad` from a header-only parcel).
 
-So these opcodes arm a per-slot phase machine (`RelDef_DlStep`): when
-`MSG_WriteByte` delivers `0x13`/`0x24`/`0x25` **at a message boundary**
-(staging *and* capture both empty — a level byte mid-print never
-qualifies), the next two header writes and the bulk data write skip
-classification entirely. A unit with no data (short "not found" message)
-disarms on the next non-bulk write and classifies normally; phases reset
-every send tick, so an aborted unit can't bypass later mail. Deliberately
-no code-patch detours here — the state machine can't misfire on a
-different engine build.
+### Lockstep bypass: `svc_download` only
 
-The bypass is exact-stock behavior in that region (including stock's own
-`SZ_Write` overflow check), which is why downloads need no reserve
-headroom of their own.
+`svc_download` (`0x13`) is `Byte(op)` + `Short` + `Byte|Short` +
+`SZ_Write(raw)` (`SV_NextDownload` @ `0x20063040`). `RelDef_IsLockstepOp`
+is **`0x13` only**. `RelDef_DlStep` arms when that opcode is the first
+byte of a new message (staging and capture both empty); the next header
+writes and bulk `SZ_Write` bypass classification until the unit finishes
+or disarms.
+
+**`SP_Print` (`0x24` / `0x25`)** does not use lockstep. `SP_Print_@0x200583D5`
+builds the packet and `PF_Unicast` copies it with one `SZ_Write@0x2005C27F`.
+If that blob later shares a capture with other mail, `RelDef_MsgEnd` keeps
+the counted payload whole (including embedded `0x0B`, `0xFF`, or NUL).
+
+## What still bites
+
+1. **Opaque opcodes in `RelDef_MsgEnd`.** `svc_equip` (`0x06`) is kept whole
+   via capture + `MSG_WriteLong` continuation, not full parsing.
+   `svc_rebuild_pred_inv` (`0x1E`), `svc_playernamecols` (`0x21`), baselines,
+   and serverdata are still opaque at seal time (parcel ships as one unit
+   when the tail looks like an opcode).
+
+2. **No in-process test of `HandleMessageWrite` / `DripSlot`.** `run.sh`
+   covers cutters, seal rules, queue FIFO, and policy math. Integration
+   behaviour is build-time + live server.
+
+3. **Queue pressure.** Full queues still drop new mail (`reldef: drop
+   staging` / `drop write`). Evicting older chat before dropping in-flight
+   staging is a separate policy change (not implemented).

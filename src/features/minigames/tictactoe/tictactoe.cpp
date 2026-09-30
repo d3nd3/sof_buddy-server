@@ -270,26 +270,8 @@ void TttTryRegister() {
 
 }  // namespace
 
-void TttRegisterGhoulFiles() {
-    if (!Ttt_Enabled())
-        return;
-    const int tx = MgRegisterGhoulFile("sb/tt/x.m32");
-    const int to = MgRegisterGhoulFile("sb/tt/o.m32");
-    const int tb = MgRegisterGhoulFile("sb/tt/b.m32");
-    const int ts = MgRegisterGhoulFile("sb/tt/s.m32");
-    (void)MgRegisterImage(kTttPicX);
-    (void)MgRegisterImage(kTttPicO);
-    (void)MgRegisterImage(kTttPicBoard);
-    (void)MgRegisterImage(kTttPicSel);
-    if (tx && to && tb && ts)
-        Buddy_DebugPrintf("[tictactoe] ghoul tt x=%d o=%d b=%d s=%d\n", tx, to, tb, ts);
-    else
-        Buddy_DebugPrintf("[tictactoe] ghoul register failed\n");
-}
-
 void TttOnEnabled() {
     TttTryRegister();
-    TttRegisterGhoulFiles();
 }
 
 void ttt_OnGameDllLoaded(void* gameExport) {

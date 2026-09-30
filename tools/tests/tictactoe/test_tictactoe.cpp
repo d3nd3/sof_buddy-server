@@ -86,7 +86,7 @@ static void test_canvas() {
     CHECK(MgCanvasText(c, 170, 140, "hi"), "text appends");
     CHECK(std::strstr(c.text, "xv 10 yv 20 string \"hi\"") != nullptr, "text token");
     CHECK(MgCanvasCenter(c, 320, 70, "title"), "center appends");
-    CHECK(std::strstr(c.text, "xv 160 yv -50 cstring \"title\"") != nullptr, "center token");
+    CHECK(std::strstr(c.text, "xv 140 yv -50 string \"title\"") != nullptr, "center token");
     CHECK(MgCanvasPic(c, 165, 126, "pics/x"), "pic appends");
     CHECK(std::strstr(c.text, "xv 5 yv 6 picn pics/x") != nullptr, "picn token (not pic)");
     CHECK(MgCanvasTc(c, 5), "tc appends");
