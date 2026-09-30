@@ -97,6 +97,7 @@ char g_runningSession[kMgGameIdLen] = {};
 
 enum class MgView : unsigned char { Off = 0, Minigame = 1, StockScoreboard = 2 };
 MgView g_page[kMgMaxSlots + 1] = {};
+bool g_scoreMinigameLatch[kMgMaxSlots + 1] = {};
 bool g_layoutDirty[kMgMaxSlots + 1] = {};
 bool g_layoutPrimed[kMgMaxSlots + 1] = {};
 int g_clientCmdArgvBase = 0;
@@ -220,9 +221,17 @@ bool ClientUseHeld(void* ent) {
     return (*reinterpret_cast<int*>(static_cast<char*>(client) + kClientButtonsOfs) & kMgBtnUse) != 0;
 }
 
+bool ClientShowscoresOpen(void* ent) {
+    void* client = ClientForEnt(ent);
+    if (!client || !Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
+        return false;
+    return *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) != 0;
+}
+
 void EnsureScoreboardPage(void* ent, int slot) {
     if (slot < 1 || slot > kMgMaxSlots)
         return;
+    g_scoreMinigameLatch[slot] = false;
     if (g_page[slot] != MgView::StockScoreboard)
         ApplyView(ent, slot, MgView::StockScoreboard);
     else
@@ -686,19 +695,27 @@ void __cdecl HkCmd_Score_f(void* ent) {
         const int slot = MgSlotForEdict(ent);
         if (slot >= 1) {
             if (ClientWantsStockScoreboard(ent)) {
+                g_scoreMinigameLatch[slot] = false;
                 ApplyView(ent, slot, MgView::StockScoreboard);
                 return;
             }
             if (ClientUseHeld(ent)) {
+                if (g_scoreMinigameLatch[slot]) {
+                    g_scoreMinigameLatch[slot] = false;
+                    ApplyView(ent, slot, MgView::Off);
+                    return;
+                }
+                if (ClientShowscoresOpen(ent)) {
+                    g_scoreMinigameLatch[slot] = true;
+                    ApplyView(ent, slot, MgView::Minigame);
+                    return;
+                }
+            }
+            if (g_scoreMinigameLatch[slot]) {
                 if (g_page[slot] == MgView::Minigame)
                     ApplyView(ent, slot, MgView::Off);
                 else
                     ApplyView(ent, slot, MgView::Minigame);
-                return;
-            }
-            if (g_page[slot] == MgView::Minigame) {
-                if (auto original = reinterpret_cast<cmd_score_fn>(g_scoreTrampoline))
-                    original(ent);
                 return;
             }
         }
@@ -1734,6 +1751,8 @@ extern "C" void Minigames_Shutdown() {
         p = false;
     for (MgView& p : g_page)
         p = MgView::Off;
+    for (bool& l : g_scoreMinigameLatch)
+        l = false;
     for (char* row : g_displayOwner)
         row[0] = '\0';
     g_runningSession[0] = '\0';

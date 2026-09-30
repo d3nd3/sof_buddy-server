@@ -14,9 +14,9 @@ static int fails = 0;
     } while (0)
 
 static void test_spare() {
-    CHECK(LagSpareHeadroomMs(0.0f, 0.0f) == 100.0f, "idle spare");
-    CHECK(LagSpareHeadroomMs(30.0f, 20.0f) == 50.0f, "busy spare");
-    CHECK(LagSpareHeadroomMs(80.0f, 50.0f) == 0.0f, "clamped spare");
+    CHECK(LagSpareHeadroomMs(0.0f) == 100.0f, "idle spare");
+    CHECK(LagSpareHeadroomMs(30.0f) == 70.0f, "busy spare");
+    CHECK(LagSpareHeadroomMs(100.0f) == 0.0f, "clamped spare");
 }
 
 static void test_bar() {
