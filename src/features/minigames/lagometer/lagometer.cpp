@@ -15,29 +15,46 @@
 #include <windows.h>
 
 constexpr unsigned kRvaSvTime = 0x3A1F28;
+constexpr unsigned kRvaSvsRealtime = 0x396DE4;
+constexpr unsigned kRvaSvFramenum = 0x3A1F30;
 
 struct LagTickSample {
-    float game_ms = 0.0f;
-    float cmd_ms = 0.0f;
-    float shell_ms = 0.0f;
+    float sv_tick_ms = 0.0f;
+    float clientthink_ms = 0.0f;
+    float buffer_ms = 0.0f;
     float spare_ms = 100.0f;
+    int sv_framenum = -1;
     bool valid = false;
 };
+
+// sv.framenum values to drop (_init / map script ticks). Read the HUD, then add here.
+constexpr int kLagSkipSvFramenum[] = {};
 
 struct LagometerTrack {
     char map_id[64] = {};
     LagTickSample worst = {};
     float worst_used_ms = 0.0f;
-    float pending_game_ms = 0.0f;
-    float pending_cmd_ms = 0.0f;
-    bool game_sample_armed = false;
+    bool tick_armed = false;
+    float pending_clientthink_ms = 0.0f;
+    float pending_buffer_ms = 0.0f;
+    int pending_sv_framenum = -1;
     std::uint32_t sv_time_at_pre = 0;
     double tick_frame_start_ms = 0.0;
+    int clientthink_depth = 0;
+    double clientthink_start_ms = 0.0;
     LARGE_INTEGER qpc_freq = {};
     bool clock_ok = false;
 };
 
 static LagometerTrack g_track;
+
+static bool LagSkipFramenum(int framenum) {
+    for (int skip : kLagSkipSvFramenum) {
+        if (skip == framenum)
+            return true;
+    }
+    return false;
+}
 
 static HMODULE ExeMod() {
     if (HMODULE h = GetModuleHandleA("SoF.exe"))
@@ -54,12 +71,25 @@ static volatile std::uint32_t* SvTime() {
     return reinterpret_cast<volatile std::uint32_t*>(reinterpret_cast<char*>(h) + kRvaSvTime);
 }
 
+static volatile std::uint32_t* SvsRealtime() {
+    HMODULE h = ExeMod();
+    if (!h)
+        return nullptr;
+    return reinterpret_cast<volatile std::uint32_t*>(reinterpret_cast<char*>(h) + kRvaSvsRealtime);
+}
+
+static volatile std::int32_t* SvFramenum() {
+    HMODULE h = ExeMod();
+    if (!h)
+        return nullptr;
+    return reinterpret_cast<volatile std::int32_t*>(reinterpret_cast<char*>(h) + kRvaSvFramenum);
+}
+
 static void InitClock() {
     if (g_track.clock_ok)
         return;
-    if (QueryPerformanceFrequency(&g_track.qpc_freq) && g_track.qpc_freq.QuadPart > 0) {
+    if (QueryPerformanceFrequency(&g_track.qpc_freq) && g_track.qpc_freq.QuadPart > 0)
         g_track.clock_ok = true;
-    }
 }
 
 static double NowMs() {
@@ -70,12 +100,20 @@ static double NowMs() {
            static_cast<double>(g_track.qpc_freq.QuadPart);
 }
 
+// Same gate as SV_Frame before SV_RunGameFrame: svs.realtime >= sv.time (unsigned).
+static bool EngineTickWillRun() {
+    volatile std::uint32_t* sv_time = SvTime();
+    volatile std::uint32_t* realtime = SvsRealtime();
+    if (!sv_time || !realtime)
+        return false;
+    return *realtime >= *sv_time;
+}
+
 static void ResetMapPeaks() {
     g_track.worst = LagTickSample{};
     g_track.worst_used_ms = 0.0f;
-    g_track.pending_game_ms = 0.0f;
-    g_track.pending_cmd_ms = 0.0f;
-    g_track.game_sample_armed = false;
+    g_track.tick_armed = false;
+    g_track.clientthink_depth = 0;
 }
 
 static void SyncMap() {
@@ -89,27 +127,26 @@ static void SyncMap() {
     ResetMapPeaks();
 }
 
-static void CommitTickSample(float game_ms, float cmd_ms, float shell_raw_ms) {
-    float g = std::max(0.0f, game_ms);
-    float d = std::max(0.0f, cmd_ms);
-    if (g + d > kLagTickBudgetMs && g + d > 0.0f) {
-        const float scale = kLagTickBudgetMs / (g + d);
-        g *= scale;
-        d *= scale;
+static void CommitTickSample(float sv_tick_ms, float clientthink_ms, float buffer_ms,
+                             int sv_framenum) {
+    float tick = std::max(0.0f, sv_tick_ms);
+    float think = std::max(0.0f, clientthink_ms);
+    float buf = std::max(0.0f, buffer_ms);
+    if (tick + buf + think > kLagTickBudgetMs) {
+        const float scale = kLagTickBudgetMs / (tick + buf + think);
+        tick *= scale;
+        buf *= scale;
+        think *= scale;
     }
-    float room = kLagTickBudgetMs - g - d;
-    if (room < 0.0f)
-        room = 0.0f;
-    float f = std::max(0.0f, shell_raw_ms);
-    if (f > room)
-        f = room;
 
     LagTickSample sample;
-    sample.game_ms = g;
-    sample.cmd_ms = d;
-    sample.shell_ms = f;
+    sample.sv_tick_ms = tick;
+    sample.buffer_ms = buf;
+    sample.clientthink_ms = think;
+    sample.sv_framenum = sv_framenum;
     sample.valid = true;
-    LagNormalizeBreakdown(sample.game_ms, sample.cmd_ms, sample.shell_ms, sample.spare_ms);
+    LagNormalizeBreakdown(sample.sv_tick_ms, sample.buffer_ms, sample.clientthink_ms,
+                          sample.spare_ms);
     const float used = kLagTickBudgetMs - sample.spare_ms;
     if (!g_track.worst.valid || used > g_track.worst_used_ms) {
         g_track.worst = sample;
@@ -122,10 +159,11 @@ LagSnapshot ReadSnapshot() {
     LagSnapshot snapshot;
     if (!g_track.worst.valid)
         return snapshot;
-    snapshot.game_ms = g_track.worst.game_ms;
-    snapshot.cmd_ms = g_track.worst.cmd_ms;
-    snapshot.shell_ms = g_track.worst.shell_ms;
+    snapshot.game_ms = g_track.worst.sv_tick_ms;
+    snapshot.cmd_ms = g_track.worst.buffer_ms;
+    snapshot.shell_ms = g_track.worst.clientthink_ms;
     snapshot.spare_ms = g_track.worst.spare_ms;
+    snapshot.server_frame = g_track.worst.sv_framenum;
     return snapshot;
 }
 
@@ -230,18 +268,45 @@ void lag_OnGameDllLoaded(void* gameExport) {
     g_track = LagometerTrack{};
 }
 
-void lag_NoteGameFrameWallMs(float wall_ms) {
-    if (!Lag_Enabled() || wall_ms < 0.0f)
+void lag_ReadPacketsPre() {
+    if (!Lag_Enabled())
         return;
+    InitClock();
     SyncMap();
-    g_track.pending_game_ms = wall_ms;
-    g_track.game_sample_armed = true;
+    if (!EngineTickWillRun())
+        return;
+    g_track.tick_armed = true;
+    g_track.pending_clientthink_ms = 0.0f;
+    g_track.pending_buffer_ms = 0.0f;
+    g_track.pending_sv_framenum = -1;
+    g_track.clientthink_depth = 0;
+    g_track.tick_frame_start_ms = NowMs();
+}
+
+void lag_SvClientThinkPre(void*& client, void*& cmd) {
+    (void)client;
+    (void)cmd;
+    if (!Lag_Enabled() || !g_track.tick_armed)
+        return;
+    if (g_track.clientthink_depth++ == 0)
+        g_track.clientthink_start_ms = NowMs();
+}
+
+void lag_SvClientThinkPost(void*& client, void*& cmd) {
+    (void)client;
+    (void)cmd;
+    if (!Lag_Enabled() || !g_track.tick_armed || g_track.clientthink_depth <= 0)
+        return;
+    if (--g_track.clientthink_depth == 0) {
+        g_track.pending_clientthink_ms +=
+            static_cast<float>(NowMs() - g_track.clientthink_start_ms);
+    }
 }
 
 void lag_NoteTickCmdDrain(float cmd_ms) {
-    if (!Lag_Enabled() || cmd_ms < 0.0f)
+    if (!Lag_Enabled() || !g_track.tick_armed || cmd_ms < 0.0f)
         return;
-    g_track.pending_cmd_ms = cmd_ms;
+    g_track.pending_buffer_ms = cmd_ms;
 }
 
 void lag_SvFramePre(int& msec) {
@@ -253,7 +318,6 @@ void lag_SvFramePre(int& msec) {
     volatile std::uint32_t* sv_time = SvTime();
     if (sv_time)
         g_track.sv_time_at_pre = *sv_time;
-    g_track.tick_frame_start_ms = NowMs();
 }
 
 void lag_SvFramePost(int msec) {
@@ -263,21 +327,23 @@ void lag_SvFramePost(int msec) {
     volatile std::uint32_t* sv_time = SvTime();
     if (!sv_time || *sv_time == g_track.sv_time_at_pre)
         return;
-
-    if (!g_track.game_sample_armed) {
-        g_track.pending_game_ms = 0.0f;
-        g_track.pending_cmd_ms = 0.0f;
+    if (!g_track.tick_armed)
         return;
-    }
-    g_track.game_sample_armed = false;
+
+    int framenum = g_track.pending_sv_framenum;
+    if (framenum < 0 && (volatile std::int32_t* fn = SvFramenum()))
+        framenum = *fn;
+    g_track.tick_armed = false;
+    if (framenum >= 0 && LagSkipFramenum(framenum))
+        return;
 
     const float frame_ms = static_cast<float>(NowMs() - g_track.tick_frame_start_ms);
-    const float game = g_track.pending_game_ms;
-    const float cmd = g_track.pending_cmd_ms;
-    float shell = frame_ms - game - cmd;
-    CommitTickSample(game, cmd, shell);
-    g_track.pending_game_ms = 0.0f;
-    g_track.pending_cmd_ms = 0.0f;
+    const float think = g_track.pending_clientthink_ms;
+    const float buf = g_track.pending_buffer_ms;
+    float tick = frame_ms - think - buf;
+    if (tick < 0.0f)
+        tick = 0.0f;
+    CommitTickSample(tick, think, buf, framenum);
 }
 
 void lag_MaintainForSlot(int slot1) {

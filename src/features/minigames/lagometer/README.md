@@ -2,16 +2,16 @@
 
 Tick **budget breakdown** HUD on the minigames tab (+use+score).
 
-The bar is one 100 ms tick (40 columns). Colours:
+Aligned with **`SV_Frame`** after the lowclamp early return (`svs.realtime >= sv.time`):
 
 | Colour | Segment | Meaning |
 |--------|---------|---------|
-| Green | **Play** | Running the match (players, physics, AI) |
-| Yellow | **Console** | Server commands / scripts draining after the tick |
-| White | **Overhead** | Networking, sends, and other engine work that tick |
-| Black `-` | **Free** | Time left in the 100 ms budget |
+| Green | **SV Tick (frame)** | Wall time for that tick’s **`SV_Frame`** body (past the return), minus ClientThink and post-tick console drain |
+| Yellow | **Console (buffer)** | Post-tick **`Cbuf_Execute`** drain (cmdpark) |
+| White | **ClientThink** | Sum of **`SV_ClientThink`** wall time that tick |
+| Black `-` | **Free** | Unused 100 ms budget |
 
-Keeps the **busiest real tick** since map load (clamp_monitor gate; spawn/settle skipped). Resets on map checksum change.
+Keeps the **busiest** paired tick since map load. HUD shows **`sv.framenum`**; add init-script frames to `kLagSkipSvFramenum` in `lagometer.cpp`. Resets on map checksum change.
 
 | Command | Who | Action |
 |---------|-----|--------|

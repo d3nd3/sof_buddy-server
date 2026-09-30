@@ -35,13 +35,15 @@ static void test_render() {
     snapshot.game_ms = 25.0f;
     snapshot.cmd_ms = 10.0f;
     snapshot.shell_ms = 5.0f;
+    snapshot.server_frame = 42;
     LagNormalizeBreakdown(snapshot.game_ms, snapshot.cmd_ms, snapshot.shell_ms, snapshot.spare_ms);
     MgCanvas c;
     LagRender(snapshot, c);
     CHECK(c.len > 0 && c.len < kMgLayoutCap, "layout fits");
     CHECK(std::strstr(c.text, "SERVER TICK") != nullptr, "title");
-    CHECK(std::strstr(c.text, "tc 1 ") != nullptr, "play color");
-    CHECK(std::strstr(c.text, "Play") != nullptr, "legend");
+    CHECK(std::strstr(c.text, "tc 1 ") != nullptr, "gameplay color");
+    CHECK(std::strstr(c.text, "SV Tick (frame)") != nullptr, "legend");
+    CHECK(std::strstr(c.text, "sv.framenum 42") != nullptr, "frame label");
 }
 
 int main() {
