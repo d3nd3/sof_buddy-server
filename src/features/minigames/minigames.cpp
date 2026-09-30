@@ -21,6 +21,7 @@
 #include "cvar.h"
 #include "lagometer/lagometer.h"
 #include "minigames_api.h"
+#include "minigames_clientcmd_logic.h"
 
 extern void ttt_EnsureRegistered();
 
@@ -95,7 +96,7 @@ char g_runningSession[kMgGameIdLen] = {};
 enum class MgView : unsigned char { Off = 0, Minigame = 1, StockScoreboard = 2 };
 MgView g_page[kMgMaxSlots + 1] = {};
 bool g_layoutDirty[kMgMaxSlots + 1] = {};
-char g_placeholderLayout[kMgLayoutCap] = {};
+int g_clientCmdArgvBase = 0;
 char g_ctfSbHintLayout[kMgLayoutCap] = {};
 bool g_sobuddySpReady = false;
 char g_sobuddyRegisterName[64] = {};
@@ -263,17 +264,6 @@ void SendMinigameLayout(void* ent, int slot, const char* layout) {
         return;
     PushLayoutPayload(ent, layout);
     g_layoutDirty[slot] = false;
-}
-
-void EnsurePlaceholderLayout() {
-    if (g_placeholderLayout[0])
-        return;
-    MgCanvas c;
-    MgCanvasClear(c);
-    MgCanvasTc(c, kMgColWhite);
-    MgCanvasCenter(c, 320, 240, "Hello World");
-    std::strncpy(g_placeholderLayout, c.text, kMgLayoutCap);
-    g_placeholderLayout[kMgLayoutCap - 1] = '\0';
 }
 
 namespace {
@@ -545,8 +535,7 @@ void AppendCtfScoreboardHint(void* ent) {
 const char* MinigameLayoutForSlot(int slot) {
     if (slot >= 1 && slot <= kMgMaxSlots && g_layoutCache[slot][0])
         return g_layoutCache[slot];
-    EnsurePlaceholderLayout();
-    return g_placeholderLayout;
+    return "";
 }
 
 void CopyGameId(char* dst, int cap, const char* gameId) {
@@ -671,6 +660,7 @@ void ApplyView(void* ent, int slot, MgView view) {
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, true);
+        lag_OnMinigameTabOpened(slot);
         SendMinigameLayout(ent, slot, MinigameLayoutForSlot(slot));
         break;
     }
@@ -715,17 +705,12 @@ void PushLayoutPayload(void* ent, const char* layout) {
 }
 
 bool StockWouldSayAsChat(const char* cmd) {
-    if (!cmd || !cmd[0])
-        return false;
-    if (SameNoCase(cmd, "lag") || SameNoCase(cmd, "sofbuddy_lag") ||
-        std::strcmp(cmd, ".lag") == 0)
-        return true;
-    return SameNoCase(cmd, "ttt");
+    return MgClientCmdIsMinigameChatWord(cmd);
 }
 
 bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
     for (const MgGameOps* g : g_games) {
-        if (!g || !g->command || !g->onClientCmd || !SameNoCase(cmd, g->command))
+        if (!g || !g->command || !g->onClientCmd || !MgClientCmdMatches(cmd, g->command))
             continue;
         MgLazyEnsureSobuddySp();
         const int slot = MgSlotForEdict(ent);
@@ -741,20 +726,26 @@ bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
 
 void __cdecl HkClientCommand(void* ent) {
     if (MgPlatformEnabled() && MgEnabled() && ent) {
-        const char* cmd = MgArgv(0);
+        g_clientCmdArgvBase =
+            MgClientCmdArgvBase(Buddy_ClientArgv(0), Buddy_ClientArgv(1));
+        const char* cmd = Buddy_ClientArgv(g_clientCmdArgvBase);
         if (cmd && cmd[0]) {
             lag_EnsureRegistered();
             ttt_EnsureRegistered();
-            if (DispatchMinigameClientCmd(ent, cmd))
+            if (DispatchMinigameClientCmd(ent, cmd)) {
+                g_clientCmdArgvBase = 0;
                 return;
+            }
             if (StockWouldSayAsChat(cmd)) {
                 Buddy_ClientPrintf(
                     ent, 2,
                     "[minigames] '%s' not registered (minigames off or gamex86.dll too old?)\n",
                     cmd);
+                g_clientCmdArgvBase = 0;
                 return;
             }
         }
+        g_clientCmdArgvBase = 0;
     }
     if (g_originalClientCommand)
         g_originalClientCommand(ent);
@@ -1074,11 +1065,14 @@ void MgStripUserCmd(void* cmd) {
 }
 
 int MgArgc() {
-    return Buddy_ClientArgc();
+    const int c = Buddy_ClientArgc();
+    return c > g_clientCmdArgvBase ? c - g_clientCmdArgvBase : 0;
 }
 
 const char* MgArgv(int n) {
-    return Buddy_ClientArgv(n);
+    if (n < 0)
+        return "";
+    return Buddy_ClientArgv(n + g_clientCmdArgvBase);
 }
 
 bool MgEnabled() {
@@ -1110,6 +1104,12 @@ void MgReleaseDisplay(int slot1, const char* gameId) {
 
 bool MgDisplayOwnedBy(int slot1, const char* gameId) {
     return DisplayOwnedBy(slot1, gameId);
+}
+
+bool MgDisplayTakenByOther(int slot1, const char* gameId) {
+    if (slot1 < 1 || slot1 > kMgMaxSlots || !gameId || !gameId[0])
+        return false;
+    return g_displayOwner[slot1][0] && !SameNoCase(g_displayOwner[slot1], gameId);
 }
 
 bool MgRunningSession(const char* gameId) {
@@ -1705,7 +1705,6 @@ extern "C" void Minigames_Shutdown() {
     for (char* row : g_displayOwner)
         row[0] = '\0';
     g_runningSession[0] = '\0';
-    g_placeholderLayout[0] = '\0';
     g_ctfSbHintLayout[0] = '\0';
     g_sobuddySpReady = false;
     g_sobuddyRegisterName[0] = '\0';

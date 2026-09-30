@@ -212,7 +212,7 @@ case `0x2`; SP layout merge @ `Print_SP_Message` when flag `0x10` is set.
 
 | Goal | Use |
 |------|-----|
-| **Own the full screen** (minigame page, Hello World placeholder) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
+| **Own the full screen** (minigame page, default lagometer when enabled) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
 | **Add tokens to an existing layout** (e.g. one line on a stock scoreboard) | **`SP_Print` layout append** only. A trailing `svc_layout` would destroy the scoreboard. Needs a registered `.sp` entry with `SP_FLAG_LAYOUT` and `%s`; minigames auto-create **`strip/sofbuddy.sp`** (`0x0700`) when missing. |
 | **Text outside the layout channel** | `mg_center` / `centerprintf`, captions, etc. — separate opcodes, no merge rules. Not used for the CTF scoreboard hint (layout append only). |
 

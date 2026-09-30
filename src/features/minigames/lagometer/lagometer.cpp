@@ -179,3 +179,14 @@ void lag_ClientEndServerFramePost(void* ent) {
     MgCanvas c;
     RefreshLagCanvas(slot, c);
 }
+
+void lag_OnMinigameTabOpened(int slot1) {
+    if (!Lag_Enabled() || !MgEnabled() || slot1 < 1)
+        return;
+    lag_EnsureRegistered();
+    if (MgDisplayTakenByOther(slot1, kLagGameId))
+        return;
+    SetArmed(slot1, true);
+    MgCanvas c;
+    RefreshLagCanvas(slot1, c);
+}
