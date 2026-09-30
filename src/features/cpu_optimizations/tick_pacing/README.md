@@ -137,10 +137,11 @@ tick. `_sofbuddy_tickpace_late_avg` is tick lateness once the tick fired.
 
 ### parked backlog (`cmdtext_parking`, not `_sofbuddy_tickpace`)
 
-While `cmdtext_parking` is armed (strict or `reserve_ms` > 0) and its side
-store still holds previous ticks' payload, WinMain's `Sleep(1)` is skipped so
-the loop drips it instead of sleeping through it. Empty park sleeps again.
-Independent of `_sofbuddy_tickpace`.
+While `cmdtext_parking` is armed and its side store is non-empty, WinMain's
+`Sleep(1)` is skipped only when a game tick is due within
+`_sofbuddy_tickpace_spin_ms` (strict drips the park on the post-tick slot
+only — skipping sleep with a large backlog but no tick due would spin at
+100% CPU). Requires `spin_ms` > 0.
 
 Keep drains off the boundary with **`cmdtext_parking`**. A drain longer than a
 tick cannot be scheduled around.

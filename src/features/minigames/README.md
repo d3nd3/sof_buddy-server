@@ -214,6 +214,7 @@ case `0x2`; SP layout merge @ `Print_SP_Message` when flag `0x10` is set.
 |------|-----|
 | **Own the full screen** (minigame page, Hello World placeholder) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
 | **Add tokens to an existing layout** (e.g. one line on a stock scoreboard) | **`SP_Print` layout append** only. A trailing `svc_layout` would destroy the scoreboard. Needs a registered `.sp` entry with `SP_FLAG_LAYOUT` and `%s`; minigames auto-create **`strip/sofbuddy.sp`** (`0x0700`) when missing. |
+| **Text outside the layout channel** | `mg_center` / `centerprintf`, captions, etc. — separate opcodes, no merge rules. Not used for the CTF scoreboard hint (layout append only). |
 
 ### String package IDs (`strip/*.sp`)
 
@@ -236,9 +237,10 @@ gets a single `%`; we `fwrite` the body directly so the literal is already
 `"%s"`. The server keeps **`strip/sofbuddy.sp`** as the editable template;
 registration uses **`sofbuddy-<CRC32>.sp`** / **`SP_Register("sofbuddy-<CRC32>")`**
 so a content change gets a new configstring name and clients fetch the new file.
-Registered on the first `SV_Frame` when minigames are enabled so
-clients download the checksum-named strip during connect, not on first scoreboard.
-| **Text outside the layout channel** | `mg_center` / `centerprintf`, captions, etc. — separate opcodes, no merge rules. Not used for the CTF scoreboard hint (layout append only). |
+Registered from `mg_SvFramePost` (after send, not inside scoreboard/multicast)
+and retried on minigame client/console commands if that fails. Do not call
+`SP_Register` from `clientScoreboardMessage` — map rotate/intermission already
+fills `sv.multicast` and can `SZ_GetSpace` overflow.
 
 ### Wire size (why append matters)
 
