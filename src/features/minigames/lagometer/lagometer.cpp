@@ -26,7 +26,8 @@ struct LagTickSample {
 
 struct LagometerTrack {
     char map_id[64] = {};
-    LagTickSample last = {};
+    LagTickSample worst = {};
+    float worst_used_ms = 0.0f;
     float pending_game_ms = 0.0f;
     float pending_cmd_ms = 0.0f;
     bool game_sample_armed = false;
@@ -70,7 +71,8 @@ static double NowMs() {
 }
 
 static void ResetMapPeaks() {
-    g_track.last = LagTickSample{};
+    g_track.worst = LagTickSample{};
+    g_track.worst_used_ms = 0.0f;
     g_track.pending_game_ms = 0.0f;
     g_track.pending_cmd_ms = 0.0f;
     g_track.game_sample_armed = false;
@@ -108,18 +110,22 @@ static void CommitTickSample(float game_ms, float cmd_ms, float shell_raw_ms) {
     sample.shell_ms = f;
     sample.valid = true;
     LagNormalizeBreakdown(sample.game_ms, sample.cmd_ms, sample.shell_ms, sample.spare_ms);
-    g_track.last = sample;
+    const float used = kLagTickBudgetMs - sample.spare_ms;
+    if (!g_track.worst.valid || used > g_track.worst_used_ms) {
+        g_track.worst = sample;
+        g_track.worst_used_ms = used;
+    }
 }
 
 LagSnapshot ReadSnapshot() {
     SyncMap();
     LagSnapshot snapshot;
-    if (!g_track.last.valid)
+    if (!g_track.worst.valid)
         return snapshot;
-    snapshot.game_ms = g_track.last.game_ms;
-    snapshot.cmd_ms = g_track.last.cmd_ms;
-    snapshot.shell_ms = g_track.last.shell_ms;
-    snapshot.spare_ms = g_track.last.spare_ms;
+    snapshot.game_ms = g_track.worst.game_ms;
+    snapshot.cmd_ms = g_track.worst.cmd_ms;
+    snapshot.shell_ms = g_track.worst.shell_ms;
+    snapshot.spare_ms = g_track.worst.spare_ms;
     return snapshot;
 }
 

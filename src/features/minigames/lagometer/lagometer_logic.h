@@ -100,7 +100,7 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     LagNormalizeBreakdown(game, cmd, shell, spare);
 
     MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasCenter(canvas, 320, 88, "TICK BUDGET (100 ms)");
+    MgCanvasCenter(canvas, 320, 88, "SERVER TICK (100 ms)");
 
     LagRenderBar(canvas, 168, snapshot);
 
@@ -110,22 +110,22 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasCenter(canvas, 320, 196, line);
 
     MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasCenter(canvas, 320, 228, "last measured tick");
+    MgCanvasCenter(canvas, 320, 228, "busiest moment this map");
 
-    std::snprintf(line, sizeof(line), "G %.0f  Cmd %.0f  Frame %.0f", game, cmd, shell);
+    std::snprintf(line, sizeof(line), "Play %.0f  Console %.0f  Overhead %.0f", game, cmd, shell);
     MgCanvasCenter(canvas, 320, 252, line);
 
-    int lx = 120;
+    int lx = 88;
     int ly = 276;
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasText(canvas, lx, ly, "Game");
-    lx += 56;
-    MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasText(canvas, lx, ly, "Cmd");
+    MgCanvasText(canvas, lx, ly, "Play");
     lx += 48;
+    MgCanvasTc(canvas, kMgColYellow);
+    MgCanvasText(canvas, lx, ly, "Console");
+    lx += 72;
     MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasText(canvas, lx, ly, "Frame");
-    lx += 56;
+    MgCanvasText(canvas, lx, ly, "Overhead");
+    lx += 80;
     MgCanvasTc(canvas, kMgColBlack);
     MgCanvasText(canvas, lx, ly, "Free");
 
