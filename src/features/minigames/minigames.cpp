@@ -1594,8 +1594,10 @@ void MaintainLayoutClient(void* ent, int slot) {
         if (void* client = ClientForEnt(ent))
             SuppressStockLayoutRefresh(client);
         ApplyLayoutClient(ent, true);
-        if (g_layoutDirty[slot])
-            SendMinigameLayout(ent, slot, MinigameLayoutForSlot(slot));
+        lag_MaintainForSlot(slot);
+        const char* layout = MinigameLayoutForSlot(slot);
+        if (layout[0])
+            SendMinigameLayout(ent, slot, layout);
     }
 }
 

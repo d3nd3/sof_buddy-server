@@ -1,8 +1,1 @@
-[
-  {
-    "function": "ClientEndServerFrame",
-    "callback": "lag_ClientEndServerFramePost",
-    "phase": "Post",
-    "priority": 2
-  }
-]
+[]

@@ -69,6 +69,12 @@ LagSnapshot ReadSnapshot() {
     return s;
 }
 
+void UpdateLagCache(int slot1) {
+    MgCanvas c;
+    LagRender(ReadSnapshot(), c);
+    MgPutLayoutCache(slot1, kLagGameId, c);
+}
+
 void RefreshLagCanvas(int slot1, MgCanvas& c) {
     LagRender(ReadSnapshot(), c);
     MgPutLayoutCache(slot1, kLagGameId, c);
@@ -168,16 +174,18 @@ void lag_SvFramePost(int msec) {
     (void)msec;
 }
 
-void lag_ClientEndServerFramePost(void* ent) {
-    if (!Lag_Enabled() || !MgEnabled() || !ent)
+void lag_MaintainForSlot(int slot1) {
+    if (!Lag_Enabled() || !MgEnabled() || slot1 < 1 || !g_armed[slot1])
         return;
-    const int slot = MgSlotForEdict(ent);
-    if (slot < 1 || !g_armed[slot] || !MgRunningSession(kLagGameId))
+    if (!MgMinigameTabOpen(slot1))
         return;
-    if (!MgDisplayOwnedBy(slot, kLagGameId))
-        MgTakeDisplay(slot, kLagGameId);
-    MgCanvas c;
-    RefreshLagCanvas(slot, c);
+    if (MgDisplayTakenByOther(slot1, kLagGameId))
+        return;
+    if (!MgDisplayOwnedBy(slot1, kLagGameId))
+        MgTakeDisplay(slot1, kLagGameId);
+    if (!MgRunningSession(kLagGameId))
+        return;
+    UpdateLagCache(slot1);
 }
 
 void lag_OnMinigameTabOpened(int slot1) {
@@ -187,6 +195,5 @@ void lag_OnMinigameTabOpened(int slot1) {
     if (MgDisplayTakenByOther(slot1, kLagGameId))
         return;
     SetArmed(slot1, true);
-    MgCanvas c;
-    RefreshLagCanvas(slot1, c);
+    UpdateLagCache(slot1);
 }
