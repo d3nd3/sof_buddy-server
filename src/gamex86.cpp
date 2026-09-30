@@ -53,6 +53,9 @@ extern "C" void Profiles_Shutdown(void);
 #ifdef SOF_FEATURE_RELIABLE_DEFER
 extern "C" void RelDef_Shutdown(void);
 #endif
+#ifdef SOF_FEATURE_SV_TRACKTIME
+extern "C" void SvTracktime_Shutdown(void);
+#endif
 
 static HMODULE g_hShim = nullptr;
 static HMODULE g_hGameDll = nullptr;
@@ -284,6 +287,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #endif
 #ifdef SOF_FEATURE_RELIABLE_DEFER
 		RelDef_Shutdown();
+#endif
+#ifdef SOF_FEATURE_SV_TRACKTIME
+		SvTracktime_Shutdown();
 #endif
 		g_hGameDll = nullptr;
 		g_pfnGetGameAPI = nullptr;
