@@ -218,10 +218,14 @@ inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
         if (need(2) < 0) return -1;
         i += 2;
         return str();
-    case 0x0F:                                // configstring: short + string
+    case 0x0F: {                              // index + inline ID, or -1 + string
         if (need(2) < 0) return -1;
         i += 2;
-        return str();
+        if (need(2) < 0) return -1;
+        const auto id = static_cast<std::int16_t>(p[i] | (p[i + 1] << 8));
+        i += 2;
+        return id >= 0 ? i : str();
+    }
     case 0x20:                                // cinprint: short, short, byte, string
         if (need(5) < 0) return -1;
         i += 5;
