@@ -324,6 +324,8 @@ sv_tracktime <slot>          window + total for one slot
 sv_tracktime_reset [slot|all]
 ```
 
+Output goes straight to the server console — no `developer 1` needed.
+
 ```
 [tracktime]  sl  name              frames   sum_ms  avg_ms claim_fps  real_fps     drift  verdict
 [tracktime]   0  Grim               256      4352  17.00     58.8      59.9     -1.8%  ok

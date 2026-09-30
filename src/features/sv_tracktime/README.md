@@ -60,6 +60,9 @@ window restarts after it. A stall is not a rate.
 | `sv_tracktime <slot>` | Window + total for one slot, plus msec extremes, stalls, idle time |
 | `sv_tracktime_reset [<slot>\|all]` | Clear the data (all slots when the argument is omitted) |
 
+Output prints straight to the server console (`Com_Printf`) — no
+`developer 1` needed, unlike the `gi.dprintf` diagnostics most features log.
+
 ```
 [tracktime] window 256 samples, min 30, tolerance 20%
 [tracktime]  sl  name              frames   sum_ms  avg_ms claim_fps  real_fps     drift  verdict
