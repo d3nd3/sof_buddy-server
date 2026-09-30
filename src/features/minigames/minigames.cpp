@@ -650,6 +650,7 @@ void ApplyView(void* ent, int slot, MgView view) {
     g_page[slot] = view;
     switch (view) {
     case MgView::Off:
+        g_visible[slot] = false;
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, false);
@@ -666,6 +667,7 @@ void ApplyView(void* ent, int slot, MgView view) {
         PaintScoreboard(ent);
         break;
     case MgView::Minigame:
+        g_visible[slot] = true;
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, true);
@@ -1112,6 +1114,20 @@ bool MgDisplayOwnedBy(int slot1, const char* gameId) {
 
 bool MgRunningSession(const char* gameId) {
     return RunningSession(gameId);
+}
+
+bool MgMinigameTabOpen(int slot1) {
+    return slot1 >= 1 && slot1 <= kMgMaxSlots && g_page[slot1] == MgView::Minigame;
+}
+
+void MgPutLayoutCache(int slot1, const char* gameId, const MgCanvas& canvas) {
+    if (!DisplayOwnedBy(slot1, gameId) || !RunningSession(gameId))
+        return;
+    if (slot1 < 1 || slot1 > kMgMaxSlots)
+        return;
+    std::strncpy(g_layoutCache[slot1], canvas.text, kMgLayoutCap);
+    g_layoutCache[slot1][kMgLayoutCap - 1] = '\0';
+    g_layoutDirty[slot1] = true;
 }
 
 void MgShowLayout(int slot1, const char* gameId, bool on) {

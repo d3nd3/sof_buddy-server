@@ -20,7 +20,7 @@ namespace {
 constexpr unsigned kCvarValueOfs = 0x18;
 
 bool g_registered = false;
-bool g_view[kMgMaxSlots + 1] = {};
+bool g_armed[kMgMaxSlots + 1] = {};
 constexpr char kLagGameId[] = "lag";
 
 void* g_cvDedicated = nullptr;
@@ -69,33 +69,38 @@ LagSnapshot ReadSnapshot() {
     return s;
 }
 
-void PushSlot(int slot1) {
-    LagSnapshot snap = ReadSnapshot();
-    MgCanvas c;
-    LagRender(snap, c);
-    MgPushLayout(slot1, kLagGameId, c);
+void RefreshLagCanvas(int slot1, MgCanvas& c) {
+    LagRender(ReadSnapshot(), c);
+    MgPutLayoutCache(slot1, kLagGameId, c);
+    if (MgMinigameTabOpen(slot1))
+        MgPushLayout(slot1, kLagGameId, c);
 }
 
-void SetView(int slot1, bool on) {
+void SetArmed(int slot1, bool on) {
     if (slot1 < 1 || slot1 > kMgMaxSlots)
         return;
-    g_view[slot1] = on;
+    g_armed[slot1] = on;
     if (on) {
-        MgShowLayout(slot1, kLagGameId, true);
-        PushSlot(slot1);
-    } else
-        MgClearLayout(slot1, kLagGameId);
+        MgTakeDisplay(slot1, kLagGameId);
+        return;
+    }
+    if (!MgDisplayOwnedBy(slot1, kLagGameId))
+        return;
+    MgCanvas c;
+    MgCanvasClear(c);
+    MgPutLayoutCache(slot1, kLagGameId, c);
+    if (MgMinigameTabOpen(slot1))
+        MgPushLayout(slot1, kLagGameId, c);
+    MgReleaseDisplay(slot1, kLagGameId);
 }
 
 extern "C" void __cdecl lag_Show_f();
 
 void OnSessionEnd() {
     for (int s = 1; s <= kMgMaxSlots; ++s) {
-        if (!g_view[s])
+        if (!g_armed[s])
             continue;
-        g_view[s] = false;
-        if (MgDisplayOwnedBy(s, kLagGameId))
-            MgClearLayout(s, kLagGameId);
+        SetArmed(s, false);
     }
 }
 
@@ -105,10 +110,10 @@ void OnLagClientCmd(int slot1) {
             Buddy_ClientPrintf(ent, 2, "Lagometer disabled on this server\n");
         return;
     }
-    const bool on = !g_view[slot1];
-    SetView(slot1, on);
+    const bool on = !g_armed[slot1];
+    SetArmed(slot1, on);
     if (void* ent = MgEdictForSlot(slot1))
-        Buddy_ClientPrintf(ent, 2, "Lagometer %s\n", on ? "ON" : "off");
+        Buddy_ClientPrintf(ent, 2, "Lagometer %s (+use+score to view)\n", on ? "armed" : "off");
 }
 
 void LagTryRegister() {
@@ -149,7 +154,9 @@ extern "C" void __cdecl lag_Show_f() {
         Buddy_DebugPrintf("[lagometer] slot not spawned\n");
         return;
     }
-    SetView(slot, true);
+    SetArmed(slot, true);
+    Buddy_DebugPrintf("[lagometer] armed slot %d — player opens with +use+score\n",
+                      MgInternalToUser(slot));
 }
 
 void lag_OnGameDllLoaded(void* gameExport) {
@@ -159,25 +166,16 @@ void lag_OnGameDllLoaded(void* gameExport) {
 
 void lag_SvFramePost(int msec) {
     (void)msec;
-    if (!Lag_Enabled() || !MgEnabled() || !MgRunningSession(kLagGameId))
-        return;
-    const LagSnapshot snap = ReadSnapshot();
-    const int n = MgMaxClients();
-    for (int slot = 1; slot <= n; ++slot) {
-        if (!g_view[slot] || !MgSlotSpawned(slot) || !MgDisplayOwnedBy(slot, kLagGameId))
-            continue;
-        MgCanvas c;
-        LagRender(snap, c);
-        MgPushLayout(slot, kLagGameId, c);
-    }
 }
 
 void lag_ClientEndServerFramePost(void* ent) {
-    if (!Lag_Enabled() || !ent)
+    if (!Lag_Enabled() || !MgEnabled() || !ent)
         return;
     const int slot = MgSlotForEdict(ent);
-    if (slot < 1 || !g_view[slot])
+    if (slot < 1 || !g_armed[slot] || !MgRunningSession(kLagGameId))
         return;
-    if (!MgSlotSpawned(slot) || !MgDisplayOwnedBy(slot, kLagGameId))
-        g_view[slot] = false;
+    if (!MgDisplayOwnedBy(slot, kLagGameId))
+        MgTakeDisplay(slot, kLagGameId);
+    MgCanvas c;
+    RefreshLagCanvas(slot, c);
 }
