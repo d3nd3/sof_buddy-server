@@ -33,7 +33,7 @@ static void test_render_fits() {
     MgCanvas c;
     LagRender(snapshot, c);
     CHECK(c.len > 0 && c.len < kMgLayoutCap, "layout fits");
-    CHECK(std::strstr(c.text, "Cmd-buffer work this tick") != nullptr, "drain label");
+    CHECK(std::strstr(c.text, "Last tick spent on commands") != nullptr, "drain label");
     CHECK(std::strstr(c.text, "strict") != nullptr, "strict mode");
 }
 

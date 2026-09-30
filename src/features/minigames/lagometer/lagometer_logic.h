@@ -59,65 +59,79 @@ inline void LagFormatDrainBar(char* out, int capacity, float milliseconds) {
 inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasClear(canvas);
     MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasCenter(canvas, 320, 36, "SERVER TICK HEALTH");
+    MgCanvasCenter(canvas, 320, 36, "SERVER PERFORMANCE");
     MgCanvasTc(canvas, kMgColWhite);
 
-    char line[112];
+    char line[120];
     char bar[kLagBarCharacters + 4];
+    int y = 68;
 
-    std::snprintf(line, sizeof(line), "Cmd-buffer work this tick: %5.1f ms",
+    std::snprintf(line, sizeof(line), "Last tick spent on commands: %5.1f ms",
                   snapshot.command_buffer_drain_last_ms);
-    MgCanvasText(canvas, 24, 68, line);
+    MgCanvasText(canvas, 24, y, line);
     LagFormatDrainBar(bar, sizeof(bar), snapshot.command_buffer_drain_last_ms);
     MgCanvasTc(canvas, LagMillisecondsColor(snapshot.command_buffer_drain_last_ms));
-    MgCanvasText(canvas, 200, 68, bar);
+    MgCanvasText(canvas, 200, y, bar);
     MgCanvasTc(canvas, kMgColWhite);
+    y += 24;
 
-    std::snprintf(line, sizeof(line), "Cmd-buffer work worst:    %5.1f ms",
+    std::snprintf(line, sizeof(line), "Heaviest tick on this map:  %5.1f ms",
                   snapshot.command_buffer_drain_peak_ms);
-    MgCanvasText(canvas, 24, 92, line);
+    MgCanvasText(canvas, 24, y, line);
+    y += 24;
 
-    std::snprintf(line, sizeof(line), "Tick pacing late (avg):   %5.1f ms",
+    std::snprintf(line, sizeof(line), "Ticks finishing late (average): %.1f ms",
                   snapshot.tick_late_average_ms);
-    MgCanvasText(canvas, 24, 116, line);
+    MgCanvasText(canvas, 24, y, line);
+    y += 24;
 
-    std::snprintf(
-        line, sizeof(line),
-        "Timer clamps: %lld high, %lld low  last shift %+d ms  total lost %lld ms",
-        snapshot.timer_clamp_high_count, snapshot.timer_clamp_low_count,
-        snapshot.timer_clamp_last_shift_ms, snapshot.timer_clamp_total_lost_ms);
-    MgCanvasText(canvas, 24, 140, line);
+    std::snprintf(line, sizeof(line), "Clock sped up %lldx  slowed down %lldx",
+                  snapshot.timer_clamp_high_count, snapshot.timer_clamp_low_count);
+    MgCanvasText(canvas, 24, y, line);
+    y += 20;
+    std::snprintf(line, sizeof(line), "Last clock fix %+d ms  (total time lost %lld ms)",
+                  snapshot.timer_clamp_last_shift_ms, snapshot.timer_clamp_total_lost_ms);
+    MgCanvasText(canvas, 24, y, line);
+    y += 20;
     if (snapshot.timer_clamp_low_worst_ms > 0) {
-        std::snprintf(line, sizeof(line), "Worst low-clamp stretch:  %d ms",
+        std::snprintf(line, sizeof(line), "Longest slow-down stretch: %d ms",
                       snapshot.timer_clamp_low_worst_ms);
-        MgCanvasText(canvas, 24, 160, line);
+        MgCanvasText(canvas, 24, y, line);
+        y += 20;
     }
 
-    std::snprintf(line, sizeof(line), "Engine cmd buffer: %d B (peak %d B)",
+    y += 4;
+    std::snprintf(line, sizeof(line), "Console text waiting to run: %d bytes (peak %d)",
                   snapshot.command_buffer_bytes, snapshot.command_buffer_peak_bytes);
-    MgCanvasText(canvas, 24, 184, line);
+    MgCanvasText(canvas, 24, y, line);
+    y += 20;
     if (snapshot.command_park_queued_bytes > 0) {
-        std::snprintf(line, sizeof(line), "Deferred cmd text parked: %d B",
+        std::snprintf(line, sizeof(line), "Held until a quieter tick: %d bytes",
                       snapshot.command_park_queued_bytes);
-        MgCanvasText(canvas, 24, 204, line);
+        MgCanvasText(canvas, 24, y, line);
+        y += 20;
     }
     if (snapshot.slowest_command_ms > 0.0f) {
-        std::snprintf(line, sizeof(line), "Slowest handler (recent): %.2f ms",
+        std::snprintf(line, sizeof(line), "Slowest command lately: %.2f ms",
                       snapshot.slowest_command_ms);
-        MgCanvasText(canvas, 24, 224, line);
+        MgCanvasText(canvas, 24, y, line);
+        y += 20;
     }
 
+    y += 8;
     MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasText(canvas, 24, 252, "Buddy features (server)");
+    MgCanvasText(canvas, 24, y, "SoF Buddy on this server");
     MgCanvasTc(canvas, kMgColWhite);
-    std::snprintf(line, sizeof(line), "CPU opts %s  tick pace %s  cmd park %s%s",
-                  snapshot.cpu_optimizations_enabled ? "on" : "off",
-                  snapshot.tick_pacing_enabled ? "on" : "off",
-                  snapshot.command_parking_enabled ? "on" : "off",
-                  snapshot.command_parking_strict ? " strict" : "");
-    MgCanvasText(canvas, 24, 272, line);
+    y += 20;
+    std::snprintf(
+        line, sizeof(line), "CPU help %s  tick smoothing %s  command guard %s%s",
+        snapshot.cpu_optimizations_enabled ? "on" : "off",
+        snapshot.tick_pacing_enabled ? "on" : "off",
+        snapshot.command_parking_enabled ? "on" : "off",
+        snapshot.command_parking_strict ? " (strict)" : "");
+    MgCanvasText(canvas, 24, y, line);
 
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasCenter(canvas, 320, 304, "type lag to hide  |  score closes tab");
+    MgCanvasCenter(canvas, 320, 304, "lag to hide  |  score to close");
     MgCanvasTc(canvas, kMgColWhite);
 }
