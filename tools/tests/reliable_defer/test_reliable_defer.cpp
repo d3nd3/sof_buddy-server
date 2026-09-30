@@ -318,6 +318,12 @@ int main() {
         CHECK(RelDef_StringContinues(hdr, 2));
         const std::uint8_t equipHdr[] = {0x06, 1, 0};
         CHECK(RelDef_StringContinues(equipHdr, 3));
+        const std::uint8_t ghoulThenStufftext[] = {
+            0x1A, 4, 0, 0x0B, 0, 0xFF, 0xC8, 0x0D};
+        CHECK(RelDef_StringContinues(ghoulThenStufftext, 8));
+        const std::uint8_t ghoulThenStufftextComplete[] = {
+            0x1A, 4, 0, 0x0B, 0, 0xFF, 0xC8, 0x0D, 'x', 0};
+        CHECK(!RelDef_StringContinues(ghoulThenStufftextComplete, 10));
         const std::uint8_t ricHdr[] = {0x1C, 1, 0x05};
         CHECK(!RelDef_StringContinues(ricHdr, 3));
         const std::uint8_t binaryHdr[] = {0x1E, 0x1A};

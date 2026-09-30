@@ -330,10 +330,13 @@ inline int RelDef_SealEnd(const std::uint8_t* p, int n) {
 inline bool RelDef_StringContinues(const std::uint8_t* p, int n) {
     if (!p || n <= 0)
         return false;
-    switch (p[0]) {
+    const int end = RelDef_LastCompleteEnd(p, n);
+    if (end >= n)
+        return false;
+    switch (p[end]) {
     case 0x02: case 0x06: case 0x0B: case 0x0C:
     case 0x0D: case 0x0E: case 0x0F: case 0x11: case 0x20:
-        return RelDef_LastCompleteEnd(p, n) < n;
+        return RelDef_MsgEnd(p, n, end) < 0;
     default:
         return false;
     }
