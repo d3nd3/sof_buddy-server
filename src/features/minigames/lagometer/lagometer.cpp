@@ -1,4 +1,4 @@
-// lagometer: live server tick / drain diagnostic on the minigames layout tab.
+// lagometer: spare tick headroom HUD on the minigames layout tab.
 
 #include "cvar.h"
 #include "lagometer.h"
@@ -8,73 +8,101 @@
 #include "log.h"
 #include "../minigames_api.h"
 
-#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
-#include "../../cpu_optimizations/cmdtext_parking/cmdpark.h"
-#endif
-
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-
-namespace {
+#include <windows.h>
 
 constexpr unsigned kCvarValueOfs = 0x18;
+constexpr unsigned kRvaSvTime = 0x3A1F28;
 
-bool g_registered = false;
-bool g_armed[kMgMaxSlots + 1] = {};
-constexpr char kLagGameId[] = "lag";
+struct LagometerTrack {
+    char map_id[64] = {};
+    float worst_cmd_drain_ms = 0.0f;
+    float worst_tick_svframe_ms = 0.0f;
+    std::uint32_t sv_time_at_pre = 0;
+    double sv_frame_start_ms = 0.0;
+    LARGE_INTEGER qpc_freq = {};
+    LARGE_INTEGER qpc_start = {};
+    bool clock_ok = false;
+};
 
-float CvarF(const char* name, float dflt) {
+static LagometerTrack g_track;
+
+static HMODULE ExeMod() {
+    if (HMODULE h = GetModuleHandleA("SoF.exe"))
+        return h;
+    if (HMODULE h = GetModuleHandleA("SoF-spsv.exe"))
+        return h;
+    return GetModuleHandleA(nullptr);
+}
+
+static volatile std::uint32_t* SvTime() {
+    HMODULE h = ExeMod();
+    if (!h)
+        return nullptr;
+    return reinterpret_cast<volatile std::uint32_t*>(reinterpret_cast<char*>(h) + kRvaSvTime);
+}
+
+static void InitClock() {
+    if (g_track.clock_ok)
+        return;
+    if (QueryPerformanceFrequency(&g_track.qpc_freq) && g_track.qpc_freq.QuadPart > 0 &&
+        QueryPerformanceCounter(&g_track.qpc_start)) {
+        g_track.clock_ok = true;
+    }
+}
+
+static double NowMs() {
+    LARGE_INTEGER now = {};
+    if (!g_track.clock_ok || !QueryPerformanceCounter(&now))
+        return 0.0;
+    const double scale =
+        1000.0 / static_cast<double>(g_track.qpc_freq.QuadPart);
+    return static_cast<double>(now.QuadPart) * scale;
+}
+
+static float CvarF(const char* name, float dflt) {
     void* cv = Buddy_GetEngineCvar(name, nullptr, 0, nullptr);
     if (!cv)
         return dflt;
     return *reinterpret_cast<volatile float*>(static_cast<char*>(cv) + kCvarValueOfs);
 }
 
-int CvarI(const char* name, int dflt) {
-    return static_cast<int>(CvarF(name, static_cast<float>(dflt)));
+static void ResetMapPeaks() {
+    g_track.worst_cmd_drain_ms = 0.0f;
+    g_track.worst_tick_svframe_ms = 0.0f;
 }
 
-bool CvarOn(const char* name, int dflt) {
-    return CvarI(name, dflt) != 0;
+static void SyncMap() {
+    const char* id = MgMapChecksum();
+    if (!id || !id[0])
+        return;
+    if (std::strncmp(g_track.map_id, id, sizeof(g_track.map_id)) == 0)
+        return;
+    std::strncpy(g_track.map_id, id, sizeof(g_track.map_id) - 1);
+    g_track.map_id[sizeof(g_track.map_id) - 1] = '\0';
+    ResetMapPeaks();
 }
 
 LagSnapshot ReadSnapshot() {
+    SyncMap();
     LagSnapshot snapshot;
-    snapshot.command_buffer_drain_last_ms = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
-    snapshot.command_buffer_drain_peak_ms = CvarF("_sofbuddy_cmdpark_cbuf_max", 0.0f);
-    snapshot.tick_late_average_ms = CvarF("_sofbuddy_tickpace_late_avg", 0.0f);
-    snapshot.timer_clamp_high_count =
-        static_cast<long long>(CvarF("_sofbuddy_highclamps", 0.0f));
-    snapshot.timer_clamp_low_count =
-        static_cast<long long>(CvarF("_sofbuddy_lowclamps", 0.0f));
-    snapshot.timer_clamp_last_shift_ms = CvarI("_sofbuddy_clamp_last", 0);
-    snapshot.timer_clamp_total_lost_ms =
-        static_cast<long long>(CvarF("_sofbuddy_clamp_lost_ms", 0.0f));
-    snapshot.timer_clamp_low_worst_ms = CvarI("_sofbuddy_lowclamp_worst", 0);
-    snapshot.command_buffer_bytes = CvarI("_sofbuddy_cmdpark_cbuf_cursize", 0);
-    snapshot.command_buffer_peak_bytes = CvarI("_sofbuddy_cmdpark_cbuf_fill_max", 0);
-    snapshot.slowest_command_ms = CvarF("_sofbuddy_cmdcost_max", 0.0f);
-#ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
-    snapshot.command_park_queued_bytes = cmdpark::ParkBytes();
-#endif
-    snapshot.cpu_optimizations_enabled = CvarOn("_sofbuddy_cpuopt", 1);
-    snapshot.tick_pacing_enabled = CvarOn("_sofbuddy_tickpace", 1);
-    snapshot.command_parking_enabled = CvarOn("_sofbuddy_cmdpark", 1);
-    snapshot.command_parking_strict = CvarOn("_sofbuddy_cmdpark_strict", 1);
+    snapshot.spare_headroom_ms =
+        LagSpareHeadroomMs(g_track.worst_cmd_drain_ms, g_track.worst_tick_svframe_ms);
     return snapshot;
 }
+
+namespace {
+
+bool g_registered = false;
+bool g_armed[kMgMaxSlots + 1] = {};
+constexpr char kLagGameId[] = "lag";
 
 void UpdateLagCache(int slot1) {
     MgCanvas c;
     LagRender(ReadSnapshot(), c);
     MgPutLayoutCache(slot1, kLagGameId, c);
-}
-
-void RefreshLagCanvas(int slot1, MgCanvas& c) {
-    LagRender(ReadSnapshot(), c);
-    MgPutLayoutCache(slot1, kLagGameId, c);
-    if (MgMinigameTabOpen(slot1))
-        MgPushLayout(slot1, kLagGameId, c);
 }
 
 void SetArmed(int slot1, bool on) {
@@ -163,10 +191,35 @@ extern "C" void __cdecl lag_Show_f() {
 void lag_OnGameDllLoaded(void* gameExport) {
     (void)gameExport;
     LagTryRegister();
+    g_track = LagometerTrack{};
+}
+
+void lag_SvFramePre(int& msec) {
+    (void)msec;
+    if (!Lag_Enabled())
+        return;
+    InitClock();
+    SyncMap();
+    volatile std::uint32_t* sv_time = SvTime();
+    if (sv_time)
+        g_track.sv_time_at_pre = *sv_time;
+    g_track.sv_frame_start_ms = NowMs();
 }
 
 void lag_SvFramePost(int msec) {
     (void)msec;
+    if (!Lag_Enabled() || !g_track.clock_ok)
+        return;
+    volatile std::uint32_t* sv_time = SvTime();
+    if (!sv_time || *sv_time == g_track.sv_time_at_pre)
+        return;
+
+    const float frame_ms = static_cast<float>(NowMs() - g_track.sv_frame_start_ms);
+    const float drain_ms = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
+    if (frame_ms > g_track.worst_tick_svframe_ms)
+        g_track.worst_tick_svframe_ms = frame_ms;
+    if (drain_ms > g_track.worst_cmd_drain_ms)
+        g_track.worst_cmd_drain_ms = drain_ms;
 }
 
 void lag_MaintainForSlot(int slot1) {
