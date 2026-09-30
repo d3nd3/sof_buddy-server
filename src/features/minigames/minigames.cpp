@@ -1136,14 +1136,21 @@ bool MgMinigameTabOpen(int slot1) {
     return slot1 >= 1 && slot1 <= kMgMaxSlots && g_page[slot1] == MgView::Minigame;
 }
 
+bool LayoutCacheStore(int slot1, const char* text) {
+    if (slot1 < 1 || slot1 > kMgMaxSlots || !text)
+        return false;
+    if (std::strncmp(g_layoutCache[slot1], text, kMgLayoutCap) == 0)
+        return false;
+    std::strncpy(g_layoutCache[slot1], text, kMgLayoutCap);
+    g_layoutCache[slot1][kMgLayoutCap - 1] = '\0';
+    g_layoutDirty[slot1] = true;
+    return true;
+}
+
 void MgPutLayoutCache(int slot1, const char* gameId, const MgCanvas& canvas) {
     if (!DisplayOwnedBy(slot1, gameId) || !RunningSession(gameId))
         return;
-    if (slot1 < 1 || slot1 > kMgMaxSlots)
-        return;
-    std::strncpy(g_layoutCache[slot1], canvas.text, kMgLayoutCap);
-    g_layoutCache[slot1][kMgLayoutCap - 1] = '\0';
-    g_layoutDirty[slot1] = true;
+    LayoutCacheStore(slot1, canvas.text);
 }
 
 void MgShowLayout(int slot1, const char* gameId, bool on) {
@@ -1171,11 +1178,8 @@ void MgPushLayout(int slot1, const char* gameId, const MgCanvas& canvas) {
         Buddy_DebugPrintf("[minigames] push layout: slot %d has no edict\n", slot1);
         return;
     }
-    if (slot1 >= 1 && slot1 <= kMgMaxSlots) {
-        std::strncpy(g_layoutCache[slot1], canvas.text, kMgLayoutCap);
-        g_layoutCache[slot1][kMgLayoutCap - 1] = '\0';
-        g_layoutDirty[slot1] = true;
-    }
+    if (slot1 >= 1 && slot1 <= kMgMaxSlots)
+        LayoutCacheStore(slot1, canvas.text);
     const char* layout = MinigameLayoutForSlot(slot1);
     if (!layout[0])
         return;
@@ -1612,9 +1616,11 @@ void MaintainLayoutClient(void* ent, int slot) {
         ApplyLayoutClient(ent, true);
         if (MgMinigameLayoutRefreshDue()) {
             lag_MaintainForSlot(slot);
-            const char* layout = MinigameLayoutForSlot(slot);
-            if (layout[0])
-                SendMinigameLayout(ent, slot, layout);
+            if (g_layoutDirty[slot]) {
+                const char* layout = MinigameLayoutForSlot(slot);
+                if (layout[0])
+                    SendMinigameLayout(ent, slot, layout);
+            }
         }
     }
 }
