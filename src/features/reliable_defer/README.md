@@ -81,7 +81,7 @@ often share one parcel; a parcel is not one message.
 |---|--------|----------------------------|-------------------------|
 | `0x0D` | `svc_stufftext` | A console command the server makes *your* game run (e.g. `cmd baselines …`, `precache …`, stuff from admins/mods). Wire: opcode + text + NUL. | Kept whole. May share a parcel with other whole messages. Order with older mail is preserved (see delivery day). `changing` and `reconnect` are the exception: `SV_Map` writes each as one `SZ_Write` and flushes before the map load, so those two go straight into the mailbox even when a fat parcel is waiting, and that flush does not lift them back out. `changing` is the client's cue to run `menu loading`. |
 | `0x1F` | `svc_countdown` | A countdown timer. The client reads a **long**, not a byte. Stock writes `WriteByte` + `WriteLong` into multicast (unreliable). | Reliable mailbox: `MSG_WriteLong` @ `0x2001CBF0` joins an in-flight capture (classifier-only); empty capture → stock. |
-| `0x21` | `svc_playernamecols` | Scoreboard name colours. Wire: a count, then either a single index or a start/end run. Not a C string. | Not parsed. A capture that *starts* with it is sealed whole. A capture that *contains* it after a parsed message stops at the colour block, and the block rides along only because its first byte looks like an opcode. |
+| `0x21` | `svc_playernamecols` | Scoreboard name colours. Wire: a count, then either a single index or a start/end run. Not a C string. | Parsed (`RelDef_PlayerNameColsEnd`, IDA case `0x21`). |
 
 ### World & player setup (joining and spawning)
 
@@ -93,7 +93,7 @@ often share one parcel; a parcel is not one message.
 | `0x10` | `svc_spawnbaseline` | The starting state of one entity (so the client can predict it). | **Partly visible:** the defer sees the label byte, but the entity body is written straight into the mailbox by a writer the hooks cannot see — so the body always goes through immediately. In practice baselines flow during the join (bypassed anyway). |
 | `0x13` | `svc_download` | A chunk of a downloading file (a short header + raw bytes). | **Bypasses the defer entirely** (see below) — downloads are lockstep request→chunk→request and the payload is binary. |
 | `0x1A` | `svc_ghoulreliable` | Ghoul data that must arrive. Wire: opcode, a short byte-count, then that many bytes. `SV_SendClientDatagram` writes the opcode with `MSG_WriteByte`, then the count and the bytes with `SZ_GetSpace` into the same mailbox. | **Written through.** The opcode is not captured. Holding it would send a header whose body stayed behind, and the client dies with `Ghoul :StringTable underflowed`. When the whole message later sits in a parcel, the cutter skips the counted bytes, including a `0x0B` or NUL inside them. |
-| `0x06` | `svc_equip` | Equipment. Wire, when the sub-byte is `1`: three count bytes, each followed by that many (string + long) pairs. Other sub-bytes are just opcode + that one byte. | Not parsed at seal time; deferred strings stay in capture and each `WriteLong` appends 4 B via the Long classifier when capture is non-empty. |
+| `0x06` | `svc_equip` | Equipment. Wire, when the sub-byte is `1`: three count bytes, each followed by that many (string + long) pairs. Other sub-bytes are just opcode + that one byte. | Parsed (`RelDef_EquipEnd`, IDA `sub_20001FD0`). `MSG_WriteLong` still joins an in-flight capture mid-equip. |
 | `0x1C` | `svc_ric` | Remote inventory commands: a count, then that many records. Types 0–4 carry one sized argument (1–4 bytes); type 5 and unknown types carry none. | Parsed. The cut is the count, so a `0x0B` or NUL inside an argument stays in the record. |
 | `0x1D` | `svc_restart_predn` | Restart prediction (one byte). | Tiny; sails through. |
 | `0x1E` | `svc_rebuild_pred_inv` | Rebuild prediction inventory. | Small; sails through, or queues whole. |
@@ -469,11 +469,12 @@ the counted payload whole (including embedded `0x0B`, `0xFF`, or NUL).
 
 ## What still bites
 
-1. **Opaque opcodes in `RelDef_MsgEnd`.** `svc_equip` (`0x06`) is kept whole
-   via capture + `MSG_WriteLong` continuation, not full parsing.
-   `svc_rebuild_pred_inv` (`0x1E`), `svc_playernamecols` (`0x21`), baselines,
-   and serverdata are still opaque at seal time (parcel ships as one unit
-   when the tail looks like an opcode).
+1. **Frame-lane opcodes in reliable mail.** `svc_temp_entity` (`0x01`), `svc_effect`
+   (`0x05`), `svc_playerinfo` / `svc_packetentities` / `svc_deltapacketentities`
+   (`0x14`–`0x16`), and `svc_frame` (`0x17`) are not modeled for cutting (client
+   errors or unbounded). The cutter stops at the prior complete message. Everything
+   else in `0x02`–`0x28` is walked in `reliable_defer_wire.h` from retail
+   `CL_ParseServerMessage` @ `0x2000ee30` (IDA).
 
 2. **No in-process test of `HandleMessageWrite` / `DripSlot`.** `run.sh`
    covers cutters, seal rules, queue FIFO, and policy math. Integration

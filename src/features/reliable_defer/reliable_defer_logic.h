@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine.h"
+#include "reliable_defer_wire.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -115,12 +116,7 @@ inline bool RelDef_CanDrip(int reliableLength, int msgCursize, int blobLen,
 // Layouts match CL_ParseServerMessage (SoF.exe 0x2000ee30 / sof-bin 0x80ca8a8).
 // MSG_ReadString @ 0x2001E3B0 stops on 0x00 and 0xFF.
 inline int RelDef_CStrEnd(const std::uint8_t* p, int n, int i) {
-    for (; i < n; ++i) {
-        const std::uint8_t c = p[i];
-        if (!c || c == 0xFF)
-            return i + 1;
-    }
-    return -1;
+    return RelDef_WireCStrEnd(p, n, i);
 }
 
 // svc_ric (clientRICBuf::ReadRICs): count, then that many records.
@@ -141,6 +137,54 @@ inline int RelDef_RicEnd(const std::uint8_t* p, int n, int i) {
         if (i + nbytes > n)
             return -1;
         i += nbytes;
+    }
+    return i;
+}
+
+// svc_equip @ CL_ParseServerMessage case 0x6 → sub_20001FD0: sub-byte 1 then
+// three (count + count×(MSG_ReadString + ReadLong)) sections; other sub-bytes
+// are opcode + sub only.
+inline int RelDef_EquipEnd(const std::uint8_t* p, int n, int i) {
+    if (i >= n)
+        return -1;
+    if (p[i] != 1) {
+        // Other sub-types are opcode + sub only (sub_20001FD0).
+        return n == i + 1 ? i + 1 : -1;
+    }
+    ++i;
+    for (int s = 0; s < 3; ++s) {
+        if (i >= n)
+            return -1;
+        int count = p[i++];
+        for (int r = 0; r < count; ++r) {
+            i = RelDef_CStrEnd(p, n, i);
+            if (i < 0 || i + 4 > n)
+                return -1;
+            i += 4;
+        }
+    }
+    return i;
+}
+
+// svc_playernamecols case 0x21: count, then count×(color byte; if color<0
+// signed, start+end bytes else one index byte).
+inline int RelDef_PlayerNameColsEnd(const std::uint8_t* p, int n, int i) {
+    if (i >= n)
+        return -1;
+    const int total = p[i++];
+    for (int c = 0; c < total; ++c) {
+        if (i >= n)
+            return -1;
+        const signed char color = static_cast<signed char>(p[i++]);
+        if (color >= 0) {
+            if (i >= n)
+                return -1;
+            ++i;
+        } else if (i + 2 > n) {
+            return -1;
+        } else {
+            i += 2;
+        }
     }
     return i;
 }
@@ -170,8 +214,17 @@ inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
         if (need(5) < 0) return -1;
         i += 5;
         return str();
-    case 0x08: case 0x12: case 0x22: case 0x23:  // word / short (0x22 = sp_print)
+    case 0x08:                                // disconnect: ReadWord (reason id)
+    case 0x12: case 0x22: case 0x23:          // caption / sp_print / rem cs: short
         return need(2);
+    case 0x06:
+        return RelDef_EquipEnd(p, n, i);
+    case 0x1E:                                // rebuild_pred_inv: one byte
+        return need(1);
+    case 0x1F:                                // countdown: ReadLong
+        return need(4);
+    case 0x21:
+        return RelDef_PlayerNameColsEnd(p, n, i);
     case 0x24: case 0x27: {                   // sp_print_data_1 / obit: short + byte n + n
         // SP_Print copies the whole packet via SZ_GetSpace, so it shows up
         // in capture only after absorb. Payload is binary (0x0B, NUL).
@@ -200,9 +253,25 @@ inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
     }
     case 0x1C:                                // ric: count + records
         return RelDef_RicEnd(p, n, i);
+    case 0x0E:
+        return RelDef_WireServerDataEnd(p, n, i);
+    case 0x10:
+        return RelDef_WireSpawnBaselineEnd(p, n, i);
+    case 0x13:
+        return RelDef_WireDownloadEnd(p, n, i);
+    case 0x04:
+        return RelDef_WireSoundInfoEnd(p, n, i);
+    case 0x0A:
+        return RelDef_WireSoundEnd(p, n, i);
+    case 0x18:
+        return RelDef_WireCulledEventEnd(p, n, i);
+    case 0x1B:
+        return RelDef_WireCountedShortEnd(p, n, i);
     case 0x07: case 0x09: case 0x26: case 0x28:  // nop, reconnect, welcome, force
         return i;
-    default:                                  // equip/countdown/binary: opaque
+    case 0x01: case 0x05: case 0x14: case 0x15: case 0x16: case 0x17:
+        return -1;  // frame / TE / effect — wrong lane or unbounded
+    default:
         return -1;
     }
 }

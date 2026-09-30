@@ -249,10 +249,15 @@ int main() {
             append(price, 4);
             stock.insert(stock.end(), price, price + 4);
         }
+        const std::uint8_t tail[] = {0, 0};
+        append(tail, 2);
+        stock.insert(stock.end(), tail, tail + 2);
         flushAll();
         CHECK(blobs.size() == 1);
         CHECK(blobs[0] == stock);
         CHECK(blobs[0][0] == kSvcEquip);
+        CHECK(RelDef_LastCompleteEnd(stock.data(), static_cast<int>(stock.size())) ==
+              static_cast<int>(stock.size()));
     }
 
     // svc_equip in capture: WriteLong must join capture (not staging alone).
@@ -342,6 +347,28 @@ int main() {
         CHECK(RelDef_SealEnd(ghl, 8) == 7);
         const std::uint8_t ghlShort[] = {0x1A, 0x04, 0x00, 0x0B};
         CHECK(RelDef_LastCompleteEnd(ghlShort, 4) == 0);
+        const std::uint8_t dc[] = {0x08, 0x34, 0x12};
+        CHECK(RelDef_LastCompleteEnd(dc, 3) == 3);
+        const std::uint8_t cd[] = {0x1F, 0x0A, 0x00, 0x00, 0x00};
+        CHECK(RelDef_LastCompleteEnd(cd, 5) == 5);
+        const std::uint8_t rb[] = {0x1E, 2};
+        CHECK(RelDef_LastCompleteEnd(rb, 2) == 2);
+        const std::uint8_t pnc[] = {0x21, 2, 5, 3, 0x80, 1, 4};
+        CHECK(RelDef_LastCompleteEnd(pnc, 7) == 7);
+        const std::uint8_t equipSub[] = {0x06, 0};
+        CHECK(RelDef_LastCompleteEnd(equipSub, 2) == 2);
+        const std::uint8_t dlMiss[] = {0x13, 0xFF, 0xFF, 0};
+        CHECK(RelDef_LastCompleteEnd(dlMiss, 4) == 4);
+        const std::uint8_t dlChunk[] = {0x13, 0x03, 0x00, 0x32, 'a', 'b', 'c'};
+        CHECK(RelDef_LastCompleteEnd(dlChunk, 7) == 7);
+        const std::uint8_t ghu[] = {0x1B, 0x02, 0x00, 0x0B, 0x00};
+        CHECK(RelDef_LastCompleteEnd(ghu, 5) == 5);
+        const std::uint8_t cul[] = {0x18, 1, 2, 3, 4};
+        CHECK(RelDef_LastCompleteEnd(cul, 5) == 5);
+        const std::uint8_t snd[] = {0x0A, 0, 1};
+        CHECK(RelDef_LastCompleteEnd(snd, 3) == 3);
+        const std::uint8_t sinfo[] = {0x04, 0x03, 10, 20};
+        CHECK(RelDef_LastCompleteEnd(sinfo, 4) == 4);
     }
 
     // Overflow split matches production CaptureAppend: peel only a complete
