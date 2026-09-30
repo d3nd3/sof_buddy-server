@@ -13,13 +13,12 @@
 #include <cstring>
 #include <windows.h>
 
-constexpr unsigned kCvarValueOfs = 0x18;
 constexpr unsigned kRvaSvTime = 0x3A1F28;
 
 struct LagometerTrack {
     char map_id[64] = {};
-    float worst_cmd_drain_ms = 0.0f;
-    float worst_tick_svframe_ms = 0.0f;
+    float worst_tick_busy_ms = 0.0f;
+    int settle_ticks_skip = 0;
     std::uint32_t sv_time_at_pre = 0;
     double sv_frame_start_ms = 0.0;
     LARGE_INTEGER qpc_freq = {};
@@ -62,16 +61,9 @@ static double NowMs() {
     return static_cast<double>(now.QuadPart) * scale;
 }
 
-static float CvarF(const char* name, float dflt) {
-    void* cv = Buddy_GetEngineCvar(name, nullptr, 0, nullptr);
-    if (!cv)
-        return dflt;
-    return *reinterpret_cast<volatile float*>(static_cast<char*>(cv) + kCvarValueOfs);
-}
-
 static void ResetMapPeaks() {
-    g_track.worst_cmd_drain_ms = 0.0f;
-    g_track.worst_tick_svframe_ms = 0.0f;
+    g_track.worst_tick_busy_ms = 0.0f;
+    g_track.settle_ticks_skip = 2;
 }
 
 static void SyncMap() {
@@ -88,8 +80,7 @@ static void SyncMap() {
 LagSnapshot ReadSnapshot() {
     SyncMap();
     LagSnapshot snapshot;
-    snapshot.spare_headroom_ms =
-        LagSpareHeadroomMs(g_track.worst_cmd_drain_ms, g_track.worst_tick_svframe_ms);
+    snapshot.spare_headroom_ms = LagSpareHeadroomMs(g_track.worst_tick_busy_ms);
     return snapshot;
 }
 
@@ -213,13 +204,14 @@ void lag_SvFramePost(int msec) {
     volatile std::uint32_t* sv_time = SvTime();
     if (!sv_time || *sv_time == g_track.sv_time_at_pre)
         return;
+    if (g_track.settle_ticks_skip > 0) {
+        --g_track.settle_ticks_skip;
+        return;
+    }
 
     const float frame_ms = static_cast<float>(NowMs() - g_track.sv_frame_start_ms);
-    const float drain_ms = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
-    if (frame_ms > g_track.worst_tick_svframe_ms)
-        g_track.worst_tick_svframe_ms = frame_ms;
-    if (drain_ms > g_track.worst_cmd_drain_ms)
-        g_track.worst_cmd_drain_ms = drain_ms;
+    if (frame_ms > g_track.worst_tick_busy_ms)
+        g_track.worst_tick_busy_ms = frame_ms;
 }
 
 void lag_MaintainForSlot(int slot1) {

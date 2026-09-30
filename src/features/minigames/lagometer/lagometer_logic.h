@@ -13,9 +13,8 @@ struct LagSnapshot {
     float spare_headroom_ms = 100.0f;
 };
 
-inline float LagSpareHeadroomMs(float worst_cmd_drain_ms, float worst_tick_svframe_ms) {
-    const float busy = worst_cmd_drain_ms + worst_tick_svframe_ms;
-    float spare = kLagTickBudgetMs - busy;
+inline float LagSpareHeadroomMs(float worst_tick_busy_ms) {
+    float spare = kLagTickBudgetMs - worst_tick_busy_ms;
     if (spare < 0.0f)
         spare = 0.0f;
     if (spare > kLagTickBudgetMs)
@@ -68,6 +67,6 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasTc(canvas, kMgColWhite);
     MgCanvasCenter(canvas, 320, 248, "worst spare on this map");
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasCenter(canvas, 320, 280, "lag hide  |  +use+score toggle");
+    MgCanvasCenter(canvas, 320, 280, "score cycles  |  +use+score normal");
     MgCanvasTc(canvas, kMgColWhite);
 }
