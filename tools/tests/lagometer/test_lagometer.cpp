@@ -14,14 +14,15 @@ static int fails = 0;
     } while (0)
 
 static void test_normalize() {
-    float g = 30.0f, d = 20.0f, s = 10.0f, spare = 0.0f;
-    LagNormalizeBreakdown(g, d, s, spare);
-    CHECK(spare == 40.0f, "spare from parts");
-    g = 80.0f;
-    d = 50.0f;
-    s = 0.0f;
-    LagNormalizeBreakdown(g, d, s, spare);
-    CHECK(g + d + s <= 100.0f, "scaled to budget");
+    float sim = 30.0f, eng = 10.0f, buf = 20.0f, think = 10.0f, spare = 0.0f;
+    LagNormalizeBreakdown(sim, eng, buf, think, spare);
+    CHECK(spare == 30.0f, "spare from parts");
+    sim = 50.0f;
+    eng = 50.0f;
+    buf = 50.0f;
+    think = 50.0f;
+    LagNormalizeBreakdown(sim, eng, buf, think, spare);
+    CHECK(sim + eng + buf + think <= 100.0f, "scaled to budget");
 }
 
 static void test_bar_chars() {
@@ -33,16 +34,19 @@ static void test_bar_chars() {
 static void test_render() {
     LagSnapshot snapshot;
     snapshot.game_ms = 25.0f;
+    snapshot.engine_ms = 8.0f;
     snapshot.cmd_ms = 10.0f;
     snapshot.shell_ms = 5.0f;
     snapshot.server_frame = 42;
-    LagNormalizeBreakdown(snapshot.game_ms, snapshot.cmd_ms, snapshot.shell_ms, snapshot.spare_ms);
+    LagNormalizeBreakdown(snapshot.game_ms, snapshot.engine_ms, snapshot.cmd_ms, snapshot.shell_ms,
+                          snapshot.spare_ms);
     MgCanvas c;
     LagRender(snapshot, c);
     CHECK(c.len > 0 && c.len < kMgLayoutCap, "layout fits");
     CHECK(std::strstr(c.text, "SERVER TICK") != nullptr, "title");
     CHECK(std::strstr(c.text, "tc 1 ") != nullptr, "gameplay color");
-    CHECK(std::strstr(c.text, "SV Tick (frame)") != nullptr, "legend");
+    CHECK(std::strstr(c.text, "Sim") != nullptr, "legend");
+    CHECK(std::strstr(c.text, "Engine") != nullptr, "legend engine");
     CHECK(std::strstr(c.text, "sv.framenum 42") != nullptr, "frame label");
 }
 
