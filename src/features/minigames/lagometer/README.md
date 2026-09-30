@@ -4,14 +4,14 @@ Tick **budget breakdown** HUD on the minigames tab (+use+score).
 
 The bar is one 100 ms tick (40 columns). Colours:
 
-| Colour | Segment | Source |
-|--------|---------|--------|
-| Green | **Game** | `G_RunFrame` wall time (real ticks) |
-| Yellow | **Cmd** | Post-tick `Cbuf_Execute` drain (cmdpark) |
-| White | **Frame** | Rest of tick `SV_Frame` (net, send, hooks) |
-| Black `-` | **Free** | Unused budget |
+| Colour | Segment | Meaning |
+|--------|---------|---------|
+| Green | **Play** | Running the match (players, physics, AI) |
+| Yellow | **Console** | Server commands / scripts draining after the tick |
+| White | **Overhead** | Networking, sends, and other engine work that tick |
+| Black `-` | **Free** | Time left in the 100 ms budget |
 
-Shows the **last real tick** (clamp_monitor gate; spawn/settle ticks skipped). Map checksum change resets.
+Keeps the **busiest real tick** since map load (clamp_monitor gate; spawn/settle skipped). Resets on map checksum change.
 
 | Command | Who | Action |
 |---------|-----|--------|
