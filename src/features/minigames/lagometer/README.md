@@ -8,13 +8,15 @@ lateness, high/low clamps, cmdpark backlog, tunables).
 |---------|-----|--------|
 | `lag` | client console (`~`) | Toggle lagometer for yourself |
 | `sofbuddy_lag` / `.lag` | client console | Aliases registered the same way |
-| `lag_show <slot>` | server | Open for a 0-based slot |
+| `lag_show <slot>` | server | Arm for a 0-based slot (view needs +use+score) |
 
 Client words are handled in the shim **before** stock `ClientCommand`. If the game
 is not registered, stock DM would treat unknown commands as **chat** (`Cmd_Say_f`)
 — that is the “sent as text” behaviour, not a client forward issue.
 
-Close with `lag` again, **score** alone, or **+use+score**.
+Arming does not open the tab. **+use+score** to view; updates at scoreboard rate
+(`ClientEndServerFrame`, not every server tick). Close tab with **score** alone;
+`lag` again to disarm.
 
 `_sofbuddy_lagometer_enable` (default `1`) gates registration. Requires
 `_sofbuddy_minigames_enable 1`.

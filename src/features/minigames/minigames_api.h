@@ -199,6 +199,12 @@ bool MgDisplayOwnedBy(int slot1, const char* gameId);
 // when another gameId takes display (the loser gets onSessionEnd).
 bool MgRunningSession(const char* gameId);
 
+// True while the player holds the minigame score tab (+use+score).
+bool MgMinigameTabOpen(int slot1);
+
+// Updates layout cache + dirty only (no svc_layout). Owner + session required.
+void MgPutLayoutCache(int slot1, const char* gameId, const MgCanvas& canvas);
+
 // Layout visibility for a slot. Re-asserts ps.stats[STAT_LAYOUTS] every server
 // frame for visible slots (stock G_SetStats clears it). Minigame svc_layout is
 // sent only when the canvas changes (MgPushLayout / dirty), not every tick.
