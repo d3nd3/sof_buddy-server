@@ -478,6 +478,20 @@ functions:
 
   # --- reliable_defer: server→client reliable staging (SZ_Write + MSG_Write*) -
   # Dedicated server sends frames here (SV_Frame → CL_SendClientMessages).
+  - name: Netchan_Transmit
+    module: SofExe
+    identifier: "0x2004D400"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: netchan
+      - type: int
+        name: length
+      - type: void*
+        name: data
+
   - name: CL_SendClientMessages
     module: SofExe
     identifier: "0x20062560"

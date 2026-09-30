@@ -96,7 +96,7 @@ often share one parcel; a parcel is not one message.
 | `0x06` | `svc_equip` | Equipment. Wire, when the sub-byte is `1`: three count bytes, each followed by that many (string + long) pairs. Other sub-bytes are just opcode + that one byte. | Parsed (`RelDef_EquipEnd`, IDA `sub_20001FD0`). `MSG_WriteLong` still joins an in-flight capture mid-equip. |
 | `0x1C` | `svc_ric` | Remote inventory commands: a count, then that many records. Types 0–4 carry one sized argument (1–4 bytes); type 5 and unknown types carry none. | Parsed. The cut is the count, so a `0x0B` or NUL inside an argument stays in the record. |
 | `0x1D` | `svc_restart_predn` | Restart prediction (one byte). | Tiny; sails through. |
-| `0x1E` | `svc_rebuild_pred_inv` | Rebuild prediction inventory. | Small; sails through, or queues whole. |
+| `0x1E` | `svc_rebuild_pred_inv` | Rebuild prediction inventory. Wire: opcode + exactly 640 inventory bytes (`inven_c::NetRead`). | Kept whole; the binary body is never cut or scanned as text. |
 | `0x19` | `svc_damagetexture` | "Mark this texture damaged" (an ID + a byte). | Tiny; sails through. |
 | `0x28` | `svc_force_con_notify` | Force a console notification. | Tiny; sails through. |
 
@@ -432,17 +432,24 @@ the feature working, not failing.
 
 ## For developers: where the hooks sit
 
-Hooks are on **`SZ_Write`** plus **`MSG_WriteByte` / `MSG_WriteShort` /
-`MSG_WriteLong` / `MSG_WriteString`** (`SoF.exe` `0x2001CB00` / `0x2001CB70` /
-`0x2001CBF0` / `0x2001CD00`). Only writes into a connected player's
-`netchan.message` are classified; `sv.multicast` staging, `datagram`, demo
-buffers, and delta-entity `SZ_GetSpace` traffic pass through untouched.
+Hooks are on **`SZ_Write`**, **`MSG_WriteByte` / `MSG_WriteShort` /
+`MSG_WriteLong` / `MSG_WriteString`**, and the send boundary
+**`Netchan_Transmit`** (`SoF.exe` `0x2001CB00` / `0x2001CB70` /
+`0x2001CBF0` / `0x2001CD00` / `0x2004D400`). Only writes into a connected
+player's `netchan.message` are classified; `sv.multicast` staging, `datagram`,
+demo buffers, and delta-entity `SZ_GetSpace` traffic pass through untouched.
 
-**`MSG_WriteLong` (classifier-only).** When a slot already has bytes in the
-in-frame capture (typical mid-`svc_equip` / `svc_countdown`), the hook
-absorbs any staged prefix and appends four bytes atomically instead of
-letting the long land in the mailbox alone. If capture is empty, the write
-is stock-immediate. No extra queue rules.
+**`MSG_WriteLong` (classifier-only).** When a slot already has an incomplete
+in-frame capture (typical mid-`svc_equip`), the hook absorbs any staged prefix
+and appends four bytes atomically instead of letting the long land in the
+mailbox alone. A capture already ending at a complete message is not extended
+by an unrelated long.
+
+**`Netchan_Transmit` (ordering guard).** Retail writes `svc_ghoulreliable`
+directly into the mailbox through `SZ_GetSpace`, after this feature's pre-send
+drip. If an older parcel is still held by `frame_first`, the send hook gives
+that parcel the reliable slot first and carries the direct bytes to the next
+reliable transmission.
 
 **Strings (`RelDef_CStrEnd`).** Matches `MSG_ReadString` @ `0x2001E3B0`: a
 C string ends on `0x00` or `0xFF`. Counted payloads (`0x24` / `0x25` /

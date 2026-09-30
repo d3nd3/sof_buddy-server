@@ -1,5 +1,5 @@
 // reliable_defer: queue server→client reliable staging (netchan.message).
-// Hooks SZ_Write + MSG_Write* so every path is covered. Within a frame, all
+// Hooks SZ_Write + MSG_Write* and guards Netchan_Transmit. Within a frame, all
 // client appends for one slot accumulate in a capture; blobs are cut only at
 // complete message boundaries (RelDef_LastCompleteEnd). A cut mid-message
 // makes the next blob start on payload bytes ("Illegible server message").
@@ -77,9 +77,14 @@ int CaptureMax() {
     return g.limits.msgMaxsize > 0 ? g.limits.msgMaxsize : 1384;
 }
 
+void DropPending();
+
 void RefreshCache() {
     void* cv = Buddy_GetEngineCvar("_sofbuddy_reldef", "1", 1, nullptr);
-    g.enabled = Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
+    const bool enabled = Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
+    if (g.ready && g.enabled && !enabled)
+        DropPending();
+    g.enabled = enabled;
     g.policy = RelDef_ReadPolicy();
     g.limits = RelDef_ComputeLimits(EngineBuffersize(), g.policy);
     void* mcv = Buddy_GetEngineCvar("maxclients", "8", 0, nullptr);
@@ -215,6 +220,20 @@ void FlushCapture() {
         Buddy_DebugPrintf("reldef: drop tail slot %d len %d\n", slot, n - end);
     g.capture.clear();
     g.captureSlot = 0;
+}
+
+void DropPending() {
+    long long dropped = g.capture.empty() ? 0 : 1;
+    g.capture.clear();
+    g.captureSlot = 0;
+    for (SlotQueue& q : g.slot) {
+        dropped += static_cast<long long>(q.blobs.size());
+        q.blobs.clear();
+        q.enqueued.clear();
+        q.bytes = 0;
+    }
+    std::memset(g.dlPhase, 0, sizeof(g.dlPhase));
+    g.dropped += dropped;
 }
 
 void ClearMessageStaging(char* msg) {
@@ -426,6 +445,15 @@ void DripSlot(int slot1) {
     }
     if (now.empty())
         return;
+    // A frame-first hold must not let this newer staging bypass the front blob.
+    if (!g.slot[slot1 - 1].blobs.empty()) {
+        if (!QueuePush(slot1, now.data(), static_cast<int>(now.size())))
+            Buddy_DebugPrintf("reldef: drop staging slot %d len %d\n", slot1,
+                              static_cast<int>(now.size()));
+        else
+            ++g.deferred;
+        return;
+    }
     const int maxs = ReadInt(msg, kSzMaxsize);
     const int cur = ReadInt(msg, kSzCursize);
     if (maxs > 0 && cur + static_cast<int>(now.size()) > maxs) {
@@ -439,6 +467,76 @@ void DripSlot(int slot1) {
     ++g.bypass;
     detour_SZ_Write::oSZ_Write(msg, now.data(), static_cast<int>(now.size()));
     --g.bypass;
+}
+
+int SlotFromNetchan(void* netchan) {
+    if (!netchan)
+        return -1;
+    for (int slot = 1; slot <= g.maxClients; ++slot) {
+        char* cl = ClientBase(slot);
+        if (cl && cl + kClientNetchanOfs == netchan)
+            return slot;
+    }
+    return -1;
+}
+
+bool ReorderNetchan(int slot, void* netchan, int length, void* data,
+                    detour_Netchan_Transmit::tNetchan_Transmit original) {
+    if (!original || !detour_SZ_Write::oSZ_Write || slot < 1 ||
+        slot > kMaxSlots)
+        return false;
+    SlotQueue& q = g.slot[slot - 1];
+    if (q.blobs.empty())
+        return false;
+    char* cl = ClientBase(slot);
+    if (!cl || ReadInt(cl, kClientReliableLenOfs) != 0)
+        return false;
+    char* msg = cl + kClientMessageOfs;
+    const int n = ReadInt(msg, kSzCursize);
+    const int captureLen =
+        g.captureSlot == slot ? static_cast<int>(g.capture.size()) : 0;
+    if (n <= 0 && captureLen <= 0)
+        return false;
+    char* raw = n > 0 ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
+    if (n > 0 && !raw)
+        return false;
+    const int maxs = ReadInt(msg, kSzMaxsize);
+    if (maxs > 0 && n + captureLen > maxs)
+        return false;
+
+    std::vector<std::uint8_t> current;
+    current.reserve(static_cast<std::size_t>(n + captureLen));
+    if (captureLen > 0)
+        current.insert(current.end(), g.capture.begin(), g.capture.end());
+    if (n > 0) {
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(raw);
+        current.insert(current.end(), bytes, bytes + n);
+    }
+    if (RelDef_HasLevelChange(current.data(), static_cast<int>(current.size())))
+        return false;
+
+    const std::vector<std::uint8_t> older = q.blobs.front();
+    ClearMessageStaging(msg);
+    if (captureLen > 0) {
+        g.capture.clear();
+        g.captureSlot = 0;
+    }
+    ++g.bypass;
+    detour_SZ_Write::oSZ_Write(
+        msg, const_cast<std::uint8_t*>(older.data()), static_cast<int>(older.size()));
+    --g.bypass;
+
+    original(netchan, length, data);
+
+    ClearMessageStaging(msg);
+    ++g.bypass;
+    detour_SZ_Write::oSZ_Write(msg, current.data(), static_cast<int>(current.size()));
+    --g.bypass;
+    q.bytes -= static_cast<int>(older.size());
+    q.blobs.pop_front();
+    q.enqueued.pop_front();
+    ++g.dripped;
+    return true;
 }
 
 template <typename WriteNow>
@@ -459,6 +557,11 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
     // older mail, or the client unpacks the opcode against the wrong bytes.
     if (canArmOpcode && len == 1 && data &&
         RelDef_WriteThroughOp(*static_cast<const unsigned char*>(data))) {
+        char* cl = ClientBase(slot);
+        char* msg = cl ? cl + kClientMessageOfs : nullptr;
+        if (g.captureSlot == slot && !g.capture.empty() && msg &&
+            ReadInt(msg, kSzCursize) == 0)
+            FlushCaptureToMessage(slot);
         writeNow();
         return;
     }
@@ -580,6 +683,10 @@ bool AppendLongToCapture(void* sb, int c) {
         return false;
     if (g.captureSlot != slot || g.capture.empty())
         return false;
+    if (RelDef_LastCompleteEnd(g.capture.data(),
+                               static_cast<int>(g.capture.size())) >=
+        static_cast<int>(g.capture.size()))
+        return false;
     char* msg = cl + kClientMessageOfs;
     if (ReadInt(msg, kSzCursize) > 0)
         AbsorbMessageIntoCapture(slot);
@@ -664,6 +771,17 @@ void reldef_SZ_Write(void* sb, void* data, int length,
     reldef_internal::HandleMessageWrite(sb, data, length,
                                         [&] { original(sb, data, length); },
                                         false, true);
+}
+
+void reldef_Netchan_Transmit(
+    void* netchan, int length, void* data,
+    detour_Netchan_Transmit::tNetchan_Transmit original) {
+    if (!original)
+        return;
+    const int slot = reldef_internal::SlotFromNetchan(netchan);
+    if (!reldef_internal::g.ready || !reldef_internal::g.enabled ||
+        !reldef_internal::ReorderNetchan(slot, netchan, length, data, original))
+        original(netchan, length, data);
 }
 
 void reldef_MSG_WriteByte(void* sb, int c,

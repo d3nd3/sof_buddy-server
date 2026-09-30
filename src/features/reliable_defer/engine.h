@@ -9,6 +9,7 @@ constexpr unsigned kClientStride = 0xD2AC;
 constexpr unsigned kClientStateOfs = 0x0;            // client_state_t (0..3)
 constexpr int kCsConnected = 2;
 constexpr int kCsSpawned = 3;
+constexpr unsigned kClientNetchanOfs = 0x526C;
 constexpr unsigned kClientMessageOfs = 0x52B4;       // netchan.message (sizebuf_t)
 constexpr unsigned kClientReliableLenOfs = 0x92B8;   // netchan.reliable_length
 

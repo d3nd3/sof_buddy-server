@@ -265,11 +265,13 @@ int main() {
         std::vector<std::uint8_t> cap;
         const std::uint8_t op = 0x06;
         cap.push_back(op);
+        const std::uint8_t section[] = {1, 1};
+        cap.insert(cap.end(), section, section + sizeof(section));
         const char name[] = "jackhammer";
         cap.insert(cap.end(), name, name + sizeof(name));
         const std::uint8_t price[4] = {0, 0, 0, 1};
         cap.insert(cap.end(), price, price + 4);
-        CHECK(cap.size() == 1 + sizeof(name) + 4);
+        CHECK(cap.size() == 1 + sizeof(section) + sizeof(name) + 4);
         CHECK(RelDef_LastCompleteEnd(cap.data(), static_cast<int>(cap.size())) == 0);
     }
 
@@ -351,12 +353,18 @@ int main() {
         CHECK(RelDef_LastCompleteEnd(dc, 3) == 3);
         const std::uint8_t cd[] = {0x1F, 0x0A, 0x00, 0x00, 0x00};
         CHECK(RelDef_LastCompleteEnd(cd, 5) == 5);
-        const std::uint8_t rb[] = {0x1E, 2};
-        CHECK(RelDef_LastCompleteEnd(rb, 2) == 2);
+        std::vector<std::uint8_t> rb(642, 0xFF);
+        rb[0] = 0x1E;
+        rb.back() = 0x07;
+        CHECK(RelDef_LastCompleteEnd(rb.data(), static_cast<int>(rb.size())) ==
+              static_cast<int>(rb.size()));
+        CHECK(RelDef_LastCompleteEnd(rb.data(), 640) == 0);
         const std::uint8_t pnc[] = {0x21, 2, 5, 3, 0x80, 1, 4};
         CHECK(RelDef_LastCompleteEnd(pnc, 7) == 7);
         const std::uint8_t equipSub[] = {0x06, 0};
         CHECK(RelDef_LastCompleteEnd(equipSub, 2) == 2);
+        const std::uint8_t equipSubThenNop[] = {0x06, 0, 0x07};
+        CHECK(RelDef_LastCompleteEnd(equipSubThenNop, 3) == 3);
         const std::uint8_t dlMiss[] = {0x13, 0xFF, 0xFF, 0};
         CHECK(RelDef_LastCompleteEnd(dlMiss, 4) == 4);
         const std::uint8_t dlChunk[] = {0x13, 0x03, 0x00, 0x32, 'a', 'b', 'c'};

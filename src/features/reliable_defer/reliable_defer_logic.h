@@ -149,7 +149,7 @@ inline int RelDef_EquipEnd(const std::uint8_t* p, int n, int i) {
         return -1;
     if (p[i] != 1) {
         // Other sub-types are opcode + sub only (sub_20001FD0).
-        return n == i + 1 ? i + 1 : -1;
+        return i + 1;
     }
     ++i;
     for (int s = 0; s < 3; ++s) {
@@ -219,8 +219,8 @@ inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
         return need(2);
     case 0x06:
         return RelDef_EquipEnd(p, n, i);
-    case 0x1E:                                // rebuild_pred_inv: one byte
-        return need(1);
+    case 0x1E:                                // rebuild_pred_inv: 640-byte inven_c
+        return need(640);
     case 0x1F:                                // countdown: ReadLong
         return need(4);
     case 0x21:
