@@ -32,9 +32,11 @@ Sleep skip when strict or `reserve_ms` is on.
   `_sofbuddy_strict_exit 1` to quit on a violation instead.
 - After the tick, parked text is dripped **one newline-bounded chunk per
   sub-tick** (≤ 4096 bytes, must fit in 8 KB `cmd_text`).
-- While parking is armed (strict or `reserve_ms` > 0) and the side store is
-  non-empty, `tick_pacing`'s Sleep-skip gate skips WinMain's `Sleep(1)` so the
-  loop drips instead of sleeping through it. Empty park sleeps again.
+- While parking is armed and the side store is non-empty, `tick_pacing` may skip
+  WinMain's `Sleep(1)` only when a game tick is due within the spin window
+  (`_sofbuddy_tickpace_spin_ms`). Strict mode drips parked bytes on the
+  post-tick slot only — skipping sleep with a large backlog but no tick due
+  would spin the main loop at 100% without draining (connect storms hit this).
 
 **Parked vs moved aside** — two timings, one store:
 - *Parked* — one insert (`Cbuf_AddText` / `InsertText` / `ExecuteText`

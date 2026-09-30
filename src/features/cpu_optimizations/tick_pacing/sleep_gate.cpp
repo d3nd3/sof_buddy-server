@@ -123,21 +123,27 @@ bool SleepGate_ShouldSkip(DWORD ms, void* retaddr) {
     if (cfg.enabled && ConsumeSkipNextSleep())
         return true;
 
-    // `cmdtext_parking`: armed (strict or reserve_ms) and side store non-empty.
-    if (cmdpark::HoldArmed() && cmdpark::ParkBytes() > 0)
-        return true;
-
-    // Spin window: `_sofbuddy_tickpace` master && `_sofbuddy_tickpace_spin_ms` > 0.
-    if (!cfg.enabled)
-        return false;
-    const float window = SpinWindowMs();
-    if (!(window > 0.0f))
-        return false;
     const std::int64_t realtime =
         static_cast<std::int64_t>(*Engine().svsRealtime) -
         static_cast<std::int64_t>(CurrentSettleMs());
     const std::int32_t until = static_cast<std::int32_t>(
         static_cast<std::int64_t>(*Engine().svTime) - realtime);
+    const float window = SpinWindowMs();
+
+    // `cmdtext_parking`: strict only drips parked bytes on a fired game tick
+    // (SvFramePost). Skipping Sleep for any non-empty park between ticks
+    // would spin WinMain at 100% with no drain — connect storms fill the park
+    // from SV_ReadPackets and trigger exactly that. Only skip when a tick is
+    // due soon (same window as spin) so the loop can reach the post-tick drip.
+    if (cmdpark::HoldArmed() && cmdpark::ParkBytes() > 0 && window > 0.0f &&
+        static_cast<double>(until) <= static_cast<double>(window))
+        return true;
+
+    // Spin window: `_sofbuddy_tickpace` master && `_sofbuddy_tickpace_spin_ms` > 0.
+    if (!cfg.enabled)
+        return false;
+    if (!(window > 0.0f))
+        return false;
     return static_cast<double>(until) <= static_cast<double>(window);
 }
 
