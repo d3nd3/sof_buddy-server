@@ -702,8 +702,14 @@ void __cdecl HkCmd_Score_f(void* ent) {
             if (ClientUseHeld(ent)) {
                 if (g_scoreMinigameLatch[slot]) {
                     g_scoreMinigameLatch[slot] = false;
-                    ApplyView(ent, slot, g_page[slot] == MgView::Minigame ? MgView::StockScoreboard
-                                                                          : MgView::Off);
+                    if (g_page[slot] == MgView::Minigame) {
+                        ApplyView(ent, slot, MgView::Off);
+                        if (auto original = reinterpret_cast<cmd_score_fn>(g_scoreTrampoline))
+                            original(ent);
+                        g_page[slot] = MgView::StockScoreboard;
+                        return;
+                    }
+                    ApplyView(ent, slot, MgView::Off);
                     return;
                 }
                 g_scoreMinigameLatch[slot] = true;
@@ -1628,7 +1634,17 @@ void MaintainLayoutClient(void* ent, int slot) {
         return;
     }
     if (g_page[slot] == MgView::StockScoreboard) {
-        ApplyView(ent, slot, MgView::Off);
+        void* client = ClientForEnt(ent);
+        const bool scores =
+            client && Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)) &&
+            *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) != 0;
+        if (!scores) {
+            ApplyView(ent, slot, MgView::Off);
+            return;
+        }
+        ApplyLayoutClient(ent, true);
+        if (MgMinigameLayoutRefreshDue())
+            PaintScoreboard(ent);
         return;
     }
     if (g_page[slot] == MgView::Minigame) {

@@ -101,7 +101,7 @@ When the buddy minigames platform is enabled, **`cmd_score_f` is detoured**:
 | Input | Latched? | Result |
 |-------|----------|--------|
 | **+use + score** | No | Latch (minigame if scoreboard was open, else hidden) |
-| **+use + score** | Yes | Unlatch; DM scoreboard if minigame was visible, else stay hidden |
+| **+use + score** | Yes | Unlatch; stock `score` opens DM board if minigame was visible |
 | **Score only** | Yes | Toggle minigame ↔ hidden (never vanilla scoreboard) |
 | **Score only** | No | Stock DM scoreboard toggle |
 
