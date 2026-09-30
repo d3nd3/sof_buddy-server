@@ -11,7 +11,7 @@ The bar is one 100 ms tick (40 columns). Colours:
 | White | **Frame** | Rest of tick `SV_Frame` (net, send, hooks) |
 | Black `-` | **Free** | Unused budget |
 
-Tracks the **worst single tick** on this map (checksum change resets).
+Shows the **last real tick** (clamp_monitor gate; spawn/settle ticks skipped). Map checksum change resets.
 
 | Command | Who | Action |
 |---------|-----|--------|
