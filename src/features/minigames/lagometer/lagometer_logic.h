@@ -110,7 +110,7 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasCenter(canvas, 320, 196, line);
 
     MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasCenter(canvas, 320, 228, "worst tick on this map");
+    MgCanvasCenter(canvas, 320, 228, "last measured tick");
 
     std::snprintf(line, sizeof(line), "G %.0f  Cmd %.0f  Frame %.0f", game, cmd, shell);
     MgCanvasCenter(canvas, 320, 252, line);

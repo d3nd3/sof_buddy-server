@@ -16,18 +16,20 @@
 
 constexpr unsigned kRvaSvTime = 0x3A1F28;
 
-struct LagWorstTick {
+struct LagTickSample {
     float game_ms = 0.0f;
     float cmd_ms = 0.0f;
     float shell_ms = 0.0f;
-    float used_ms = 0.0f;
+    float spare_ms = 100.0f;
+    bool valid = false;
 };
 
 struct LagometerTrack {
     char map_id[64] = {};
-    LagWorstTick worst = {};
+    LagTickSample last = {};
     float pending_game_ms = 0.0f;
     float pending_cmd_ms = 0.0f;
+    bool game_sample_armed = false;
     std::uint32_t sv_time_at_pre = 0;
     double tick_frame_start_ms = 0.0;
     LARGE_INTEGER qpc_freq = {};
@@ -68,9 +70,10 @@ static double NowMs() {
 }
 
 static void ResetMapPeaks() {
-    g_track.worst = LagWorstTick{};
+    g_track.last = LagTickSample{};
     g_track.pending_game_ms = 0.0f;
     g_track.pending_cmd_ms = 0.0f;
+    g_track.game_sample_armed = false;
 }
 
 static void SyncMap() {
@@ -84,33 +87,39 @@ static void SyncMap() {
     ResetMapPeaks();
 }
 
-static void CommitTickSample(float game_ms, float cmd_ms, float shell_ms) {
+static void CommitTickSample(float game_ms, float cmd_ms, float shell_raw_ms) {
     float g = std::max(0.0f, game_ms);
     float d = std::max(0.0f, cmd_ms);
-    float f = std::max(0.0f, shell_ms);
-    float used = g + d + f;
-    if (used > kLagTickBudgetMs && used > 0.0f) {
-        const float scale = kLagTickBudgetMs / used;
+    if (g + d > kLagTickBudgetMs && g + d > 0.0f) {
+        const float scale = kLagTickBudgetMs / (g + d);
         g *= scale;
         d *= scale;
-        f *= scale;
-        used = kLagTickBudgetMs;
     }
-    if (used <= g_track.worst.used_ms)
-        return;
-    g_track.worst.game_ms = g;
-    g_track.worst.cmd_ms = d;
-    g_track.worst.shell_ms = f;
-    g_track.worst.used_ms = used;
+    float room = kLagTickBudgetMs - g - d;
+    if (room < 0.0f)
+        room = 0.0f;
+    float f = std::max(0.0f, shell_raw_ms);
+    if (f > room)
+        f = room;
+
+    LagTickSample sample;
+    sample.game_ms = g;
+    sample.cmd_ms = d;
+    sample.shell_ms = f;
+    sample.valid = true;
+    LagNormalizeBreakdown(sample.game_ms, sample.cmd_ms, sample.shell_ms, sample.spare_ms);
+    g_track.last = sample;
 }
 
 LagSnapshot ReadSnapshot() {
     SyncMap();
     LagSnapshot snapshot;
-    snapshot.game_ms = g_track.worst.game_ms;
-    snapshot.cmd_ms = g_track.worst.cmd_ms;
-    snapshot.shell_ms = g_track.worst.shell_ms;
-    LagNormalizeBreakdown(snapshot.game_ms, snapshot.cmd_ms, snapshot.shell_ms, snapshot.spare_ms);
+    if (!g_track.last.valid)
+        return snapshot;
+    snapshot.game_ms = g_track.last.game_ms;
+    snapshot.cmd_ms = g_track.last.cmd_ms;
+    snapshot.shell_ms = g_track.last.shell_ms;
+    snapshot.spare_ms = g_track.last.spare_ms;
     return snapshot;
 }
 
@@ -220,6 +229,7 @@ void lag_NoteGameFrameWallMs(float wall_ms) {
         return;
     SyncMap();
     g_track.pending_game_ms = wall_ms;
+    g_track.game_sample_armed = true;
 }
 
 void lag_NoteTickCmdDrain(float cmd_ms) {
@@ -248,12 +258,17 @@ void lag_SvFramePost(int msec) {
     if (!sv_time || *sv_time == g_track.sv_time_at_pre)
         return;
 
+    if (!g_track.game_sample_armed) {
+        g_track.pending_game_ms = 0.0f;
+        g_track.pending_cmd_ms = 0.0f;
+        return;
+    }
+    g_track.game_sample_armed = false;
+
     const float frame_ms = static_cast<float>(NowMs() - g_track.tick_frame_start_ms);
     const float game = g_track.pending_game_ms;
     const float cmd = g_track.pending_cmd_ms;
     float shell = frame_ms - game - cmd;
-    if (shell < 0.0f)
-        shell = 0.0f;
     CommitTickSample(game, cmd, shell);
     g_track.pending_game_ms = 0.0f;
     g_track.pending_cmd_ms = 0.0f;
