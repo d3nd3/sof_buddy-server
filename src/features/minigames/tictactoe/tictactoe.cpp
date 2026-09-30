@@ -281,6 +281,10 @@ void TttOnEnabled() {
     TttTryRegister();
 }
 
+void ttt_EnsureRegistered() {
+    TttOnEnabled();
+}
+
 void ttt_OnGameDllLoaded(void* gameExport) {
     (void)gameExport;
     TttOnEnabled();

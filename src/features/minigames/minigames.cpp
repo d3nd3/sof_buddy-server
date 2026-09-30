@@ -19,7 +19,10 @@
 //   STAT_LAYOUTS ................ stats[9] (game + engine agree)
 
 #include "cvar.h"
+#include "lagometer/lagometer.h"
 #include "minigames_api.h"
+
+extern void ttt_EnsureRegistered();
 
 #include "DetourXS/detourxs.h"
 #include "buddy_import.h"
@@ -709,22 +712,45 @@ void PushLayoutPayload(void* ent, const char* layout) {
     UnicastLayout(ent, layout);
 }
 
+bool StockWouldSayAsChat(const char* cmd) {
+    if (!cmd || !cmd[0])
+        return false;
+    if (SameNoCase(cmd, "lag") || SameNoCase(cmd, "sofbuddy_lag") ||
+        std::strcmp(cmd, ".lag") == 0)
+        return true;
+    return SameNoCase(cmd, "ttt");
+}
+
+bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
+    for (const MgGameOps* g : g_games) {
+        if (!g || !g->command || !g->onClientCmd || !SameNoCase(cmd, g->command))
+            continue;
+        MgLazyEnsureSobuddySp();
+        const int slot = MgSlotForEdict(ent);
+        if (slot >= 1)
+            g->onClientCmd(slot);
+        else
+            Buddy_ClientPrintf(ent, 2, "[minigames] cannot resolve player slot for '%s'\n",
+                               g->command);
+        return true;
+    }
+    return false;
+}
+
 void __cdecl HkClientCommand(void* ent) {
     if (MgPlatformEnabled() && MgEnabled() && ent) {
         const char* cmd = MgArgv(0);
         if (cmd && cmd[0]) {
-            for (const MgGameOps* g : g_games) {
-                if (g && g->command && g->onClientCmd && SameNoCase(cmd, g->command)) {
-                    MgLazyEnsureSobuddySp();
-                    const int slot = MgSlotForEdict(ent);
-                    if (slot >= 1)
-                        g->onClientCmd(slot);
-                    else
-                        Buddy_ClientPrintf(ent, 2,
-                                           "[minigames] cannot resolve player slot for '%s'\n",
-                                           g->command);
-                    return;
-                }
+            lag_EnsureRegistered();
+            ttt_EnsureRegistered();
+            if (DispatchMinigameClientCmd(ent, cmd))
+                return;
+            if (StockWouldSayAsChat(cmd)) {
+                Buddy_ClientPrintf(
+                    ent, 2,
+                    "[minigames] '%s' not registered (minigames off or gamex86.dll too old?)\n",
+                    cmd);
+                return;
             }
         }
     }
@@ -1515,6 +1541,8 @@ void mg_OnGameDllLoaded(void* gameExport) {
     if (g_edictSize <= 0)
         g_edictSize = static_cast<int>(kEdictStrideDefault);
     InstallClientCommandHook(gameExport);
+    lag_EnsureRegistered();
+    ttt_EnsureRegistered();
     InstallCmdScoreHook();
     InstallDmctfScoreboardHook();
     MgRegisterConsoleCommand("mg_push", reinterpret_cast<void*>(&mg_Push_f));

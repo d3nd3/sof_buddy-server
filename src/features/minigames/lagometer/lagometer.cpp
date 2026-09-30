@@ -1,6 +1,7 @@
 // lagometer: live server tick / drain diagnostic on the minigames layout tab.
 
 #include "cvar.h"
+#include "lagometer.h"
 #include "lagometer_logic.h"
 
 #include "buddy_import.h"
@@ -98,28 +99,42 @@ void OnSessionEnd() {
     }
 }
 
-void LagTryRegister() {
-    if (!Lag_Enabled() || !MgEnabled() || g_registered)
+void OnLagClientCmd(int slot1) {
+    if (!Lag_Enabled()) {
+        if (void* ent = MgEdictForSlot(slot1))
+            Buddy_ClientPrintf(ent, 2, "Lagometer disabled on this server\n");
         return;
-    static const MgGameOps kOps = {"lag", [](int slot1) {
-                                       if (!Lag_Enabled())
-                                           return;
-                                       const bool on = !g_view[slot1];
-                                       SetView(slot1, on);
-                                       void* ent = MgEdictForSlot(slot1);
-                                       if (ent)
-                                           Buddy_ClientPrintf(
-                                               ent, 2, "Lagometer %s (type lag or +use+score)\n",
-                                               on ? "ON" : "off");
-                                   },
-                                   nullptr, OnSessionEnd};
-    MgRegisterGame(&kOps);
+    }
+    const bool on = !g_view[slot1];
+    SetView(slot1, on);
+    if (void* ent = MgEdictForSlot(slot1))
+        Buddy_ClientPrintf(ent, 2, "Lagometer %s\n", on ? "ON" : "off");
+}
+
+void LagTryRegister() {
+    if (!MgEnabled() || g_registered)
+        return;
+    static const MgGameOps kOpsPrimary = {"sofbuddy_lag", OnLagClientCmd, nullptr, OnSessionEnd};
+    static const MgGameOps kOpsLag = {"lag", OnLagClientCmd, nullptr, nullptr};
+    static const MgGameOps kOpsDot = {".lag", OnLagClientCmd, nullptr, nullptr};
+    const bool a = MgRegisterGame(&kOpsPrimary);
+    const bool b = MgRegisterGame(&kOpsLag);
+    const bool c = MgRegisterGame(&kOpsDot);
+    if (!a && !b && !c) {
+        PrintOut(PRINT_BAD, "[lagometer] MgRegisterGame failed (table full?)\n");
+        return;
+    }
     MgRegisterConsoleCommand("lag_show", reinterpret_cast<void*>(&lag_Show_f));
     g_registered = true;
-    PrintOut(PRINT_LOG, "[lagometer] registered (_sofbuddy_lagometer_enable 1)\n");
+    PrintOut(PRINT_LOG, "[lagometer] registered (lag=%d sofbuddy_lag=%d .lag=%d)\n", b ? 1 : 0,
+             a ? 1 : 0, c ? 1 : 0);
 }
 
 }  // namespace
+
+void lag_EnsureRegistered() {
+    LagTryRegister();
+}
 
 extern "C" void __cdecl lag_Show_f() {
     if (!Lag_Enabled() || !MgEnabled())

@@ -124,6 +124,6 @@ inline void LagRender(const LagSnapshot& s, MgCanvas& c) {
                   LagOnOff(s.qpc));
     MgCanvasText(c, 24, 264, line);
     MgCanvasTc(c, kMgColGreen);
-    MgCanvasCenter(c, 320, 300, "type lag to close  |  +use+score");
+    MgCanvasCenter(c, 320, 300, "lag to close  |  +use+score");
     MgCanvasTc(c, kMgColWhite);
 }
