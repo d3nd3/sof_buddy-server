@@ -316,6 +316,12 @@ int main() {
         CHECK(!RelDef_StringContinues(after, 5));
         const std::uint8_t hdr[] = {0x0B, 2};
         CHECK(RelDef_StringContinues(hdr, 2));
+        const std::uint8_t equipHdr[] = {0x06, 1, 0};
+        CHECK(RelDef_StringContinues(equipHdr, 3));
+        const std::uint8_t ricHdr[] = {0x1C, 1, 0x05};
+        CHECK(!RelDef_StringContinues(ricHdr, 3));
+        const std::uint8_t binaryHdr[] = {0x1E, 0x1A};
+        CHECK(!RelDef_StringContinues(binaryHdr, 2));
         // SP_Print ships these via SZ_GetSpace; the payload is counted
         // bytes, not a C string. A NUL or 0x0B inside must not end it.
         const std::uint8_t sp[] = {0x22, 0x2b, 0x00};
@@ -377,6 +383,15 @@ int main() {
         CHECK(RelDef_LastCompleteEnd(snd, 3) == 3);
         const std::uint8_t sinfo[] = {0x04, 0x03, 10, 20};
         CHECK(RelDef_LastCompleteEnd(sinfo, 4) == 4);
+        const std::uint8_t opaque[] = {0x01, 0x00, 0xFF, 0x1A};
+        CHECK(RelDef_IsOpaquePacket(opaque, 4));
+        const std::uint8_t effect[] = {0x05, 0xFF};
+        CHECK(RelDef_IsOpaquePacket(effect, 2));
+        const std::uint8_t frame[] = {0x17, 0x00};
+        CHECK(RelDef_IsOpaquePacket(frame, 2));
+        CHECK(!RelDef_IsOpaquePacket(ric, 5));
+        CHECK(!RelDef_EndsAtMessageBoundary(opaque, 4));
+        CHECK(RelDef_EndsAtMessageBoundary(layout, 3));
     }
 
     // Overflow split matches production CaptureAppend: peel only a complete
@@ -469,17 +484,21 @@ int main() {
         CHECK(!RelDef_SuppressSnapshot(kCsConnected, true));
     }
 
-    // FIFO queue: mirrors SlotQueue deque+pop_front (production helpers need
-    // engine RVAs; semantics match QueuePush/QueuePopWrite eviction/drip).
+    // FIFO queue: admission rejects new mail at the cap; it never evicts the
+    // older front blob to make room.
     {
         struct Q {
             std::deque<std::vector<std::uint8_t>> blobs;
             std::deque<int> enqueued;
             int bytes = 0;
-            void push(int id) {
+            bool push(int id, int maxCount, int maxBytes) {
+                if (static_cast<int>(blobs.size()) >= maxCount ||
+                    bytes + 1 > maxBytes)
+                    return false;
                 blobs.push_back({static_cast<std::uint8_t>(id)});
                 enqueued.push_back(id);
                 bytes += 1;
+                return true;
             }
             int pop() {
                 const int id = blobs.front()[0];
@@ -489,10 +508,12 @@ int main() {
                 return id;
             }
         } q;
-        for (int i = 0; i < 40; ++i)
-            q.push(i);
-        CHECK(q.bytes == 40);
-        for (int i = 0; i < 40; ++i)
+        CHECK(q.push(0, 2, 2));
+        CHECK(q.push(1, 2, 2));
+        CHECK(!q.push(2, 2, 2));
+        CHECK(q.blobs.front()[0] == 0);
+        CHECK(q.bytes == 2);
+        for (int i = 0; i < 2; ++i)
             CHECK(q.pop() == i);
         CHECK(q.bytes == 0);
         CHECK(q.blobs.empty());

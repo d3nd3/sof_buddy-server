@@ -189,6 +189,18 @@ inline int RelDef_PlayerNameColsEnd(const std::uint8_t* p, int n, int i) {
     return i;
 }
 
+inline bool RelDef_IsOpaquePacket(const std::uint8_t* p, int n) {
+    if (!p || n <= 0)
+        return false;
+    switch (p[0]) {
+    case 0x01: case 0x05:
+    case 0x14: case 0x15: case 0x16: case 0x17:
+        return true;
+    default:
+        return false;
+    }
+}
+
 inline int RelDef_MsgEnd(const std::uint8_t* p, int n, int i) {
     if (!p || i < 0 || i >= n)
         return -1;
@@ -289,6 +301,10 @@ inline int RelDef_LastCompleteEnd(const std::uint8_t* p, int n) {
     return last;
 }
 
+inline bool RelDef_EndsAtMessageBoundary(const std::uint8_t* p, int n) {
+    return n <= 0 || (p && RelDef_LastCompleteEnd(p, n) == n);
+}
+
 // How much of a capture may be queued. A tail that does not open with an
 // opcode is dropped: it would ride out after a finished svc_layout and the
 // client would report "Illegible server message (Last command was svc_layout)".
@@ -310,10 +326,17 @@ inline int RelDef_SealEnd(const std::uint8_t* p, int n) {
     return (msgEnd > end && msgEnd <= n) ? n : end;
 }
 
-// A MSG_WriteString continues the opcode already in staging. Staging that
-// already ends on a message boundary (a finished layout) must not take it.
+// A MSG_WriteString continues only a packet whose retail parser reads a string.
 inline bool RelDef_StringContinues(const std::uint8_t* p, int n) {
-    return p && n > 0 && RelDef_LastCompleteEnd(p, n) < n;
+    if (!p || n <= 0)
+        return false;
+    switch (p[0]) {
+    case 0x02: case 0x06: case 0x0B: case 0x0C:
+    case 0x0D: case 0x0E: case 0x0F: case 0x11: case 0x20:
+        return RelDef_LastCompleteEnd(p, n) < n;
+    default:
+        return false;
+    }
 }
 
 inline void RelDef_CaptureAppend(std::uint8_t* dst, int& dstLen, int dstCap,
