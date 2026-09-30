@@ -12,10 +12,11 @@ tricky pieces:
    below for when to use each.
 3. **Visibility** — re-asserts `ps.stats[STAT_LAYOUTS]` every server frame
    for visible slots, because stock `G_SetStats` rewrites stats each frame.
-4. **Minigame view** — hooks stock `cmd_score_f` @ `0xF6710`: with the DM
-   scoreboard open, **+use + score** switches to minigame and **latches** score
-   to minigame-only (score toggles minigame/hidden; no vanilla scoreboard until
-   **+use + score** again). Death/intermission still force the vanilla scoreboard.
+4. **Minigame view** — hooks stock `cmd_score_f` @ `0xF6710`: **+use + score**
+   latches score to minigame-only (no vanilla scoreboard until **+use + score**
+   again). If the DM scoreboard was open, it switches to minigame; otherwise the
+   latch flips silently (score toggles minigame/hidden). Death/intermission still
+   force the vanilla scoreboard.
 
 ## Writing a new game (chess, ...)
 
@@ -99,7 +100,7 @@ When the buddy minigames platform is enabled, **`cmd_score_f` is detoured**:
 
 | Input | Latched? | Result |
 |-------|----------|--------|
-| **+use + score** | No (scoreboard open) | Minigame view + latch |
+| **+use + score** | No | Latch (minigame if scoreboard was open, else hidden) |
 | **+use + score** | Yes | Unlatch; hide layout (vanilla score again) |
 | **Score only** | Yes | Toggle minigame ↔ hidden (never vanilla scoreboard) |
 | **Score only** | No | Stock DM scoreboard toggle |
