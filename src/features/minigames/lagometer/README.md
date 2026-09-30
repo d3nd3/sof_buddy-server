@@ -14,9 +14,14 @@ Client words are handled in the shim **before** stock `ClientCommand`. If the ga
 is not registered, stock DM would treat unknown commands as **chat** (`Cmd_Say_f`)
 — that is the “sent as text” behaviour, not a client forward issue.
 
-Arming does not open the tab. **+use+score** to view; updates at scoreboard rate
-(`ClientEndServerFrame`, not every server tick). Close tab with **score** alone;
-`lag` again to disarm.
+**+use+score** opens the minigame tab with the lagometer by default (when enabled
+and no other minigame owns that slot). Updates at scoreboard rate
+(`ClientEndServerFrame`, not every server tick). Close tab with **score** alone.
+Client `lag` still toggles arm/disarm when you want the HUD off without another
+game running.
+
+Sofplus/spsv may deliver dot-commands as `say .word …`; the platform unwraps
+that before matching registered client words.
 
 `_sofbuddy_lagometer_enable` (default `1`) gates registration. Requires
 `_sofbuddy_minigames_enable 1`.

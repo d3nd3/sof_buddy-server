@@ -193,6 +193,7 @@ const char* MgMapChecksum();
 bool MgTakeDisplay(int slot1, const char* gameId);
 void MgReleaseDisplay(int slot1, const char* gameId);
 bool MgDisplayOwnedBy(int slot1, const char* gameId);
+bool MgDisplayTakenByOther(int slot1, const char* gameId);
 
 // Server-wide: at most one minigame session doing per-frame work. Starts on the
 // first MgTakeDisplay for a gameId; ends when it has no display slots left, or
