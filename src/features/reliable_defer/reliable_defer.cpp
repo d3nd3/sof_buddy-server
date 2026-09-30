@@ -512,7 +512,15 @@ bool ReorderNetchan(int slot, void* netchan, int length, void* data,
     if (q.blobs.empty())
         return false;
     char* cl = ClientBase(slot);
-    if (!cl || ReadInt(cl, kClientReliableLenOfs) != 0)
+    if (!cl)
+        return false;
+    // A reconnect can reuse a slot before the next pre-send cleanup. Never
+    // replay old parcels ahead of the fresh serverdata handshake.
+    if (ReadInt(cl, kClientStateOfs) < kCsSpawned) {
+        ClearSlotPending(slot);
+        return false;
+    }
+    if (ReadInt(cl, kClientReliableLenOfs) != 0)
         return false;
     char* msg = cl + kClientMessageOfs;
     const int n = ReadInt(msg, kSzCursize);
