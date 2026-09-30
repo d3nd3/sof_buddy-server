@@ -249,7 +249,7 @@ void DripOne() {    auto add = detour_Cbuf_AddText::oCbuf_AddText;
         while (cut > 0 && g.park[cut - 1] != '\n')
             --cut;
         if (cut == 0)
-            return;
+            cut = n;  // long line: drip a full chunk so the park cannot stall
         n = cut;
     }
     const char saved = g.park[n];

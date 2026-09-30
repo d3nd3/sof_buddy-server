@@ -517,13 +517,20 @@ void EnsureSobuddyStringPackage() {
     PrintOut(PRINT_LOG, "[minigames] registered strip/%s.sp (checksum name)\n", reg);
 }
 
+// Register sobuddy.sp off the tick path. GameDllLoaded tries once; client
+// commands and layout console cmds retry after backoff (kSobuddyRetryMs).
+void MgLazyEnsureSobuddySp() {
+    if (!MgPlatformEnabled())
+        return;
+    if (g_sobuddySpReady && !SobuddyNeedsRegister())
+        return;
+    EnsureSobuddyStringPackage();
+}
+
 }  // namespace
 
 void AppendCtfScoreboardHint(void* ent) {
-    if (!ent)
-        return;
-    EnsureSobuddyStringPackage();
-    if (!g_sobuddySpReady || !g_ctfSbHintLayout[0])
+    if (!ent || !g_sobuddySpReady || !g_ctfSbHintLayout[0])
         return;
     Buddy_SP_PrintLayout(ent, kSobuddyLayoutRaw, g_ctfSbHintLayout);
 }
@@ -639,6 +646,7 @@ void __cdecl HkClientCommand(void* ent) {
         if (cmd && cmd[0]) {
             for (const MgGameOps* g : g_games) {
                 if (g && g->command && g->onClientCmd && SameNoCase(cmd, g->command)) {
+                    MgLazyEnsureSobuddySp();
                     const int slot = MgSlotForEdict(ent);
                     if (slot >= 1)
                         g->onClientCmd(slot);
@@ -1121,6 +1129,7 @@ extern "C" void __cdecl mg_Test_f();
 extern "C" void __cdecl mg_Push_f() {
     if (!MgPlatformEnabled())
         return;
+    MgLazyEnsureSobuddySp();
     int slot = 0;
     const char* rest = nullptr;
     if (!SplitSlotAndRest(Buddy_ClientArgs(), slot, rest) || !*rest) {
@@ -1145,6 +1154,7 @@ extern "C" void __cdecl mg_Push_f() {
 extern "C" void __cdecl mg_Show_f() {
     if (!MgPlatformEnabled())
         return;
+    MgLazyEnsureSobuddySp();
     const int slot = std::atoi(Buddy_ClientArgv(1));
     const int on = std::atoi(Buddy_ClientArgv(2));
     const int internal = MgUserToInternal(slot);
@@ -1170,6 +1180,7 @@ extern "C" void __cdecl mg_Clear_f() {
 extern "C" void __cdecl mg_Idle_f() {
     if (!MgPlatformEnabled())
         return;
+    MgLazyEnsureSobuddySp();
     const int internal = MgUserToInternal(std::atoi(Buddy_ClientArgv(1)));
     if (!internal) {
         Buddy_DebugPrintf("usage: mg_idle <slot 0-based>\n");
@@ -1368,6 +1379,7 @@ extern "C" void __cdecl mg_Countdown_f() {
 extern "C" void __cdecl mg_Test_f() {
     if (!MgPlatformEnabled())
         return;
+    MgLazyEnsureSobuddySp();
     const int internal = MgUserToInternal(std::atoi(Buddy_ClientArgv(1)));
     if (!internal || !MgSlotSpawned(internal)) {
         Buddy_DebugPrintf("usage: mg_test <slot 0-based>\n");
@@ -1476,6 +1488,16 @@ void mg_CL_SendClientMessagesPre() {
     }
 }
 
+void mg_SvFramePost(int msec) {
+    (void)msec;
+    if (!MgPlatformEnabled())
+        return;
+    // After CL_SendClientMessages (SV_Frame Post). Never SP_Register from
+    // scoreboard hooks — that runs inside multicast buildup and can SZ_GetSpace.
+    if (!g_sobuddySpReady || SobuddyNeedsRegister())
+        MgLazyEnsureSobuddySp();
+}
+
 void mg_SvClientThinkPre(void*& client, void*& cmd) {
     if (!MgPlatformEnabled() || !client || !cmd)
         return;
@@ -1491,18 +1513,6 @@ void mg_SvClientThinkPre(void*& client, void*& cmd) {
     }
     if (in.consumed)
         MgStripUserCmd(cmd);
-}
-
-void mg_SvFramePost(int msec) {
-    (void)msec;
-    if (!MgPlatformEnabled())
-        return;
-    if (!g_sobuddySpReady) {
-        EnsureSobuddyStringPackage();
-        return;
-    }
-    if (SobuddyNeedsRegister())
-        EnsureSobuddyStringPackage();
 }
 
 extern "C" void Minigames_Shutdown() {

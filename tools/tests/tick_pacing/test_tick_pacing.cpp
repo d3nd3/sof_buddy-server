@@ -1078,25 +1078,34 @@ void Test_BacklogSkipsSleep() {
     fake::SvState() = 2;
     fake::SvsInit() = 1;
     void* site = tickpace::SleepGate_WinMainSleepRet();
-    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+    SetCvar("_sofbuddy_tickpace_spin_ms", 10);
+    fake::SvTime() = 1000;
+    fake::Realtime() = 940;
 
     cmdpark::g_stubParkBytes = 300;
     CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
           "backlog skipped while parking disarmed");
 
+    fake::Realtime() = 990;
+
     cmdpark::g_stubHoldArmed = true;
     CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
-          "armed backlog did not skip");
+          "armed backlog did not skip near tick");
+
+    fake::Realtime() = 940;
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "armed backlog skipped Sleep far from tick");
 
     cmdpark::g_stubParkBytes = 0;
     CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
           "empty park skipped Sleep(1)");
 
     cmdpark::g_stubParkBytes = 300;
-    SetCvar("_sofbuddy_tickpace", 0);
-    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == true,
-          "armed backlog skip is independent of tickpace");
-    SetCvar("_sofbuddy_tickpace", 1);
+    fake::Realtime() = 990;
+    SetCvar("_sofbuddy_tickpace_spin_ms", 0);
+    CHECK(tickpace::SleepGate_ShouldSkip(1, site) == false,
+          "armed backlog does not skip when spin window is off");
+    SetCvar("_sofbuddy_tickpace_spin_ms", 10);
 
     cmdpark::g_stubParkBytes = 0;
     cmdpark::g_stubHoldArmed = false;
