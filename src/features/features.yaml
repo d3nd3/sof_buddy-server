@@ -15,6 +15,7 @@ features:
   clsv_pipe: true
   profiles: true
   skinteam_quiet: true
+  sv_tracktime: true
   # my_feature: false
 
 # Alternative: list only enabled names (merged with `features:` above if both present).

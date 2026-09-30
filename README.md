@@ -310,6 +310,50 @@ Details: [`src/features/print_guard/README.md`](src/features/print_guard/README.
 
 ---
 
+### Client frametime tracking — `sv_tracktime`
+
+`usercmd_t.msec` is the client's own claim of how long its frame took, and the
+server takes it at face value. `sv_tracktime` compares that claim against the
+`clc_move` rate the server actually received, per slot, and reports whether the
+average frametime looks real. Measurement only — it never kicks, clamps or
+rewrites anything.
+
+```
+sv_tracktime                 table for every slot
+sv_tracktime <slot>          window + total for one slot
+sv_tracktime_reset [slot|all]
+```
+
+```
+[tracktime]  sl  name              frames   sum_ms  avg_ms claim_fps  real_fps     drift  verdict
+[tracktime]   0  Grim               256      4352  17.00     58.8      59.9     -1.8%  ok
+[tracktime]   1  fastguy            256       256   1.00    1000.0      59.9  +1569.4%  MSEC-LOW
+```
+
+`MSEC-LOW` = claims more frames/s than it sends, `MSEC-HIGH` = claims fewer,
+`no-data` = not enough samples yet.
+
+**Settings** (you set these) — all `ARCHIVE`, read live:
+
+| cvar | default | what it does |
+|---|:---:|---|
+| `_sofbuddy_tracktime` | `1` | Master switch. `0` stops measuring; last figures stay readable |
+| `_sofbuddy_tracktime_tolerance` | `20` | Allowed \|drift\| in percent before a slot is called out (`0` = any deviation) |
+| `_sofbuddy_tracktime_window` | `256` | Rolling window in samples (32–256) |
+| `_sofbuddy_tracktime_min` | `30` | Samples required in the window before any verdict |
+
+**Gauges** (read-only; the DLL writes them):
+
+| cvar | unit | what it tells you |
+|---|---|---|
+| `_sofbuddy_tracktime_frames` | count | usercmds tracked since boot (spawned slots only) |
+| `_sofbuddy_tracktime_suspect` | slots | Slots currently called out |
+| `_sofbuddy_tracktime_worst_drift` | % | Worst \|drift\| among them |
+
+Details: [`src/features/sv_tracktime/README.md`](src/features/sv_tracktime/README.md)
+
+---
+
 ## Recipes
 
 **Is my server actually keeping up?**
@@ -403,6 +447,7 @@ tools/tests/cmd_cost/run.sh
 tools/tests/reliable_defer/run.sh
 tools/tests/print_guard/run.sh
 tools/tests/tictactoe/run.sh
+tools/tests/sv_tracktime/run.sh
 
 SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 ```

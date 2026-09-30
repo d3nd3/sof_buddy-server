@@ -1,0 +1,8 @@
+[
+  {
+    "function": "SV_ClientThink",
+    "callback": "svtrack_ClientThinkPre",
+    "phase": "Pre",
+    "priority": 0
+  }
+]
