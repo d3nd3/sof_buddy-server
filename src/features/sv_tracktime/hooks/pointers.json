@@ -1,1 +1,1 @@
-["Cmd_AddCommand", "Cmd_Argc", "Cmd_Argv", "Info_ValueForKey"]
+["Cmd_AddCommand", "Cmd_Argc", "Cmd_Argv", "Com_Printf", "Info_ValueForKey"]

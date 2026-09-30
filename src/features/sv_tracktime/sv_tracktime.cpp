@@ -13,9 +13,9 @@
 // inflates its rate lands on MSEC-LOW, one that drags it down on MSEC-HIGH.
 //
 // Nothing here kicks, clamps or rewrites anything - the numbers go to the
-// server console (`sv_tracktime`) and to three NOSET gauges for scripts. The
-// maths lives in sv_tracktime_logic.h (host-tested); this file is the engine
-// binding.
+// server console (`sv_tracktime`, via Com_Printf so no `developer 1` is
+// needed) and to three NOSET gauges for scripts. The maths lives in
+// sv_tracktime_logic.h (host-tested); this file is the engine binding.
 //
 // Offsets (all verified, same values minigames/stufftext already use):
 //   svs.clients ......... SoF.exe+0x396EEC, client_t stride 0xD2AC
@@ -30,6 +30,7 @@
 #include "generated_engine_pointers.h"
 #include "log.h"
 
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -271,8 +272,22 @@ void svtrack_ClientThinkPre(void*& client, void*& cmd) {
 // ---------------------------------------------------------------------------
 namespace {
 
+/** Command responses go to the server console unconditionally. PrintOut (and
+ *  everything built on it) is gi.dprintf, which the engine only shows with
+ *  `developer 1` - wrong for a command an admin runs to read a table.
+ *  Com_Printf has no such gate (same Say() pattern as cmd_cost_events). */
+void ConPrintf(const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    buf[sizeof(buf) - 1] = '\0';
+    SOF_EP_Com_Printf("%s", buf);
+}
+
 void PrintReport(const char* label, const tracktime::Report& r) {
-    PrintOut(PRINT_LOG,
+    ConPrintf(
              "[tracktime]   %-6s %7lld frames  sum_msec %lld  span %lld ms"
              "  avg %.2f ms  claim %.1f fps  real %.1f fps  drift %+.1f%%  %s\n",
              label, static_cast<long long>(r.frames), static_cast<long long>(r.sumMs),
@@ -286,12 +301,11 @@ void DumpAll() {
     const int minSamples = SvTracktime_MinSamples();
     const int n = MaxClients();
 
-    PrintOut(PRINT_LOG, "[tracktime] window %d samples, min %d, tolerance %.0f%%%s\n", window,
-             minSamples, static_cast<double>(tol),
-             SvTracktime_Enabled() ? "" : "  (tracking OFF)");
-    PrintOut(PRINT_LOG,
-             "[tracktime]  sl  name              frames   sum_ms  avg_ms claim_fps"
-             "  real_fps     drift  verdict\n");
+    ConPrintf("[tracktime] window %d samples, min %d, tolerance %.0f%%%s\n", window,
+              minSamples, static_cast<double>(tol),
+              SvTracktime_Enabled() ? "" : "  (tracking OFF)");
+    ConPrintf("[tracktime]  sl  name              frames   sum_ms  avg_ms claim_fps"
+              "  real_fps     drift  verdict\n");
 
     char row[160];
     int suspect = 0;
@@ -313,16 +327,14 @@ void DumpAll() {
                 worst = d;
         }
         tracktime::FormatRow(row, sizeof(row), slot1 - 1, spawned ? SlotName(slot1) : "-", r);
-        PrintOut(PRINT_LOG, "[tracktime]%s\n", row);
+        ConPrintf("[tracktime]%s\n", row);
     }
 
-    PrintOut(PRINT_LOG,
-             "[tracktime] %d/%d slots with data, %lld frames in window, %lld since boot\n",
-             withData, n, windowFrames, g_totalFrames);
-    PrintOut(PRINT_LOG, "[tracktime] suspect %d, worst drift %.1f%%\n", suspect, worst);
-    PrintOut(PRINT_LOG,
-             "[tracktime] MSEC-LOW = claims more frames/s than it sends (faked fast),"
-             " MSEC-HIGH = claims fewer (faked slow), no-data = too few samples\n");
+    ConPrintf("[tracktime] %d/%d slots with data, %lld frames in window, %lld since boot\n",
+              withData, n, windowFrames, g_totalFrames);
+    ConPrintf("[tracktime] suspect %d, worst drift %.1f%%\n", suspect, worst);
+    ConPrintf("[tracktime] MSEC-LOW = claims more frames/s than it sends (faked fast),"
+              " MSEC-HIGH = claims fewer (faked slow), no-data = too few samples\n");
     Publish(true);
 }
 
@@ -332,15 +344,14 @@ void DumpSlot(int slot0) {
     const int window = tracktime::ClampWindow(SvTracktime_Window());
     const int slot1 = slot0 + 1;
     if (slot0 < 0 || slot1 > MaxClients()) {
-        PrintOut(PRINT_BAD, "[tracktime] slot %d out of range (0..%d)\n", slot0,
-                 MaxClients() - 1);
+        ConPrintf("[tracktime] slot %d out of range (0..%d)\n", slot0, MaxClients() - 1);
         return;
     }
 
     const tracktime::Slot& s = g_slots[slot1];
     const bool spawned = SlotSpawned(slot1);
-    PrintOut(PRINT_LOG, "[tracktime] slot %d \"%s\" (%s) window %d samples\n", slot0,
-             spawned ? SlotName(slot1) : "-", spawned ? "spawned" : "not spawned", window);
+    ConPrintf("[tracktime] slot %d \"%s\" (%s) window %d samples\n", slot0,
+              spawned ? SlotName(slot1) : "-", spawned ? "spawned" : "not spawned", window);
 
     const tracktime::Report w = tracktime::WindowReport(s, window, tol, minSamples);
     const tracktime::Report t = tracktime::TotalReport(s, tol, minSamples);
@@ -348,14 +359,13 @@ void DumpSlot(int slot0) {
     PrintReport("total", t);
     if (s.seeded) {
         const long long idleMs = (NowUs() - s.lastUs) / 1000;
-        PrintOut(PRINT_LOG,
-                 "[tracktime]   msec min %u max %u, zero %lld, stalls %lld, worst gap %u ms,"
-                 " stalled %lld ms, idle %lld ms\n",
-                 s.minMs, s.maxMs, static_cast<long long>(s.zeroMs),
-                 static_cast<long long>(s.stalls), s.worstGapUs / 1000u,
-                 static_cast<long long>(s.stalledMs), idleMs);
+        ConPrintf("[tracktime]   msec min %u max %u, zero %lld, stalls %lld, worst gap %u ms,"
+                  " stalled %lld ms, idle %lld ms\n",
+                  s.minMs, s.maxMs, static_cast<long long>(s.zeroMs),
+                  static_cast<long long>(s.stalls), s.worstGapUs / 1000u,
+                  static_cast<long long>(s.stalledMs), idleMs);
     } else {
-        PrintOut(PRINT_LOG, "[tracktime]   no samples yet\n");
+        ConPrintf("[tracktime]   no samples yet\n");
     }
 }
 
@@ -386,12 +396,12 @@ bool IsNumber(const char* s) {
 
 extern "C" void __cdecl sv_tracktime_f() {
     if (!SvTracktime_Enabled())
-        PrintOut(PRINT_BAD, "[tracktime] disabled (_sofbuddy_tracktime 0) - nothing new is\n"
-                            "[tracktime]   being measured, figures below are the last ones seen\n");
+        ConPrintf("[tracktime] disabled (_sofbuddy_tracktime 0) - nothing new is\n"
+                  "[tracktime]   being measured, figures below are the last ones seen\n");
     const char* arg = ArgS(1);
     if (arg[0]) {
         if (!IsNumber(arg)) {
-            PrintOut(PRINT_BAD, "usage: sv_tracktime [<slot>] | sv_tracktime_reset [<slot>|all]\n");
+            ConPrintf("[tracktime] usage: sv_tracktime [<slot>]\n");
             return;
         }
         DumpSlot(std::atoi(arg));
@@ -406,12 +416,12 @@ extern "C" void __cdecl sv_tracktime_reset_f() {
     int cleared = 0;
     if (a[0] && std::strcmp(a, "all") != 0) {
         if (!IsNumber(a)) {
-            PrintOut(PRINT_BAD, "usage: sv_tracktime_reset [<slot>|all]\n");
+            ConPrintf("[tracktime] usage: sv_tracktime_reset [<slot>|all]\n");
             return;
         }
         const int slot1 = std::atoi(a) + 1;
         if (slot1 < 1 || slot1 > n) {
-            PrintOut(PRINT_BAD, "[tracktime] slot %s out of range (0..%d)\n", a, n - 1);
+            ConPrintf("[tracktime] slot %s out of range (0..%d)\n", a, n - 1);
             return;
         }
         tracktime::Reset(g_slots[slot1]);
@@ -425,7 +435,7 @@ extern "C" void __cdecl sv_tracktime_reset_f() {
     // counter (like the clamp/highclamp counters elsewhere), not per-window data.
     g_lastPublish = 0;
     Publish(true);
-    PrintOut(PRINT_LOG, "[tracktime] cleared %d slot(s)\n", cleared);
+    ConPrintf("[tracktime] cleared %d slot(s)\n", cleared);
 }
 
 // ---------------------------------------------------------------------------
