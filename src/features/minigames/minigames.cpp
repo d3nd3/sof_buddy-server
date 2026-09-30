@@ -702,7 +702,8 @@ void __cdecl HkCmd_Score_f(void* ent) {
             if (ClientUseHeld(ent)) {
                 if (g_scoreMinigameLatch[slot]) {
                     g_scoreMinigameLatch[slot] = false;
-                    ApplyView(ent, slot, MgView::Off);
+                    ApplyView(ent, slot, g_page[slot] == MgView::Minigame ? MgView::StockScoreboard
+                                                                          : MgView::Off);
                     return;
                 }
                 g_scoreMinigameLatch[slot] = true;
