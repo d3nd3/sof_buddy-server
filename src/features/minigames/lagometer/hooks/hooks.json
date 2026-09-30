@@ -1,5 +1,23 @@
 [
   {
+    "function": "SV_ReadPackets",
+    "callback": "lag_ReadPacketsPre",
+    "phase": "Pre",
+    "priority": 3
+  },
+  {
+    "function": "SV_ClientThink",
+    "callback": "lag_SvClientThinkPre",
+    "phase": "Pre",
+    "priority": 1
+  },
+  {
+    "function": "SV_ClientThink",
+    "callback": "lag_SvClientThinkPost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
     "function": "SV_Frame",
     "callback": "lag_SvFramePre",
     "phase": "Pre",

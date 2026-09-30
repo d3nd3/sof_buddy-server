@@ -16,6 +16,7 @@ struct LagSnapshot {
     float cmd_ms = 0.0f;
     float shell_ms = 0.0f;
     float spare_ms = 100.0f;
+    int server_frame = -1;
 };
 
 inline void LagNormalizeBreakdown(float& game_ms, float& cmd_ms, float& shell_ms, float& spare_ms) {
@@ -65,11 +66,11 @@ inline void LagRenderLegend(MgCanvas& c, int centerX, int y) {
         const char* text;
         int tc;
     };
-    static const Key keys[] = {{"Play", kMgColGreen},
-                               {"Console", kMgColYellow},
-                               {"Overhead", kMgColWhite},
+    static const Key keys[] = {{"SV Tick (frame)", kMgColGreen},
+                               {"Console (buffer)", kMgColYellow},
+                               {"ClientThink", kMgColWhite},
                                {"Free", kMgColBlack}};
-    constexpr int kGap = 20;
+    constexpr int kGap = 10;
     constexpr int n = 4;
     int total = 0;
     for (int i = 0; i < n; ++i) {
@@ -139,9 +140,16 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasCenter(canvas, 320, 196, line);
 
     MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasCenter(canvas, 320, 228, "busiest moment this map");
+    if (snapshot.server_frame >= 0) {
+        std::snprintf(line, sizeof(line), "busiest tick  |  sv.framenum %d",
+                      snapshot.server_frame);
+        MgCanvasCenter(canvas, 320, 228, line);
+    } else {
+        MgCanvasCenter(canvas, 320, 228, "busiest moment this map");
+    }
 
-    std::snprintf(line, sizeof(line), "Play %.0f  Console %.0f  Overhead %.0f", game, cmd, shell);
+    std::snprintf(line, sizeof(line), "SV Tick %.0f  ClientThink %.0f  Buffer %.0f", game, shell,
+                  cmd);
     MgCanvasCenter(canvas, 320, 252, line);
 
     LagRenderLegend(canvas, 320, 276);
