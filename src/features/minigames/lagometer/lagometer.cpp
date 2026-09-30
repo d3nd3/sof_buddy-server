@@ -23,8 +23,6 @@ bool g_registered = false;
 bool g_armed[kMgMaxSlots + 1] = {};
 constexpr char kLagGameId[] = "lag";
 
-void* g_cvDedicated = nullptr;
-
 float CvarF(const char* name, float dflt) {
     void* cv = Buddy_GetEngineCvar(name, nullptr, 0, nullptr);
     if (!cv)
@@ -36,37 +34,34 @@ int CvarI(const char* name, int dflt) {
     return static_cast<int>(CvarF(name, static_cast<float>(dflt)));
 }
 
+bool CvarOn(const char* name, int dflt) {
+    return CvarI(name, dflt) != 0;
+}
+
 LagSnapshot ReadSnapshot() {
-    LagSnapshot s;
-    s.drainLastMs = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
-    s.drainMaxMs = CvarF("_sofbuddy_cmdpark_cbuf_max", 0.0f);
-    s.lateAvgMs = CvarF("_sofbuddy_tickpace_late_avg", 0.0f);
-    s.highclamps = static_cast<long long>(CvarF("_sofbuddy_highclamps", 0.0f));
-    s.lowclamps = static_cast<long long>(CvarF("_sofbuddy_lowclamps", 0.0f));
-    s.clampLastMs = CvarI("_sofbuddy_clamp_last", 0);
-    s.clampLostMs = static_cast<long long>(CvarF("_sofbuddy_clamp_lost_ms", 0.0f));
-    s.clampAvgMs = CvarF("_sofbuddy_clamp_avg", 0.0f);
-    s.lowclampWorstMs = CvarI("_sofbuddy_lowclamp_worst", 0);
-    s.tickpaceSaved = static_cast<long long>(CvarF("_sofbuddy_tickpace_saved", 0.0f));
-    s.parkDefers = static_cast<long long>(CvarF("_sofbuddy_cmdpark_defers", 0.0f));
-    s.cbufBytes = CvarI("_sofbuddy_cmdpark_cbuf_cursize", 0);
-    s.cbufFillMax = CvarI("_sofbuddy_cmdpark_cbuf_fill_max", 0);
-    s.cmdcostMaxMs = CvarF("_sofbuddy_cmdcost_max", 0.0f);
+    LagSnapshot snapshot;
+    snapshot.command_buffer_drain_last_ms = CvarF("_sofbuddy_cmdpark_cbuf_last", 0.0f);
+    snapshot.command_buffer_drain_peak_ms = CvarF("_sofbuddy_cmdpark_cbuf_max", 0.0f);
+    snapshot.tick_late_average_ms = CvarF("_sofbuddy_tickpace_late_avg", 0.0f);
+    snapshot.timer_clamp_high_count =
+        static_cast<long long>(CvarF("_sofbuddy_highclamps", 0.0f));
+    snapshot.timer_clamp_low_count =
+        static_cast<long long>(CvarF("_sofbuddy_lowclamps", 0.0f));
+    snapshot.timer_clamp_last_shift_ms = CvarI("_sofbuddy_clamp_last", 0);
+    snapshot.timer_clamp_total_lost_ms =
+        static_cast<long long>(CvarF("_sofbuddy_clamp_lost_ms", 0.0f));
+    snapshot.timer_clamp_low_worst_ms = CvarI("_sofbuddy_lowclamp_worst", 0);
+    snapshot.command_buffer_bytes = CvarI("_sofbuddy_cmdpark_cbuf_cursize", 0);
+    snapshot.command_buffer_peak_bytes = CvarI("_sofbuddy_cmdpark_cbuf_fill_max", 0);
+    snapshot.slowest_command_ms = CvarF("_sofbuddy_cmdcost_max", 0.0f);
 #ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
-    s.parkBytes = cmdpark::ParkBytes();
+    snapshot.command_park_queued_bytes = cmdpark::ParkBytes();
 #endif
-    if (!g_cvDedicated)
-        g_cvDedicated = Buddy_GetEngineCvar("dedicated", "0", 0, nullptr);
-    s.dedicated = static_cast<int>(Buddy_ReadCvarValue(g_cvDedicated, 0.0f));
-    s.cpuopt = CvarI("_sofbuddy_cpuopt", 1);
-    s.tickpace = CvarI("_sofbuddy_tickpace", 1);
-    s.tickpaceSettle = CvarI("_sofbuddy_tickpace_settle", 1);
-    s.spinMs = CvarI("_sofbuddy_tickpace_spin_ms", 0);
-    s.cmdpark = CvarI("_sofbuddy_cmdpark", 1);
-    s.cmdparkStrict = CvarI("_sofbuddy_cmdpark_strict", 1);
-    s.reserveMs = CvarI("_sofbuddy_cmdpark_reserve_ms", 0);
-    s.qpc = CvarI("_sofbuddy_qpc", 1);
-    return s;
+    snapshot.cpu_optimizations_enabled = CvarOn("_sofbuddy_cpuopt", 1);
+    snapshot.tick_pacing_enabled = CvarOn("_sofbuddy_tickpace", 1);
+    snapshot.command_parking_enabled = CvarOn("_sofbuddy_cmdpark", 1);
+    snapshot.command_parking_strict = CvarOn("_sofbuddy_cmdpark_strict", 1);
+    return snapshot;
 }
 
 void UpdateLagCache(int slot1) {
