@@ -15,8 +15,10 @@ is not registered, stock DM would treat unknown commands as **chat** (`Cmd_Say_f
 — that is the “sent as text” behaviour, not a client forward issue.
 
 **+use+score** opens the minigame tab with the lagometer by default (when enabled
-and no other minigame owns that slot). Updates at scoreboard rate
-(`ClientEndServerFrame`, not every server tick). Close tab with **score** alone.
+and no other minigame owns that slot). Refreshes on the same cadence as the stock
+DM scoreboard (`level.framenum & 31` in `ClientEndServerFrame`); between ticks the
+last `svc_layout` stays on screen (no per-frame layout reset). Close tab with
+**score** alone.
 Client `lag` still toggles arm/disarm when you want the HUD off without another
 game running.
 
