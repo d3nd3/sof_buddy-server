@@ -1,49 +1,41 @@
 #pragma once
 
-// Pure lagometer layout (no engine). Unit-testable on Linux.
-
 #include "../minigames_api.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
-constexpr int kLagBarCharacters = 34;
-constexpr int kLagBarFullScaleMilliseconds = 100;  // one server tick budget
+constexpr float kLagTickBudgetMs = 100.0f;
+constexpr int kLagBarCharacters = 40;
 
 struct LagSnapshot {
-    float command_buffer_drain_last_ms = 0.0f;
-    float command_buffer_drain_peak_ms = 0.0f;
-    float tick_late_average_ms = 0.0f;
-    long long timer_clamp_high_count = 0;
-    long long timer_clamp_low_count = 0;
-    int timer_clamp_last_shift_ms = 0;
-    long long timer_clamp_total_lost_ms = 0;
-    int timer_clamp_low_worst_ms = 0;
-    int command_buffer_bytes = 0;
-    int command_buffer_peak_bytes = 0;
-    int command_park_queued_bytes = 0;
-    float slowest_command_ms = 0.0f;
-    bool cpu_optimizations_enabled = true;
-    bool tick_pacing_enabled = true;
-    bool command_parking_enabled = true;
-    bool command_parking_strict = true;
+    float spare_headroom_ms = 100.0f;
 };
 
-inline int LagMillisecondsColor(float milliseconds) {
-    if (milliseconds < 25.0f)
+inline float LagSpareHeadroomMs(float worst_cmd_drain_ms, float worst_tick_svframe_ms) {
+    const float busy = worst_cmd_drain_ms + worst_tick_svframe_ms;
+    float spare = kLagTickBudgetMs - busy;
+    if (spare < 0.0f)
+        spare = 0.0f;
+    if (spare > kLagTickBudgetMs)
+        spare = kLagTickBudgetMs;
+    return spare;
+}
+
+inline int LagHeadroomColor(float spare_ms) {
+    if (spare_ms >= 40.0f)
         return kMgColGreen;
-    if (milliseconds < 60.0f)
+    if (spare_ms >= 15.0f)
         return kMgColYellow;
     return kMgColRed;
 }
 
-inline void LagFormatDrainBar(char* out, int capacity, float milliseconds) {
+inline void LagFormatHeadroomBar(char* out, int capacity, float spare_ms) {
     if (capacity <= 0)
         return;
     int filled = static_cast<int>(
-        std::floor(milliseconds * static_cast<float>(kLagBarCharacters) /
-                   static_cast<float>(kLagBarFullScaleMilliseconds)));
+        std::floor(spare_ms * static_cast<float>(kLagBarCharacters) / kLagTickBudgetMs));
     if (filled < 0)
         filled = 0;
     if (filled > kLagBarCharacters)
@@ -58,80 +50,24 @@ inline void LagFormatDrainBar(char* out, int capacity, float milliseconds) {
 
 inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasClear(canvas);
-    MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasCenter(canvas, 320, 36, "SERVER PERFORMANCE");
-    MgCanvasTc(canvas, kMgColWhite);
+    const float spare = snapshot.spare_headroom_ms;
+    const int color = LagHeadroomColor(spare);
 
-    char line[120];
+    MgCanvasTc(canvas, kMgColYellow);
+    MgCanvasCenter(canvas, 320, 100, "TICK HEADROOM");
+    MgCanvasTc(canvas, color);
+    char value[32];
+    std::snprintf(value, sizeof(value), "%.0f ms", spare);
+    MgCanvasCenter(canvas, 320, 150, value);
+
     char bar[kLagBarCharacters + 4];
-    int y = 68;
+    LagFormatHeadroomBar(bar, sizeof(bar), spare);
+    MgCanvasTc(canvas, color);
+    MgCanvasCenter(canvas, 320, 200, bar);
 
-    std::snprintf(line, sizeof(line), "Last tick spent on commands: %5.1f ms",
-                  snapshot.command_buffer_drain_last_ms);
-    MgCanvasText(canvas, 24, y, line);
-    LagFormatDrainBar(bar, sizeof(bar), snapshot.command_buffer_drain_last_ms);
-    MgCanvasTc(canvas, LagMillisecondsColor(snapshot.command_buffer_drain_last_ms));
-    MgCanvasText(canvas, 200, y, bar);
     MgCanvasTc(canvas, kMgColWhite);
-    y += 24;
-
-    std::snprintf(line, sizeof(line), "Heaviest tick on this map:  %5.1f ms",
-                  snapshot.command_buffer_drain_peak_ms);
-    MgCanvasText(canvas, 24, y, line);
-    y += 24;
-
-    std::snprintf(line, sizeof(line), "Ticks finishing late (average): %.1f ms",
-                  snapshot.tick_late_average_ms);
-    MgCanvasText(canvas, 24, y, line);
-    y += 24;
-
-    std::snprintf(line, sizeof(line), "Clock sped up %lldx  slowed down %lldx",
-                  snapshot.timer_clamp_high_count, snapshot.timer_clamp_low_count);
-    MgCanvasText(canvas, 24, y, line);
-    y += 20;
-    std::snprintf(line, sizeof(line), "Last clock fix %+d ms  (total time lost %lld ms)",
-                  snapshot.timer_clamp_last_shift_ms, snapshot.timer_clamp_total_lost_ms);
-    MgCanvasText(canvas, 24, y, line);
-    y += 20;
-    if (snapshot.timer_clamp_low_worst_ms > 0) {
-        std::snprintf(line, sizeof(line), "Longest slow-down stretch: %d ms",
-                      snapshot.timer_clamp_low_worst_ms);
-        MgCanvasText(canvas, 24, y, line);
-        y += 20;
-    }
-
-    y += 4;
-    std::snprintf(line, sizeof(line), "Console text waiting to run: %d bytes (peak %d)",
-                  snapshot.command_buffer_bytes, snapshot.command_buffer_peak_bytes);
-    MgCanvasText(canvas, 24, y, line);
-    y += 20;
-    if (snapshot.command_park_queued_bytes > 0) {
-        std::snprintf(line, sizeof(line), "Held until a quieter tick: %d bytes",
-                      snapshot.command_park_queued_bytes);
-        MgCanvasText(canvas, 24, y, line);
-        y += 20;
-    }
-    if (snapshot.slowest_command_ms > 0.0f) {
-        std::snprintf(line, sizeof(line), "Slowest command lately: %.2f ms",
-                      snapshot.slowest_command_ms);
-        MgCanvasText(canvas, 24, y, line);
-        y += 20;
-    }
-
-    y += 8;
-    MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasText(canvas, 24, y, "SoF Buddy on this server");
-    MgCanvasTc(canvas, kMgColWhite);
-    y += 20;
-    std::snprintf(
-        line, sizeof(line), "CPU help %s  tick smoothing %s  command guard %s%s",
-        snapshot.cpu_optimizations_enabled ? "on" : "off",
-        snapshot.tick_pacing_enabled ? "on" : "off",
-        snapshot.command_parking_enabled ? "on" : "off",
-        snapshot.command_parking_strict ? " (strict)" : "");
-    MgCanvasText(canvas, 24, y, line);
-
+    MgCanvasCenter(canvas, 320, 248, "worst spare on this map");
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasCenter(canvas, 320, 304, "lag to hide  |  score to close");
+    MgCanvasCenter(canvas, 320, 280, "lag hide  |  score close");
     MgCanvasTc(canvas, kMgColWhite);
 }

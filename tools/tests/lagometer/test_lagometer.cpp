@@ -13,33 +13,35 @@ static int fails = 0;
         }                                    \
     } while (0)
 
-static void test_bar() {
-    char bar[40];
-    LagFormatDrainBar(bar, sizeof(bar), 0.0f);
-    CHECK(std::strcmp(bar, "----------------------------------") == 0, "empty bar");
-    LagFormatDrainBar(bar, sizeof(bar), 100.0f);
-    CHECK(bar[0] == '=' && bar[kLagBarCharacters - 1] == '=' && bar[kLagBarCharacters] == '\0',
-          "full bar");
-    LagFormatDrainBar(bar, sizeof(bar), 250.0f);
-    CHECK(bar[kLagBarCharacters - 1] == '=' && bar[kLagBarCharacters] == '\0', "clamped bar");
+static void test_spare() {
+    CHECK(LagSpareHeadroomMs(0.0f, 0.0f) == 100.0f, "idle spare");
+    CHECK(LagSpareHeadroomMs(30.0f, 20.0f) == 50.0f, "busy spare");
+    CHECK(LagSpareHeadroomMs(80.0f, 50.0f) == 0.0f, "clamped spare");
 }
 
-static void test_render_fits() {
+static void test_bar() {
+    char bar[48];
+    LagFormatHeadroomBar(bar, sizeof(bar), 100.0f);
+    CHECK(bar[0] == '=' && bar[kLagBarCharacters - 1] == '=' && bar[kLagBarCharacters] == '\0',
+          "full bar");
+    LagFormatHeadroomBar(bar, sizeof(bar), 0.0f);
+    CHECK(bar[0] == '-' && bar[kLagBarCharacters - 1] == '-', "empty bar");
+}
+
+static void test_render() {
     LagSnapshot snapshot;
-    snapshot.command_buffer_drain_last_ms = 7.5f;
-    snapshot.command_buffer_drain_peak_ms = 42.0f;
-    snapshot.timer_clamp_high_count = 3;
-    snapshot.command_parking_strict = true;
+    snapshot.spare_headroom_ms = 55.0f;
     MgCanvas c;
     LagRender(snapshot, c);
     CHECK(c.len > 0 && c.len < kMgLayoutCap, "layout fits");
-    CHECK(std::strstr(c.text, "Last tick spent on commands") != nullptr, "drain label");
-    CHECK(std::strstr(c.text, "strict") != nullptr, "strict mode");
+    CHECK(std::strstr(c.text, "TICK HEADROOM") != nullptr, "title");
+    CHECK(std::strstr(c.text, "55 ms") != nullptr, "value");
 }
 
 int main() {
+    test_spare();
     test_bar();
-    test_render_fits();
+    test_render();
     if (fails)
         std::printf("%d test(s) failed\n", fails);
     else
