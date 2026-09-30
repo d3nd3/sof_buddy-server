@@ -8,65 +8,127 @@
 
 constexpr float kLagTickBudgetMs = 100.0f;
 constexpr int kLagBarCharacters = 40;
+constexpr char kLagBarFill = '#';
+constexpr char kLagBarFree = '-';
 
 struct LagSnapshot {
-    float spare_headroom_ms = 100.0f;
+    float game_ms = 0.0f;
+    float cmd_ms = 0.0f;
+    float shell_ms = 0.0f;
+    float spare_ms = 100.0f;
 };
 
-inline float LagSpareHeadroomMs(float worst_tick_busy_ms) {
-    float spare = kLagTickBudgetMs - worst_tick_busy_ms;
-    if (spare < 0.0f)
-        spare = 0.0f;
-    if (spare > kLagTickBudgetMs)
-        spare = kLagTickBudgetMs;
-    return spare;
+inline void LagNormalizeBreakdown(float& game_ms, float& cmd_ms, float& shell_ms, float& spare_ms) {
+    float used = game_ms + cmd_ms + shell_ms;
+    if (used > kLagTickBudgetMs && used > 0.0f) {
+        const float scale = kLagTickBudgetMs / used;
+        game_ms *= scale;
+        cmd_ms *= scale;
+        shell_ms *= scale;
+        used = kLagTickBudgetMs;
+    }
+    spare_ms = kLagTickBudgetMs - used;
+    if (spare_ms < 0.0f)
+        spare_ms = 0.0f;
 }
 
-inline int LagHeadroomColor(float spare_ms) {
-    if (spare_ms >= 40.0f)
-        return kMgColGreen;
-    if (spare_ms >= 15.0f)
-        return kMgColYellow;
-    return kMgColRed;
+inline int LagMsToBarChars(float ms) {
+    if (ms <= 0.0f)
+        return 0;
+    int n = static_cast<int>(std::floor(ms * static_cast<float>(kLagBarCharacters) / kLagTickBudgetMs));
+    if (n < 1 && ms > 0.0f)
+        n = 1;
+    if (n > kLagBarCharacters)
+        n = kLagBarCharacters;
+    return n;
 }
 
-inline void LagFormatHeadroomBar(char* out, int capacity, float spare_ms) {
-    if (capacity <= 0)
+inline void LagFillRun(char* out, int capacity, char ch, int count) {
+    if (capacity <= 0 || count <= 0) {
+        if (capacity > 0)
+            out[0] = '\0';
         return;
-    int filled = static_cast<int>(
-        std::floor(spare_ms * static_cast<float>(kLagBarCharacters) / kLagTickBudgetMs));
-    if (filled < 0)
-        filled = 0;
-    if (filled > kLagBarCharacters)
-        filled = kLagBarCharacters;
-    int i = 0;
-    for (; i < filled && i + 1 < capacity; ++i)
-        out[i] = '=';
-    for (; i < kLagBarCharacters && i + 1 < capacity; ++i)
-        out[i] = '-';
-    out[i] = '\0';
+    }
+    if (count >= capacity)
+        count = capacity - 1;
+    for (int i = 0; i < count; ++i)
+        out[i] = ch;
+    out[count] = '\0';
+}
+
+inline bool LagEmitBarRun(MgCanvas& c, int& x, int y, int tc, char ch, int count) {
+    if (count <= 0)
+        return true;
+    char run[48];
+    LagFillRun(run, sizeof(run), ch, count);
+    if (!MgCanvasTc(c, tc))
+        return false;
+    if (!MgCanvasText(c, x, y, run))
+        return false;
+    x += count * 8;
+    return true;
+}
+
+inline void LagRenderBar(MgCanvas& c, int y, const LagSnapshot& s) {
+    float game = s.game_ms;
+    float cmd = s.cmd_ms;
+    float shell = s.shell_ms;
+    float spare = s.spare_ms;
+    LagNormalizeBreakdown(game, cmd, shell, spare);
+
+    int g = LagMsToBarChars(game);
+    int d = LagMsToBarChars(cmd);
+    int f = LagMsToBarChars(shell);
+    int used = g + d + f;
+    int free = kLagBarCharacters - used;
+    if (free < 0)
+        free = 0;
+
+    int x = 160;
+    LagEmitBarRun(c, x, y, kMgColGreen, kLagBarFill, g);
+    LagEmitBarRun(c, x, y, kMgColYellow, kLagBarFill, d);
+    LagEmitBarRun(c, x, y, kMgColWhite, kLagBarFill, f);
+    LagEmitBarRun(c, x, y, kMgColBlack, kLagBarFree, free);
 }
 
 inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasClear(canvas);
-    const float spare = snapshot.spare_headroom_ms;
-    const int color = LagHeadroomColor(spare);
+    float game = snapshot.game_ms;
+    float cmd = snapshot.cmd_ms;
+    float shell = snapshot.shell_ms;
+    float spare = snapshot.spare_ms;
+    LagNormalizeBreakdown(game, cmd, shell, spare);
 
     MgCanvasTc(canvas, kMgColYellow);
-    MgCanvasCenter(canvas, 320, 100, "TICK HEADROOM");
-    MgCanvasTc(canvas, color);
-    char value[32];
-    std::snprintf(value, sizeof(value), "%.0f ms", spare);
-    MgCanvasCenter(canvas, 320, 150, value);
+    MgCanvasCenter(canvas, 320, 88, "TICK BUDGET (100 ms)");
 
-    char bar[kLagBarCharacters + 4];
-    LagFormatHeadroomBar(bar, sizeof(bar), spare);
-    MgCanvasTc(canvas, color);
-    MgCanvasCenter(canvas, 320, 200, bar);
+    LagRenderBar(canvas, 168, snapshot);
+
+    char line[64];
+    std::snprintf(line, sizeof(line), "%.0f ms free", spare);
+    MgCanvasTc(canvas, spare >= 15.0f ? kMgColGreen : (spare >= 5.0f ? kMgColYellow : kMgColRed));
+    MgCanvasCenter(canvas, 320, 196, line);
 
     MgCanvasTc(canvas, kMgColWhite);
-    MgCanvasCenter(canvas, 320, 248, "worst spare on this map");
+    MgCanvasCenter(canvas, 320, 228, "worst tick on this map");
+
+    std::snprintf(line, sizeof(line), "G %.0f  Cmd %.0f  Frame %.0f", game, cmd, shell);
+    MgCanvasCenter(canvas, 320, 252, line);
+
+    int lx = 120;
+    int ly = 276;
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasCenter(canvas, 320, 280, "score cycles  |  +use+score normal");
+    MgCanvasText(canvas, lx, ly, "Game");
+    lx += 56;
+    MgCanvasTc(canvas, kMgColYellow);
+    MgCanvasText(canvas, lx, ly, "Cmd");
+    lx += 48;
     MgCanvasTc(canvas, kMgColWhite);
+    MgCanvasText(canvas, lx, ly, "Frame");
+    lx += 56;
+    MgCanvasTc(canvas, kMgColBlack);
+    MgCanvasText(canvas, lx, ly, "Free");
+
+    MgCanvasTc(canvas, kMgColGreen);
+    MgCanvasCenter(canvas, 320, 304, "score cycles  |  +use+score normal");
 }

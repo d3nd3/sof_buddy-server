@@ -1,4 +1,4 @@
-// lagometer: spare tick headroom HUD on the minigames layout tab.
+// lagometer: tick budget breakdown HUD on the minigames layout tab.
 
 #include "cvar.h"
 #include "lagometer.h"
@@ -8,6 +8,7 @@
 #include "log.h"
 #include "../minigames_api.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,14 +16,21 @@
 
 constexpr unsigned kRvaSvTime = 0x3A1F28;
 
+struct LagWorstTick {
+    float game_ms = 0.0f;
+    float cmd_ms = 0.0f;
+    float shell_ms = 0.0f;
+    float used_ms = 0.0f;
+};
+
 struct LagometerTrack {
     char map_id[64] = {};
-    float worst_tick_busy_ms = 0.0f;
-    int settle_ticks_skip = 0;
+    LagWorstTick worst = {};
+    float pending_game_ms = 0.0f;
+    float pending_cmd_ms = 0.0f;
     std::uint32_t sv_time_at_pre = 0;
-    double sv_frame_start_ms = 0.0;
+    double tick_frame_start_ms = 0.0;
     LARGE_INTEGER qpc_freq = {};
-    LARGE_INTEGER qpc_start = {};
     bool clock_ok = false;
 };
 
@@ -46,8 +54,7 @@ static volatile std::uint32_t* SvTime() {
 static void InitClock() {
     if (g_track.clock_ok)
         return;
-    if (QueryPerformanceFrequency(&g_track.qpc_freq) && g_track.qpc_freq.QuadPart > 0 &&
-        QueryPerformanceCounter(&g_track.qpc_start)) {
+    if (QueryPerformanceFrequency(&g_track.qpc_freq) && g_track.qpc_freq.QuadPart > 0) {
         g_track.clock_ok = true;
     }
 }
@@ -56,14 +63,14 @@ static double NowMs() {
     LARGE_INTEGER now = {};
     if (!g_track.clock_ok || !QueryPerformanceCounter(&now))
         return 0.0;
-    const double scale =
-        1000.0 / static_cast<double>(g_track.qpc_freq.QuadPart);
-    return static_cast<double>(now.QuadPart) * scale;
+    return static_cast<double>(now.QuadPart) * 1000.0 /
+           static_cast<double>(g_track.qpc_freq.QuadPart);
 }
 
 static void ResetMapPeaks() {
-    g_track.worst_tick_busy_ms = 0.0f;
-    g_track.settle_ticks_skip = 2;
+    g_track.worst = LagWorstTick{};
+    g_track.pending_game_ms = 0.0f;
+    g_track.pending_cmd_ms = 0.0f;
 }
 
 static void SyncMap() {
@@ -77,10 +84,33 @@ static void SyncMap() {
     ResetMapPeaks();
 }
 
+static void CommitTickSample(float game_ms, float cmd_ms, float shell_ms) {
+    float g = std::max(0.0f, game_ms);
+    float d = std::max(0.0f, cmd_ms);
+    float f = std::max(0.0f, shell_ms);
+    float used = g + d + f;
+    if (used > kLagTickBudgetMs && used > 0.0f) {
+        const float scale = kLagTickBudgetMs / used;
+        g *= scale;
+        d *= scale;
+        f *= scale;
+        used = kLagTickBudgetMs;
+    }
+    if (used <= g_track.worst.used_ms)
+        return;
+    g_track.worst.game_ms = g;
+    g_track.worst.cmd_ms = d;
+    g_track.worst.shell_ms = f;
+    g_track.worst.used_ms = used;
+}
+
 LagSnapshot ReadSnapshot() {
     SyncMap();
     LagSnapshot snapshot;
-    snapshot.spare_headroom_ms = LagSpareHeadroomMs(g_track.worst_tick_busy_ms);
+    snapshot.game_ms = g_track.worst.game_ms;
+    snapshot.cmd_ms = g_track.worst.cmd_ms;
+    snapshot.shell_ms = g_track.worst.shell_ms;
+    LagNormalizeBreakdown(snapshot.game_ms, snapshot.cmd_ms, snapshot.shell_ms, snapshot.spare_ms);
     return snapshot;
 }
 
@@ -185,6 +215,19 @@ void lag_OnGameDllLoaded(void* gameExport) {
     g_track = LagometerTrack{};
 }
 
+void lag_NoteGameFrameWallMs(float wall_ms) {
+    if (!Lag_Enabled() || wall_ms < 0.0f)
+        return;
+    SyncMap();
+    g_track.pending_game_ms = wall_ms;
+}
+
+void lag_NoteTickCmdDrain(float cmd_ms) {
+    if (!Lag_Enabled() || cmd_ms < 0.0f)
+        return;
+    g_track.pending_cmd_ms = cmd_ms;
+}
+
 void lag_SvFramePre(int& msec) {
     (void)msec;
     if (!Lag_Enabled())
@@ -194,7 +237,7 @@ void lag_SvFramePre(int& msec) {
     volatile std::uint32_t* sv_time = SvTime();
     if (sv_time)
         g_track.sv_time_at_pre = *sv_time;
-    g_track.sv_frame_start_ms = NowMs();
+    g_track.tick_frame_start_ms = NowMs();
 }
 
 void lag_SvFramePost(int msec) {
@@ -204,14 +247,16 @@ void lag_SvFramePost(int msec) {
     volatile std::uint32_t* sv_time = SvTime();
     if (!sv_time || *sv_time == g_track.sv_time_at_pre)
         return;
-    if (g_track.settle_ticks_skip > 0) {
-        --g_track.settle_ticks_skip;
-        return;
-    }
 
-    const float frame_ms = static_cast<float>(NowMs() - g_track.sv_frame_start_ms);
-    if (frame_ms > g_track.worst_tick_busy_ms)
-        g_track.worst_tick_busy_ms = frame_ms;
+    const float frame_ms = static_cast<float>(NowMs() - g_track.tick_frame_start_ms);
+    const float game = g_track.pending_game_ms;
+    const float cmd = g_track.pending_cmd_ms;
+    float shell = frame_ms - game - cmd;
+    if (shell < 0.0f)
+        shell = 0.0f;
+    CommitTickSample(game, cmd, shell);
+    g_track.pending_game_ms = 0.0f;
+    g_track.pending_cmd_ms = 0.0f;
 }
 
 void lag_MaintainForSlot(int slot1) {

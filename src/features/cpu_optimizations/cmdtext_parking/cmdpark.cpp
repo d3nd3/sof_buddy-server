@@ -5,6 +5,9 @@
 
 #include "cvar.h"
 #include "cmdpark.h"
+#ifdef SOF_FEATURE_MINIGAMES
+#include "../../minigames/lagometer/lagometer.h"
+#endif
 #include "engine.h"
 #include "../cpuopt.h"
 
@@ -409,6 +412,7 @@ void cmdpark_SvFramePost(int msec) {
         return;
     NoteFill();
     const bool ticked = g.measuring && *Engine().svTime != g.svTimeAtPre;
+    float cmd_drain_ms = 0.0f;
     if (ticked && HoldArmed()) {
     // Post-tick processing slot: the boundary just passed, so this is the
     // max-headroom moment. Drip one parked chunk and run whatever is
@@ -423,10 +427,15 @@ void cmdpark_SvFramePost(int msec) {
             if (exec)
                 RunDrain(exec);
         }
+        cmd_drain_ms = static_cast<float>(g.cbufLastMs);
     }
-    if (ticked)
+    if (ticked) {
+#ifdef SOF_FEATURE_MINIGAMES
+        lag_NoteTickCmdDrain(cmd_drain_ms);
+#endif
         SetOutputs(static_cast<float>(g.cbufLastMs), static_cast<float>(g.cbufMaxMs),
                    g.defers, CmdTextBytes(), g.fillMax);
+    }
     g.measuring = false;
 }
 

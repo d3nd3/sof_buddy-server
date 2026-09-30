@@ -3,12 +3,12 @@
     "function": "SV_Frame",
     "callback": "lag_SvFramePre",
     "phase": "Pre",
-    "priority": 1
+    "priority": 2
   },
   {
     "function": "SV_Frame",
     "callback": "lag_SvFramePost",
     "phase": "Post",
-    "priority": 50
+    "priority": 52
   }
 ]

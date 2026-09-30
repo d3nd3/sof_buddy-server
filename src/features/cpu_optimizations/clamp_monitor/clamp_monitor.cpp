@@ -14,6 +14,9 @@
 
 #include "cvar.h"
 #include "../cpuopt.h"
+#ifdef SOF_FEATURE_MINIGAMES
+#include "../../minigames/lagometer/lagometer.h"
+#endif
 #include "../qpc_timer/cvar.h"
 #include "../tick_pacing/cvar.h"
 #include "buddy_import.h"
@@ -417,6 +420,15 @@ void clampmon_SvFramePre(int& msec) {
 }
 
 float clampmon_RunFrame(int serverframe, detour_G_RunFrame::tG_RunFrame original) {
+    LARGE_INTEGER t0 = {};
+    LARGE_INTEGER t1 = {};
+    static LARGE_INTEGER qpc_freq = {};
+    static bool qpc_ok = false;
+    if (!qpc_ok)
+        qpc_ok = QueryPerformanceFrequency(&qpc_freq) && qpc_freq.QuadPart > 0;
+    if (qpc_ok)
+        QueryPerformanceCounter(&t0);
+
     const float result = original ? original(serverframe) : 0.0f;
 
     if (!EngineGlobalsReady())
@@ -433,6 +445,16 @@ float clampmon_RunFrame(int serverframe, detour_G_RunFrame::tG_RunFrame original
 
     if (!IsRealTick(s, serverframe, svstate))
         return result;
+
+#ifdef SOF_FEATURE_MINIGAMES
+    if (qpc_ok) {
+        QueryPerformanceCounter(&t1);
+        const float wall_ms = static_cast<float>(
+            (t1.QuadPart - t0.QuadPart) * 1000.0 /
+            static_cast<double>(qpc_freq.QuadPart));
+        lag_NoteGameFrameWallMs(wall_ms);
+    }
+#endif
 
     s.lastTickWall = GetTickCount();
     s.lastTickFramenum = serverframe;
