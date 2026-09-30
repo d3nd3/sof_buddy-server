@@ -689,12 +689,16 @@ void __cdecl HkCmd_Score_f(void* ent) {
                 ApplyView(ent, slot, MgView::StockScoreboard);
                 return;
             }
-            if (g_page[slot] == MgView::Minigame) {
-                ApplyView(ent, slot, MgView::Off);
+            if (ClientUseHeld(ent)) {
+                if (g_page[slot] == MgView::Minigame)
+                    ApplyView(ent, slot, MgView::Off);
+                else
+                    ApplyView(ent, slot, MgView::Minigame);
                 return;
             }
-            if (ClientUseHeld(ent)) {
-                ApplyView(ent, slot, MgView::Minigame);
+            if (g_page[slot] == MgView::Minigame) {
+                if (auto original = reinterpret_cast<cmd_score_fn>(g_scoreTrampoline))
+                    original(ent);
                 return;
             }
         }

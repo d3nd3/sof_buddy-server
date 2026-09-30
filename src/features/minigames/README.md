@@ -13,8 +13,8 @@ tricky pieces:
 3. **Visibility** — re-asserts `ps.stats[STAT_LAYOUTS]` every server frame
    for visible slots, because stock `G_SetStats` rewrites stats each frame.
 4. **Minigame view** — hooks stock `cmd_score_f` @ `0xF6710`: **+use + score**
-   opens the minigame layout (idle banner or active board); **score alone**
-   closes it when open. Score without use falls through to stock DM scoreboard
+   toggles the minigame layout on/off (stays on until toggled again). **Score
+   alone** does not close minigame view; without use it is stock DM scoreboard
    toggle. Death/intermission still force the vanilla scoreboard layout.
 
 ## Writing a new game (chess, ...)
@@ -99,8 +99,9 @@ When the buddy minigames platform is enabled, **`cmd_score_f` is detoured**:
 
 | Input | Minigame open? | Result |
 |-------|----------------|--------|
-| **Score only** | Yes | Close minigame view (normal HUD) |
-| **+use + score** | No | Open minigame view (board or idle banner) |
+| **+use + score** | No | Open minigame view (latched) |
+| **+use + score** | Yes | Close minigame view |
+| **Score only** | Yes | Stock `score` (minigame stays latched) |
 | **Score only** | No | Stock DM scoreboard toggle (vanilla) |
 
 Starting a game (`MgShowLayout(..., true)`) opens the minigame view directly.
