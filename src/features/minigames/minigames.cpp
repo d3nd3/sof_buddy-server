@@ -57,6 +57,8 @@ constexpr unsigned kRvaDeathmatchClass = 0x15C4D8;
 constexpr unsigned kRvaCmdScoreF = 0xF6710;  // cmd_score_f @ gamex86+
 constexpr unsigned kRvaDmctfScoreboard = 0x71D70;  // dmctf_c::clientScoreboardMessage
 constexpr unsigned kRvaLevelIntermissiontime = 0x15D1C8;  // level.intermissiontime @ G_SetStats
+constexpr unsigned kRvaLevelFramenum = 0x15CCD8;          // level.framenum (p_view scoreboard cadence)
+constexpr int kLayoutRefreshMask = 31;                    // !(framenum & 31) — stock dm scoreboard
 constexpr int kPmDead = 3;                               // pmtype_t PM_DEAD
 constexpr unsigned kClientPmTypeOfs = 0;                 // gclient.ps.pmove.pm_type
 constexpr unsigned kClientPersHealthOfs = 0x2FC;         // gclient.pers.health @ G_SetStats+764
@@ -96,6 +98,7 @@ char g_runningSession[kMgGameIdLen] = {};
 enum class MgView : unsigned char { Off = 0, Minigame = 1, StockScoreboard = 2 };
 MgView g_page[kMgMaxSlots + 1] = {};
 bool g_layoutDirty[kMgMaxSlots + 1] = {};
+bool g_layoutPrimed[kMgMaxSlots + 1] = {};
 int g_clientCmdArgvBase = 0;
 char g_ctfSbHintLayout[kMgLayoutCap] = {};
 bool g_sobuddySpReady = false;
@@ -256,13 +259,23 @@ void SuppressStockLayoutRefresh(void* client) {
         *reinterpret_cast<float*>(static_cast<char*>(client) + kClientShowhelpTimeOfs) = 0.0f;
 }
 
-void PushLayoutPayload(void* ent, const char* layout);
+void PushLayoutPayload(void* ent, const char* layout, bool reset);
 void UnicastLayout(void* ent, const char* layout);
+
+bool MgMinigameLayoutRefreshDue() {
+    HMODULE h = GameMod();
+    if (!h || !IsValidModuleRva(h, kRvaLevelFramenum, sizeof(int)))
+        return true;
+    const int fn = *reinterpret_cast<int*>(reinterpret_cast<char*>(h) + kRvaLevelFramenum);
+    return (fn & kLayoutRefreshMask) == 0;
+}
 
 void SendMinigameLayout(void* ent, int slot, const char* layout) {
     if (!ent || slot < 1 || !layout || !layout[0])
         return;
-    PushLayoutPayload(ent, layout);
+    const bool reset = !g_layoutPrimed[slot];
+    PushLayoutPayload(ent, layout, reset);
+    g_layoutPrimed[slot] = true;
     g_layoutDirty[slot] = false;
 }
 
@@ -558,6 +571,7 @@ void ClearDisplayOwner(int slot) {
     if (slot < 1 || slot > kMgMaxSlots)
         return;
     g_displayOwner[slot][0] = '\0';
+    g_layoutPrimed[slot] = false;
 }
 
 int OwnerCountFor(const char* gameId) {
@@ -640,10 +654,11 @@ void ApplyView(void* ent, int slot, MgView view) {
     switch (view) {
     case MgView::Off:
         g_visible[slot] = false;
+        g_layoutPrimed[slot] = false;
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, false);
-        PushLayoutPayload(ent, "");
+        PushLayoutPayload(ent, "", true);
         break;
     case MgView::StockScoreboard:
         if (Readable(static_cast<char*>(client) + kClientShowinventoryOfs, sizeof(int)))
@@ -696,12 +711,13 @@ void UnicastLayout(void* ent, const char* layout) {
     Buddy_Unicast(ent, 1);
 }
 
-void PushLayoutPayload(void* ent, const char* layout) {
+void PushLayoutPayload(void* ent, const char* layout, bool reset) {
     if (!ent || !Buddy_GetGameImport())
         return;
-    // Stock scoreboard path (dm.cpp): SP_Print(LAYOUT_RESET) then layout tokens.
-    Buddy_SP_Print(ent, kDmLayoutReset);
-    UnicastLayout(ent, layout);
+    if (reset)
+        Buddy_SP_Print(ent, kDmLayoutReset);
+    if (layout && layout[0])
+        UnicastLayout(ent, layout);
 }
 
 bool StockWouldSayAsChat(const char* cmd) {
@@ -1168,7 +1184,7 @@ void MgPushLayout(int slot1, const char* gameId, const MgCanvas& canvas) {
     else if (g_visible[slot1] && g_page[slot1] == MgView::Off)
         ApplyView(ent, slot1, MgView::Minigame);
     else if (!g_visible[slot1])
-        PushLayoutPayload(ent, layout);
+        PushLayoutPayload(ent, layout, !g_layoutPrimed[slot1]);
 }
 
 void MgClearLayout(int slot1, const char* gameId) {
@@ -1594,10 +1610,12 @@ void MaintainLayoutClient(void* ent, int slot) {
         if (void* client = ClientForEnt(ent))
             SuppressStockLayoutRefresh(client);
         ApplyLayoutClient(ent, true);
-        lag_MaintainForSlot(slot);
-        const char* layout = MinigameLayoutForSlot(slot);
-        if (layout[0])
-            SendMinigameLayout(ent, slot, layout);
+        if (MgMinigameLayoutRefreshDue()) {
+            lag_MaintainForSlot(slot);
+            const char* layout = MinigameLayoutForSlot(slot);
+            if (layout[0])
+                SendMinigameLayout(ent, slot, layout);
+        }
     }
 }
 
@@ -1702,6 +1720,8 @@ extern "C" void Minigames_Shutdown() {
         row[0] = '\0';
     for (bool& d : g_layoutDirty)
         d = false;
+    for (bool& p : g_layoutPrimed)
+        p = false;
     for (MgView& p : g_page)
         p = MgView::Off;
     for (char* row : g_displayOwner)
