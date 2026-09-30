@@ -68,7 +68,6 @@ inline const char* LagOnOff(int v) { return v ? "ON" : "off"; }
 
 inline void LagRender(const LagSnapshot& s, MgCanvas& c) {
     MgCanvasClear(c);
-    MgCanvasPic(c, 0, 0, kMgSbMgBg);
     MgCanvasTc(c, kMgColYellow);
     MgCanvasCenter(c, 320, 36, "SERVER LAGOMETER");
     MgCanvasTc(c, kMgColWhite);

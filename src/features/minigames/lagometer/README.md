@@ -19,4 +19,6 @@ Close with `lag` again, **score** alone, or **+use+score**.
 `_sofbuddy_lagometer_enable` (default `1`) gates registration. Requires
 `_sofbuddy_minigames_enable 1`.
 
+Text-only layout (no `sb/mg/*` sprites or ghoul downloads).
+
 Tests: `tools/tests/lagometer/run.sh`
