@@ -296,8 +296,10 @@ int main() {
     {
         const std::uint8_t name[] = {0x0C, 1, 0, 'h', 'i', 0};
         CHECK(RelDef_LastCompleteEnd(name, 6) == 6);
-        const std::uint8_t cfg[] = {0x0F, 0, 0, 'a', 0};
-        CHECK(RelDef_LastCompleteEnd(cfg, 5) == 5);
+        const std::uint8_t cfgInline[] = {0x0F, 0, 0, 0, 0};
+        CHECK(RelDef_LastCompleteEnd(cfgInline, 5) == 5);
+        const std::uint8_t cfgRaw[] = {0x0F, 0, 0, 0xFF, 0xFF, 'a', 0};
+        CHECK(RelDef_LastCompleteEnd(cfgRaw, 7) == 7);
         const std::uint8_t orphan[] = {0x0D, 'a', 'b', 0, 0x0D};
         CHECK(RelDef_LastCompleteEnd(orphan, 5) == 4);
         const std::uint8_t layout[] = {0x02, 'x', 0, 0x11, 'y', 0};
