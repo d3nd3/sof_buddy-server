@@ -92,7 +92,7 @@ often share one parcel; a parcel is not one message.
 | `0x23` | `svc_removeconfigstring` | "Forget world setting N." | Tiny; sails through, or queues whole. |
 | `0x10` | `svc_spawnbaseline` | The starting state of one entity (so the client can predict it). | **Partly visible:** the defer sees the label byte, but the entity body is written straight into the mailbox by a writer the hooks cannot see — so the body always goes through immediately. In practice baselines flow during the join (bypassed anyway). |
 | `0x13` | `svc_download` | A chunk of a downloading file (a short header + raw bytes). | **Bypasses the defer entirely** (see below) — downloads are lockstep request→chunk→request and the payload is binary. |
-| `0x1A` | `svc_ghoulreliable` | Ghoul data that must arrive. Wire: opcode, a short byte-count, then that many bytes. `SV_SendClientDatagram` writes the opcode with `MSG_WriteByte`, then the count and the bytes with `SZ_GetSpace` into the same mailbox. | **Written through.** The opcode is not captured. Holding it would send a header whose body stayed behind, and the client dies with `Ghoul :StringTable underflowed`. When the whole message later sits in a parcel, the cutter skips the counted bytes, including a `0x0B` or NUL inside them. |
+| `0x1A` | `svc_ghoulreliable` | Ghoul data that must arrive. Wire: opcode, a short byte-count, then that many bytes. `SV_SendClientDatagram` writes the opcode with `MSG_WriteByte`, then the count and the bytes with `SZ_GetSpace` into the same mailbox. | **Written through at a verified message boundary.** The opcode is not captured. Holding it would send a header whose body stayed behind, and the client dies with `Ghoul :StringTable underflowed`. When the whole message later sits in a parcel, the cutter skips the counted bytes, including a `0x0B` or NUL inside them. |
 | `0x06` | `svc_equip` | Equipment. Wire, when the sub-byte is `1`: three count bytes, each followed by that many (string + long) pairs. Other sub-bytes are just opcode + that one byte. | Parsed (`RelDef_EquipEnd`, IDA `sub_20001FD0`). `MSG_WriteLong` still joins an in-flight capture mid-equip. |
 | `0x1C` | `svc_ric` | Remote inventory commands: a count, then that many records. Types 0–4 carry one sized argument (1–4 bytes); type 5 and unknown types carry none. | Parsed. The cut is the count, so a `0x0B` or NUL inside an argument stays in the record. |
 | `0x1D` | `svc_restart_predn` | Restart prediction (one byte). | Tiny; sails through. |
@@ -108,12 +108,14 @@ often share one parcel; a parcel is not one message.
 | `0x08` | `svc_disconnect` | "You are disconnected." | Passes through immediately. |
 | `0x09` | `svc_reconnect` | "Please reconnect." | Passes through immediately. |
 
-## Packets the defer never touches
+## Packets normally outside the defer lane
 
-These travel with the **per-frame snapshot** (the newspaper, not registered
-mail), or only exist while joining. The hooks watch one mailbox
-(`client->netchan.message`) and ignore every other buffer, so these pass by
-exactly as stock sends them:
+These normally travel with the **per-frame snapshot** (the newspaper, not
+registered mail), or only exist while joining. The hooks watch one mailbox
+(`client->netchan.message`) and ignore every other buffer, so snapshot copies
+pass by exactly as stock sends them. If a reliable multicast path writes one
+as a complete `SZ_Write`, it is preserved as an opaque whole blob rather than
+cut by the reliable parser.
 
 | # | Packet | What it is |
 |---|--------|------------|
@@ -135,8 +137,8 @@ session).
 
 One honest footnote: the hooks decide by *mailbox*, not by *packet type*.
 If a mod routes one of the snapshot packets through the reliable mailbox,
-it gets the same fair treatment as everything else (small → now, big or
-busy → whole parcels, in order). `svc_spawnbaseline` writes most of its
+it gets FIFO treatment; a complete opaque `SZ_Write` is kept whole instead of
+being scanned. `svc_spawnbaseline` writes most of its
 bytes through a back door (`SZ_GetSpace` / delta writers) the hooks cannot
 intercept, and it only happens during join, which is passed through anyway.
 `svc_ghoulreliable` uses that same back door for its body, so its opcode is
@@ -173,7 +175,7 @@ The checkpoint, in order (first match wins):
 | 5 | `_sofbuddy_reldef_one_per_tick` is `1` | **Hold** | Only matters if you turned that setting on (don't). It means "wrap every delivery as a parcel first, no matter how tiny." Default **off** — leave it off. |
 | 6 | The mailbox is nearly full (`cursize + length > msgMaxsize − reserve`) | **Hold** | Keep headroom for the engine's other writers (ghoul, configstrings) so the mailbox never bursts (burst = player kicked). |
 | 7 | Already holding 32 parcels for this player | **Throw away** | Memory safety cap; dropping beats growing forever. |
-| 8 | Already holding 256 KiB for this player | **Throw away** | Same, in bytes (oldest parcel is evicted once first to make room). |
+| 8 | Already holding 256 KiB for this player | **Throw away** | Same, in bytes; new mail is rejected while older parcels stay FIFO. |
 | 9 | None of the above | **Deliver now** | Lane open, queue empty, room to spare — behave exactly like stock. |
 
 (`msgMaxsize` and the reserves come from the engine's `buffersize`; see
@@ -203,7 +205,9 @@ The checkpoint, in order (first match wins):
   with an opcode is shipped with the parcel, even if that message is not
   finished yet. An orphan string (`MSG_WriteString` while staging already
   ends on a complete message, and the capture is empty) is dropped instead
-  of being appended after the layout.
+  of being appended after the layout. Opaque frame/effect packets received
+  as one `SZ_Write` are queued as raw whole blobs; the cutter never guesses
+  their body length.
 
 **Delivery day** is the send tick, per player, after that frame's game
 writes have already landed:
@@ -298,7 +302,9 @@ drip  <=>  reliable_length == 0
   silence, then the fat blob ships (one skipped frame) and the line drains.
 - Untouched paths: connect handshake (rule 0 bypasses before any of this),
   `one_per_tick` classification, and the unreliable lane. `frame_first`
-  only narrows the drip gate; it never reorders, splits, or drops.
+  only narrows the drip gate; when a fat blob is held, the snapshot may be
+  sent with current reliable staging temporarily removed and restored after
+  transmit. It never reorders, splits, or drops reliable mail.
 - Numeric example (MP, `maxDripBytes` 692): 259 B prints drip freely, several
   per tick; a 1002 B print waits up to 10 ticks for a roomy moment, then
   ships whole.
@@ -389,7 +395,7 @@ Per-player mailbox layout:
 
 | Setting | Default | What it does, simply |
 |---------|---------|----------------------|
-| `_sofbuddy_reldef` | `1` | Master switch. `0` = post office closed, stock behaviour. |
+| `_sofbuddy_reldef` | `1` | Master switch. `0` = drain queued mail in FIFO order, then return to stock behaviour. |
 | `_sofbuddy_reldef_reserve` | `256` | Mailbox headroom: how much space to always keep free. Raised automatically to `msgMaxsize/8` when that is bigger. |
 | `_sofbuddy_reldef_frame_reserve` | `0` | How much van space to save for the newspaper; `0` = half the packet. |
 | `_sofbuddy_reldef_one_per_tick` | `0` | **Leave this off.** Normally, small deliveries go straight to the mailbox with no waiting. Turning this on forces *every single delivery* — even a 1-byte hello — into a parcel first, one at a time. That slows everything down and used to scramble multi-part messages (a print's label arriving without its text). It exists only for diagnosing weird cases; it makes normal servers worse, not better. |
@@ -447,9 +453,10 @@ by an unrelated long.
 
 **`Netchan_Transmit` (ordering guard).** Retail writes `svc_ghoulreliable`
 directly into the mailbox through `SZ_GetSpace`, after this feature's pre-send
-drip. If an older parcel is still held by `frame_first`, the send hook gives
-that parcel the reliable slot first and carries the direct bytes to the next
-reliable transmission.
+drip. If an older parcel can be sent, the send hook gives it the reliable slot
+first and carries the direct bytes to the next reliable transmission. If
+`frame_first` holds that parcel, it sends the snapshot without those bytes and
+restores them afterward.
 
 **Strings (`RelDef_CStrEnd`).** Matches `MSG_ReadString` @ `0x2001E3B0`: a
 C string ends on `0x00` or `0xFF`. Counted payloads (`0x24` / `0x25` /
@@ -458,7 +465,9 @@ C string ends on `0x00` or `0xFF`. Counted payloads (`0x24` / `0x25` /
 **Seal (`RelDef_SealEnd`).** A tail that starts with opcode `0x01`–`0x28`
 is kept only when `RelDef_MsgEnd` can finish that message inside the
 buffer. Otherwise the seal stops at the last complete message and drops
-the orphan header (avoids `svc_bad` from a header-only parcel).
+the orphan header (avoids `svc_bad` from a header-only parcel). Known opaque
+frame/effect packets avoid this cutter only when supplied as a complete
+`SZ_Write`; their raw body is never guessed.
 
 ### Lockstep bypass: `svc_download` only
 
@@ -476,11 +485,12 @@ the counted payload whole (including embedded `0x0B`, `0xFF`, or NUL).
 
 ## What still bites
 
-1. **Frame-lane opcodes in reliable mail.** `svc_temp_entity` (`0x01`), `svc_effect`
+1. **Opaque frame-lane writes.** `svc_temp_entity` (`0x01`), `svc_effect`
    (`0x05`), `svc_playerinfo` / `svc_packetentities` / `svc_deltapacketentities`
-   (`0x14`–`0x16`), and `svc_frame` (`0x17`) are not modeled for cutting (client
-   errors or unbounded). The cutter stops at the prior complete message. Everything
-   else in `0x02`–`0x28` is walked in `reliable_defer_wire.h` from retail
+   (`0x14`–`0x16`), and `svc_frame` (`0x17`) are not modeled for cutting.
+   Complete `SZ_Write` packets are queued raw; manually split writes remain
+   unsupported and are rejected rather than guessed. Everything else in
+   `0x02`–`0x28` is walked in `reliable_defer_wire.h` from retail
    `CL_ParseServerMessage` @ `0x2000ee30` (IDA).
 
 2. **No in-process test of `HandleMessageWrite` / `DripSlot`.** `run.sh`

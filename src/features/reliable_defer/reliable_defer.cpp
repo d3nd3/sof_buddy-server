@@ -31,6 +31,7 @@ struct SlotQueue {
 struct State {
     bool ready = false;
     bool enabled = true;
+    bool disabling = false;
     int maxClients = 8;
     RelDefPolicy policy;
     RelDefLimits limits;
@@ -77,14 +78,23 @@ int CaptureMax() {
     return g.limits.msgMaxsize > 0 ? g.limits.msgMaxsize : 1384;
 }
 
-void DropPending();
+void PreserveCapture();
+bool PendingEmpty();
 
 void RefreshCache() {
     void* cv = Buddy_GetEngineCvar("_sofbuddy_reldef", "1", 1, nullptr);
-    const bool enabled = Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
-    if (g.ready && g.enabled && !enabled)
-        DropPending();
-    g.enabled = enabled;
+    const bool requested = Buddy_ReadCvarValue(cv, 1.0f) != 0.0f;
+    if (requested) {
+        g.disabling = false;
+        g.enabled = true;
+    } else if (g.ready && (g.enabled || g.disabling)) {
+        if (!g.disabling)
+            PreserveCapture();
+        g.disabling = true;
+        g.enabled = true;  // drain in order before switching off
+    } else {
+        g.enabled = false;
+    }
     g.policy = RelDef_ReadPolicy();
     g.limits = RelDef_ComputeLimits(EngineBuffersize(), g.policy);
     void* mcv = Buddy_GetEngineCvar("maxclients", "8", 0, nullptr);
@@ -107,13 +117,26 @@ char* ClientBase(int slot1) {
     return g.clientsBase + static_cast<unsigned>(slot1 - 1) * kClientStride;
 }
 
-int SlotFromMessage(void* sb) {
-    if (!sb)
+int SlotFromPointer(void* ptr, unsigned offset) {
+    if (!ptr || !g.clientsBase)
         return -1;
-    for (int slot = 1; slot <= g.maxClients; ++slot)
-        if (g.msgSb[slot - 1] == sb)
-            return slot;
-    return -1;
+    const std::uintptr_t base =
+        reinterpret_cast<std::uintptr_t>(g.clientsBase) + offset;
+    const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(ptr);
+    if (value < base)
+        return -1;
+    const std::uintptr_t delta = value - base;
+    if (delta % kClientStride)
+        return -1;
+    const int slot = static_cast<int>(delta / kClientStride) + 1;
+    return slot >= 1 && slot <= g.maxClients &&
+                   g.msgSb[slot - 1] == ptr
+               ? slot
+               : -1;
+}
+
+int SlotFromMessage(void* sb) {
+    return SlotFromPointer(sb, kClientMessageOfs);
 }
 
 int ReadInt(const char* base, unsigned ofs) {
@@ -125,25 +148,19 @@ int EngineFramenum() {
     return p ? *p : 0;
 }
 
-bool QueuePush(int slot1, const void* data, int len) {
+bool QueuePush(int slot1, const void* data, int len, bool bounded = true) {
     if (slot1 < 1 || slot1 > kMaxSlots || len <= 0 || !data)
         return false;
     SlotQueue& q = g.slot[slot1 - 1];
-    if (g.policy.maxQueue > 0 && static_cast<int>(q.blobs.size()) >= g.policy.maxQueue) {
+    if (bounded && g.policy.maxQueue > 0 &&
+        static_cast<int>(q.blobs.size()) >= g.policy.maxQueue) {
         ++g.dropped;
         return false;
     }
-    if (g.policy.maxQueueBytes > 0 && q.bytes + len > g.policy.maxQueueBytes) {
-        if (!q.blobs.empty()) {
-            q.bytes -= static_cast<int>(q.blobs.front().size());
-            q.blobs.pop_front();
-            q.enqueued.pop_front();
-            ++g.dropped;
-        }
-        if (q.bytes + len > g.policy.maxQueueBytes) {
-            ++g.dropped;
-            return false;
-        }
+    if (bounded && g.policy.maxQueueBytes > 0 &&
+        q.bytes + len > g.policy.maxQueueBytes) {
+        ++g.dropped;
+        return false;
     }
     std::vector<std::uint8_t> blob(static_cast<std::size_t>(len));
     std::memcpy(blob.data(), data, static_cast<std::size_t>(len));
@@ -152,6 +169,10 @@ bool QueuePush(int slot1, const void* data, int len) {
     q.enqueued.push_back(EngineFramenum());
     ++g.queued;
     return true;
+}
+
+bool QueuePushRaw(int slot1, const void* data, int len) {
+    return QueuePush(slot1, data, len, false);
 }
 
 void ClearSlotPending(int slot1) {
@@ -222,18 +243,23 @@ void FlushCapture() {
     g.captureSlot = 0;
 }
 
-void DropPending() {
-    long long dropped = g.capture.empty() ? 0 : 1;
+void PreserveCapture() {
+    if (g.captureSlot <= 0 || g.capture.empty())
+        return;
+    const int slot = g.captureSlot;
+    if (!QueuePushRaw(slot, g.capture.data(), static_cast<int>(g.capture.size())))
+        return;
     g.capture.clear();
     g.captureSlot = 0;
-    for (SlotQueue& q : g.slot) {
-        dropped += static_cast<long long>(q.blobs.size());
-        q.blobs.clear();
-        q.enqueued.clear();
-        q.bytes = 0;
-    }
-    std::memset(g.dlPhase, 0, sizeof(g.dlPhase));
-    g.dropped += dropped;
+}
+
+bool PendingEmpty() {
+    if (g.captureSlot > 0 && !g.capture.empty())
+        return false;
+    for (const SlotQueue& q : g.slot)
+        if (!q.blobs.empty())
+            return false;
+    return true;
 }
 
 void ClearMessageStaging(char* msg) {
@@ -393,10 +419,11 @@ void RescueLevelChange(int slot1) {
         return;
     std::vector<std::uint8_t> keep;
     for (const auto& b : g.slot[slot1 - 1].blobs)
-        if (RelDef_IsLevelChange(b.data(), static_cast<int>(b.size())))
+        if (RelDef_HasLevelChange(b.data(), static_cast<int>(b.size())))
             keep.insert(keep.end(), b.begin(), b.end());
     if (g.captureSlot == slot1 &&
-        RelDef_IsLevelChange(g.capture.data(), static_cast<int>(g.capture.size())))
+        RelDef_HasLevelChange(g.capture.data(),
+                              static_cast<int>(g.capture.size())))
         keep.insert(keep.end(), g.capture.begin(), g.capture.end());
     if (keep.empty())
         return;
@@ -427,6 +454,9 @@ void DripSlot(int slot1) {
     char* cl = ClientBase(slot1);
     if (!cl || !detour_SZ_Write::oSZ_Write)
         return;
+    SlotQueue& q = g.slot[slot1 - 1];
+    if (q.blobs.empty())
+        return;
     char* msg = cl + kClientMessageOfs;
     const int n = ReadInt(msg, kSzCursize);
     char* raw = n > 0 ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
@@ -446,7 +476,7 @@ void DripSlot(int slot1) {
     if (now.empty())
         return;
     // A frame-first hold must not let this newer staging bypass the front blob.
-    if (!g.slot[slot1 - 1].blobs.empty()) {
+    if (!q.blobs.empty()) {
         if (!QueuePush(slot1, now.data(), static_cast<int>(now.size())))
             Buddy_DebugPrintf("reldef: drop staging slot %d len %d\n", slot1,
                               static_cast<int>(now.size()));
@@ -470,14 +500,7 @@ void DripSlot(int slot1) {
 }
 
 int SlotFromNetchan(void* netchan) {
-    if (!netchan)
-        return -1;
-    for (int slot = 1; slot <= g.maxClients; ++slot) {
-        char* cl = ClientBase(slot);
-        if (cl && cl + kClientNetchanOfs == netchan)
-            return slot;
-    }
-    return -1;
+    return SlotFromPointer(netchan, kClientNetchanOfs);
 }
 
 bool ReorderNetchan(int slot, void* netchan, int length, void* data,
@@ -515,7 +538,37 @@ bool ReorderNetchan(int slot, void* netchan, int length, void* data,
     if (RelDef_HasLevelChange(current.data(), static_cast<int>(current.size())))
         return false;
 
-    const std::vector<std::uint8_t> older = q.blobs.front();
+    const auto& older = q.blobs.front();
+    int wait = 0;
+    if (!q.enqueued.empty()) {
+        wait = EngineFramenum() - q.enqueued.front();
+        if (wait < 0)
+            wait = 0;
+    }
+    if (!RelDef_CanDrip(0, 0, static_cast<int>(older.size()), g.limits,
+                        g.policy.frameFirst, wait, g.policy.maxDripWaitTicks)) {
+        const bool frameHold =
+            g.policy.frameFirst && g.limits.maxDripBytes > 0 &&
+            static_cast<int>(older.size()) > g.limits.maxDripBytes &&
+            (g.policy.maxDripWaitTicks <= 0 ||
+             wait < g.policy.maxDripWaitTicks);
+        if (!frameHold)
+            return false;
+        // Keep newer reliable bytes behind the held blob while allowing the
+        // snapshot itself through. Restore them after the transmit.
+        ClearMessageStaging(msg);
+        if (captureLen > 0) {
+            g.capture.clear();
+            g.captureSlot = 0;
+        }
+        original(netchan, length, data);
+        ClearMessageStaging(msg);
+        ++g.bypass;
+        detour_SZ_Write::oSZ_Write(
+            msg, current.data(), static_cast<int>(current.size()));
+        --g.bypass;
+        return true;
+    }
     ClearMessageStaging(msg);
     if (captureLen > 0) {
         g.capture.clear();
@@ -553,17 +606,32 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
         return;
     }
     // Ghoul reliable's body is SZ_GetSpace'd into this buffer immediately
-    // after the opcode. It must be written here even when capture holds
-    // older mail, or the client unpacks the opcode against the wrong bytes.
+    // after the opcode. Only a verified message boundary may arm this path;
+    // an arbitrary 0x1A in a binary/text payload is not Ghoul's opcode.
     if (canArmOpcode && len == 1 && data &&
         RelDef_WriteThroughOp(*static_cast<const unsigned char*>(data))) {
         char* cl = ClientBase(slot);
         char* msg = cl ? cl + kClientMessageOfs : nullptr;
-        if (g.captureSlot == slot && !g.capture.empty() && msg &&
-            ReadInt(msg, kSzCursize) == 0)
-            FlushCaptureToMessage(slot);
-        writeNow();
-        return;
+        const int stagedLen = msg ? ReadInt(msg, kSzCursize) : 0;
+        const char* staged =
+            stagedLen > 0 && msg ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
+        const bool stagedBoundary =
+            RelDef_EndsAtMessageBoundary(
+                reinterpret_cast<const std::uint8_t*>(staged), stagedLen);
+        const bool captureForSlot =
+            g.captureSlot == slot && !g.capture.empty();
+        const bool captureBoundary =
+            !captureForSlot ||
+            RelDef_EndsAtMessageBoundary(g.capture.data(),
+                                         static_cast<int>(g.capture.size()));
+        if (cl && ReadInt(cl, kClientStateOfs) >= kCsSpawned &&
+            stagedBoundary && captureBoundary &&
+            !(captureForSlot && stagedLen > 0)) {
+            if (captureForSlot)
+                FlushCaptureToMessage(slot);
+            writeNow();
+            return;
+        }
     }
     // Level-change stufftext jumps the queue. Older scoreboards and prints
     // are for the map that is about to go away.
@@ -611,6 +679,64 @@ void HandleMessageWrite(void* sb, const void* data, int len, WriteNow&& writeNow
     }
     if (!joining && g.captureSlot > 0 && g.captureSlot != slot)
         FlushCapture();
+
+    // Frame/effect packets can legally use the reliable mailbox in a few
+    // multicast paths, but their bodies are opaque to the server-side cutter.
+    // SZ_Write supplies the complete packet; preserve it as one blob only at
+    // a real message boundary, never when this is a body write.
+    if (!joining && isBulk && data && len > 0 &&
+        RelDef_IsOpaquePacket(static_cast<const std::uint8_t*>(data), len)) {
+        char* cl = ClientBase(slot);
+        char* msg = cl ? cl + kClientMessageOfs : nullptr;
+        const int stagedLen = msg ? ReadInt(msg, kSzCursize) : 0;
+        const char* staged =
+            stagedLen > 0 && msg ? *reinterpret_cast<char**>(msg + kSzData) : nullptr;
+        const bool captureForSlot =
+            g.captureSlot == slot && !g.capture.empty();
+        const bool stagedBoundary = RelDef_EndsAtMessageBoundary(
+            reinterpret_cast<const std::uint8_t*>(staged), stagedLen);
+        const bool captureBoundary =
+            !captureForSlot ||
+            RelDef_EndsAtMessageBoundary(g.capture.data(),
+                                         static_cast<int>(g.capture.size()));
+        if (stagedBoundary && captureBoundary) {
+            const RelDefAction act = ClassifySlot(slot, len);
+            if (act == RELDEF_WRITE_NOW && !captureForSlot) {
+                writeNow();
+                return;
+            }
+            if (act == RELDEF_WRITE_NOW || act == RELDEF_QUEUE) {
+                // Existing complete bytes are older than this opaque write.
+                // Keep them in front of it without sending either through the
+                // message cutter. Separate blobs also avoid exceeding the
+                // engine message size when staging is already large.
+                int pushed = 0;
+                bool queued = true;
+                if (captureForSlot)
+                    queued = QueuePushRaw(
+                        slot, g.capture.data(), static_cast<int>(g.capture.size()));
+                if (queued && captureForSlot)
+                    ++pushed;
+                if (queued && stagedLen > 0)
+                    queued = QueuePushRaw(slot, staged, stagedLen);
+                if (queued && stagedLen > 0)
+                    ++pushed;
+                if (queued)
+                    queued = QueuePushRaw(slot, data, len);
+                if (queued) {
+                    ++pushed;
+                    g.deferred += pushed;
+                    g.capture.clear();
+                    g.captureSlot = 0;
+                    ClearMessageStaging(msg);
+                    return;
+                }
+            }
+            ++g.dropped;
+            Buddy_DebugPrintf("reldef: drop opaque slot %d len %d\n", slot, len);
+            return;
+        }
+    }
 
     // Once this tick's capture holds bytes for a slot, every later write for
     // that slot must join the capture. Letting a later write go NOW while
@@ -843,6 +969,11 @@ void reldef_CL_SendClientMessagesPre() {
             reldef_internal::DripSlot(slot);
         }
         reldef_internal::SuppressLevelChangeSnapshots();
+        if (reldef_internal::g.disabling &&
+            reldef_internal::PendingEmpty()) {
+            reldef_internal::g.enabled = false;
+            reldef_internal::g.disabling = false;
+        }
     }
     reldef_internal::PublishTickGauges();
 }
