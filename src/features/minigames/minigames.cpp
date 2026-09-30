@@ -705,11 +705,10 @@ void __cdecl HkCmd_Score_f(void* ent) {
                     ApplyView(ent, slot, MgView::Off);
                     return;
                 }
-                if (ClientShowscoresOpen(ent)) {
-                    g_scoreMinigameLatch[slot] = true;
-                    ApplyView(ent, slot, MgView::Minigame);
-                    return;
-                }
+                g_scoreMinigameLatch[slot] = true;
+                ApplyView(ent, slot,
+                          ClientShowscoresOpen(ent) ? MgView::Minigame : MgView::Off);
+                return;
             }
             if (g_scoreMinigameLatch[slot]) {
                 if (g_page[slot] == MgView::Minigame)
