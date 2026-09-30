@@ -68,6 +68,6 @@ inline void LagRender(const LagSnapshot& snapshot, MgCanvas& canvas) {
     MgCanvasTc(canvas, kMgColWhite);
     MgCanvasCenter(canvas, 320, 248, "worst spare on this map");
     MgCanvasTc(canvas, kMgColGreen);
-    MgCanvasCenter(canvas, 320, 280, "lag hide  |  score close");
+    MgCanvasCenter(canvas, 320, 280, "lag hide  |  +use+score toggle");
     MgCanvasTc(canvas, kMgColWhite);
 }
