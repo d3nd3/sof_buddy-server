@@ -43,6 +43,7 @@ extern "C" void StuffText_Shutdown(void);
 #endif
 #ifdef SOF_FEATURE_MINIGAMES
 extern "C" void Minigames_Shutdown(void);
+void lag_NoteGameEvent(const char* tag);
 #endif
 #ifdef SOF_FEATURE_CLSV_PIPE
 extern "C" void Clsv_Shutdown(void);
@@ -181,6 +182,9 @@ static void __cdecl SpawnEntities_ClearCaptures(char *map, const char *ents, cha
 {
 	if (g_origSpawnEntities)
 		g_origSpawnEntities(map, ents, spawn);
+#ifdef SOF_FEATURE_MINIGAMES
+	lag_NoteGameEvent("mapspawn");
+#endif
 	ClearFlagCaptures();
 }
 

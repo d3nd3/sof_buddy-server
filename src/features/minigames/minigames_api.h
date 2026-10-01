@@ -159,10 +159,14 @@ struct MgGameOps {
     void (*onClientCmd)(int slot1);
     void (*onUserCmd)(int slot1, MgUserCmdInput* in);       // optional
     void (*onSessionEnd)(void);                             // optional; preempt / idle stop
+    const char* desc;                                       // optional menu blurb
 };
 
 // Returns false when the parent is disabled or the name is taken.
 bool MgRegisterGame(const MgGameOps* ops);
+int MgRegisteredGameCount();
+const char* MgRegisteredGameCommand(int index);
+const char* MgRegisteredGameDesc(int index);
 
 // Admin console command helper (engine xcommand_t: void (__cdecl*)(void)).
 bool MgRegisterConsoleCommand(const char* name, void* fn);
@@ -188,7 +192,7 @@ int MgRegisterGhoulFile(const char* path);
 const char* MgMapChecksum();
 
 // One minigame display per client slot. `gameId` is the registered client word
-// ("ttt", "lag", …) or "mg" for script mg_push. Taking display preempts any
+// ("mg_ttt", "mg_lag", …) or "mgscript" for script mg_push. Taking display preempts any
 // other game on that slot; pushes/updates are ignored unless `gameId` owns it.
 bool MgTakeDisplay(int slot1, const char* gameId);
 void MgReleaseDisplay(int slot1, const char* gameId);

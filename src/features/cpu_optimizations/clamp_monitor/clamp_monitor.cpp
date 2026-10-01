@@ -179,6 +179,8 @@ struct MonitorState {
     DWORD lastBroadcastTick = 0;
     bool notified = false;
     bool broadcast = false;
+    std::int32_t deferredLogLost = 0;
+    bool deferredBroadcast = false;
 
     // Lowclamp debug: sampled on SV_Frame / last game tick.
     int           lastMsec = 0;
@@ -406,6 +408,22 @@ void ClampMonitor_LogSessionSummary() {
     LogSessionSummary();
 }
 
+void clampmon_SvFramePost(int msec) {
+    (void)msec;
+    if (!EngineGlobalsReady())
+        return;
+    MonitorState& s = g_state;
+    const DWORD now = GetTickCount();
+    if (s.deferredLogLost > 0) {
+        MaybeLogClamp(s, s.deferredLogLost, now);
+        s.deferredLogLost = 0;
+    }
+    if (s.deferredBroadcast) {
+        s.deferredBroadcast = false;
+        MaybeBroadcastLag(s, now);
+    }
+}
+
 void clampmon_SvFramePre(int& msec) {
     if (!EngineGlobalsReady())
         return;
@@ -446,6 +464,7 @@ float clampmon_RunFrame(int serverframe, detour_G_RunFrame::tG_RunFrame original
             (t1.QuadPart - t0.QuadPart) * 1000.0 /
             static_cast<double>(qpc_freq.QuadPart));
         lag_NoteSimFrameWallMs(wall_ms);
+        lag_NoteRunGameFrameBodyEnd();
     }
 #endif
 
@@ -481,6 +500,11 @@ float clampmon_RunFrame(int serverframe, detour_G_RunFrame::tG_RunFrame original
     const std::int32_t lost =
         (svtime < realtime) ? static_cast<std::int32_t>(realtime - svtime) : 0;
 
+#ifdef SOF_FEATURE_MINIGAMES
+    if (lag_TickBodyActive() && lost > 0)
+        lag_NoteHighclampLostMs(lost);
+#endif
+
     // One exact sample per real tick, 0 included: pushing non-clamp ticks too
     // is what lets the average decay back down once clamping stops.
     PushSample(s, lost);
@@ -491,8 +515,16 @@ float clampmon_RunFrame(int serverframe, detour_G_RunFrame::tG_RunFrame original
         ++s.highClamps;
         s.lostMs += lost;
         const DWORD now = GetTickCount();
-        MaybeLogClamp(s, lost, now);
-        MaybeBroadcastLag(s, now);
+#ifdef SOF_FEATURE_MINIGAMES
+        if (lag_TickBodyActive()) {
+            s.deferredLogLost = lost;
+            s.deferredBroadcast = true;
+        } else
+#endif
+        {
+            MaybeLogClamp(s, lost, now);
+            MaybeBroadcastLag(s, now);
+        }
         if (ClampMonitor_LogFile() || CpuOpt_Strict()) {
             char why[96];
             std::snprintf(why, sizeof(why),

@@ -1498,6 +1498,42 @@ void profiles_OnGameDllLoaded(void* gameExport) {
              static_cast<unsigned>(g_registry.Size()));
 }
 
+bool Profiles_SlotActive(int slot0) {
+    if (!Profiles_IsEnabled())
+        return true;
+    if (slot0 < 0 || slot0 >= profiles::kMaxSlots)
+        return false;
+    const profiles::SlotState& st = g_slots[slot0];
+    return st.registered && profiles::GuidValid(st.guid);
+}
+
+bool Profiles_SignedInAt(int index, int* slot0, char* name, int nameCap) {
+    if (index < 0 || !slot0 || !name || nameCap < 2)
+        return false;
+    name[0] = '\0';
+    int seen = 0;
+    for (int i = 0; i < profiles::kMaxSlots; ++i) {
+        const profiles::SlotState& st = g_slots[i];
+        if (!st.registered || !profiles::GuidValid(st.guid))
+            continue;
+        if (seen++ != index)
+            continue;
+        *slot0 = i;
+        int w = 0;
+        for (std::size_t k = 0; k < st.nickname.size() && w < nameCap - 1; ++k) {
+            char c = st.nickname[k];
+            if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 32)
+                c = ' ';
+            name[w++] = c;
+        }
+        name[w] = '\0';
+        if (!name[0])
+            std::snprintf(name, static_cast<std::size_t>(nameCap), "slot %d", i);
+        return true;
+    }
+    return false;
+}
+
 extern "C" void Profiles_Shutdown() {
     RestoreGameHooks();
     g_edictsCache = nullptr;

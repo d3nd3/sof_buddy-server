@@ -19,7 +19,10 @@
 //   STAT_LAYOUTS ................ stats[9] (game + engine agree)
 
 #include "cvar.h"
+#include "cvarview/cvarview.h"
+#include "../profiles/cvar.h"
 #include "lagometer/lagometer.h"
+#include "menu/menu.h"
 #include "minigames_api.h"
 #include "minigames_clientcmd_logic.h"
 
@@ -75,7 +78,7 @@ constexpr int kCsSpawned = 3;
 
 constexpr int kMaxGames = 8;
 constexpr int kMgGameIdLen = 16;
-constexpr char kMgScriptGameId[] = "mg";
+constexpr char kMgScriptGameId[] = "mgscript";
 
 using clientcmd_fn = void(__cdecl*)(void*);
 using cmd_score_fn = void(__cdecl*)(void*);
@@ -85,6 +88,7 @@ clientcmd_fn g_originalClientCommand = nullptr;
 void* g_geClientCommandSlot = nullptr;
 void* g_scoreTrampoline = nullptr;
 void* g_dmctfScoreTrampoline = nullptr;
+void* g_spsvCmdTrampoline = nullptr;
 char* g_edicts = nullptr;
 int g_edictSize = 0;
 void* g_cvMaxClients = nullptr;
@@ -101,6 +105,9 @@ bool g_scoreMinigameLatch[kMgMaxSlots + 1] = {};
 bool g_layoutDirty[kMgMaxSlots + 1] = {};
 bool g_layoutPrimed[kMgMaxSlots + 1] = {};
 int g_clientCmdArgvBase = 0;
+bool g_argOverlay = false;
+int g_argOverlayArgc = 0;
+const char* g_argOverlayArgv[8] = {};
 char g_ctfSbHintLayout[kMgLayoutCap] = {};
 bool g_sobuddySpReady = false;
 char g_sobuddyRegisterName[64] = {};
@@ -684,7 +691,7 @@ void ApplyView(void* ent, int slot, MgView view) {
         if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
             *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
         ApplyLayoutClient(ent, true);
-        lag_OnMinigameTabOpened(slot);
+        menu_OnMinigameTabOpened(slot);
         SendMinigameLayout(ent, slot, MinigameLayoutForSlot(slot));
         break;
     }
@@ -757,6 +764,10 @@ bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
             continue;
         MgLazyEnsureSobuddySp();
         const int slot = MgSlotForEdict(ent);
+        if (slot >= 1 && !SameNoCase(g->command, "mg") && !Profiles_SlotActive(slot - 1)) {
+            Buddy_ClientPrintf(ent, 2, "A profile is required for .%s\n", g->command);
+            return true;
+        }
         if (slot >= 1)
             g->onClientCmd(slot);
         else
@@ -767,29 +778,61 @@ bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
     return false;
 }
 
-void __cdecl HkClientCommand(void* ent) {
-    if (MgPlatformEnabled() && MgEnabled() && ent) {
-        g_clientCmdArgvBase =
-            MgClientCmdArgvBase(Buddy_ClientArgv(0), Buddy_ClientArgv(1));
-        const char* cmd = Buddy_ClientArgv(g_clientCmdArgvBase);
-        if (cmd && cmd[0]) {
-            lag_EnsureRegistered();
-            ttt_EnsureRegistered();
-            if (DispatchMinigameClientCmd(ent, cmd)) {
-                g_clientCmdArgvBase = 0;
-                return;
-            }
-            if (StockWouldSayAsChat(cmd)) {
-                Buddy_ClientPrintf(
-                    ent, 2,
-                    "[minigames] '%s' not registered (minigames off or gamex86.dll too old?)\n",
-                    cmd);
-                g_clientCmdArgvBase = 0;
-                return;
-            }
-        }
-        g_clientCmdArgvBase = 0;
+static bool MgWordIsRegistered(const char* word) {
+    for (const MgGameOps* g : g_games) {
+        if (g && g->command && g->onClientCmd && MgClientCmdMatches(word, g->command))
+            return true;
     }
+    return false;
+}
+
+static bool MgTakeClientCommand(void* ent) {
+    if (!MgPlatformEnabled() || !MgEnabled() || !ent)
+        return false;
+    g_argOverlay = false;
+    const char* arg0 = Buddy_ClientArgv(0);
+    const char* arg1 = Buddy_ClientArgv(1);
+    char splitBuf[256];
+    const char* words[8];
+    int splitN = 0;
+    // Say-box ".mg_lag next" is one argument. Split it before spsv retokenizes and
+    // answers "unknown command".
+    if (MgClientCmdIsSay(arg0) && Buddy_ClientArgc() == 2)
+        splitN = MgSplitCmdWords(arg1, splitBuf, static_cast<int>(sizeof(splitBuf)), words, 8);
+    menu_EnsureRegistered();
+    lag_EnsureRegistered();
+    ttt_EnsureRegistered();
+    cvars_EnsureRegistered();
+    g_clientCmdArgvBase = MgClientCmdArgvBase(arg0, arg1);
+    const char* cmd = Buddy_ClientArgv(g_clientCmdArgvBase);
+    if (splitN >= 1 && MgWordIsRegistered(words[0])) {
+        g_argOverlay = true;
+        g_argOverlayArgc = splitN;
+        for (int i = 0; i < splitN; ++i)
+            g_argOverlayArgv[i] = words[i];
+        g_clientCmdArgvBase = 0;
+        cmd = words[0];
+    }
+    bool taken = false;
+    if (cmd && cmd[0]) {
+        if (DispatchMinigameClientCmd(ent, cmd))
+            taken = true;
+        else if (StockWouldSayAsChat(cmd)) {
+            Buddy_ClientPrintf(
+                ent, 2,
+                "[minigames] '%s' not registered (minigames off or gamex86.dll too old?)\n",
+                cmd);
+            taken = true;
+        }
+    }
+    g_argOverlay = false;
+    g_clientCmdArgvBase = 0;
+    return taken;
+}
+
+void __cdecl HkClientCommand(void* ent) {
+    if (MgTakeClientCommand(ent))
+        return;
     if (g_originalClientCommand)
         g_originalClientCommand(ent);
 }
@@ -833,6 +876,46 @@ void InstallClientCommandHook(void* gameExport) {
     g_geClientCommandSlot = slot;
     *slot = reinterpret_cast<void*>(&HkClientCommand);
     PrintOut(PRINT_LOG, "[minigames] ClientCommand hooked (ge+0x34)\n");
+}
+
+// spsv ClientCommand_HOOK @ RVA 0x11260 (my_SV_InitGameProgs writes it over ge+0x34
+// after GetGameAPI). Dot-commands that are not sofplus functions hit SP_Print
+// there and never call through. Detour the entry: mov eax, 0x100C is 5 bytes.
+static void __cdecl HkSpsvClientCommand(void* ent) {
+    if (MgTakeClientCommand(ent))
+        return;
+    if (g_spsvCmdTrampoline)
+        reinterpret_cast<clientcmd_fn>(g_spsvCmdTrampoline)(ent);
+}
+
+static bool SpsvClientCommandPrologue(HMODULE mod) {
+    if (!mod)
+        return false;
+    const auto* p = reinterpret_cast<const unsigned char*>(mod) + 0x11260;
+    return p[0] == 0xB8 && p[1] == 0x0C && p[2] == 0x10 && p[3] == 0x00 && p[4] == 0x00;
+}
+
+static void MgEnsureClientCommandOuter() {
+    if (g_spsvCmdTrampoline)
+        return;
+    HMODULE spsv = GetModuleHandleA("spsv.dll");
+    if (!spsv)
+        return;
+    if (!SpsvClientCommandPrologue(spsv)) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            PrintOut(PRINT_BAD, "[minigames] spsv ClientCommand prologue mismatch\n");
+        }
+        return;
+    }
+    void* target = reinterpret_cast<unsigned char*>(spsv) + 0x11260;
+    g_spsvCmdTrampoline =
+        DetourCreate(target, reinterpret_cast<void*>(&HkSpsvClientCommand), DETOUR_TYPE_JMP, 5);
+    if (g_spsvCmdTrampoline)
+        PrintOut(PRINT_LOG, "[minigames] ClientCommand ahead of spsv (.commands)\n");
+    else
+        PrintOut(PRINT_BAD, "[minigames] spsv ClientCommand detour failed\n");
 }
 
 void InstallCmdScoreHook() {
@@ -901,6 +984,37 @@ bool MgRegisterGame(const MgGameOps* ops) {
         }
     }
     return false;
+}
+
+int MgRegisteredGameCount() {
+    int n = 0;
+    for (const MgGameOps* g : g_games) {
+        if (g && g->command && g->command[0])
+            ++n;
+    }
+    return n;
+}
+
+const MgGameOps* RegisteredGame(int index) {
+    int n = 0;
+    for (const MgGameOps* g : g_games) {
+        if (!g || !g->command || !g->command[0])
+            continue;
+        if (n == index)
+            return g;
+        ++n;
+    }
+    return nullptr;
+}
+
+const char* MgRegisteredGameCommand(int index) {
+    const MgGameOps* g = RegisteredGame(index);
+    return g ? g->command : nullptr;
+}
+
+const char* MgRegisteredGameDesc(int index) {
+    const MgGameOps* g = RegisteredGame(index);
+    return g ? g->desc : nullptr;
 }
 
 bool MgRegisterConsoleCommand(const char* name, void* fn) {
@@ -1108,6 +1222,8 @@ void MgStripUserCmd(void* cmd) {
 }
 
 int MgArgc() {
+    if (g_argOverlay)
+        return g_argOverlayArgc;
     const int c = Buddy_ClientArgc();
     return c > g_clientCmdArgvBase ? c - g_clientCmdArgvBase : 0;
 }
@@ -1115,6 +1231,8 @@ int MgArgc() {
 const char* MgArgv(int n) {
     if (n < 0)
         return "";
+    if (g_argOverlay)
+        return n < g_argOverlayArgc ? g_argOverlayArgv[n] : "";
     return Buddy_ClientArgv(n + g_clientCmdArgvBase);
 }
 
@@ -1122,8 +1240,15 @@ bool MgEnabled() {
     return MgPlatformEnabled();
 }
 
+bool MgGameNeedsProfile(const char* gameId) {
+    return gameId && gameId[0] && !SameNoCase(gameId, "mg") &&
+           !SameNoCase(gameId, kMgScriptGameId);
+}
+
 bool MgTakeDisplay(int slot1, const char* gameId) {
     if (slot1 < 1 || slot1 > kMgMaxSlots || !gameId || !gameId[0])
+        return false;
+    if (MgGameNeedsProfile(gameId) && !Profiles_SlotActive(slot1 - 1))
         return false;
     char prev[kMgGameIdLen];
     CopyGameId(prev, kMgGameIdLen, g_displayOwner[slot1]);
@@ -1604,8 +1729,10 @@ void mg_OnGameDllLoaded(void* gameExport) {
     if (g_edictSize <= 0)
         g_edictSize = static_cast<int>(kEdictStrideDefault);
     InstallClientCommandHook(gameExport);
+    menu_EnsureRegistered();
     lag_EnsureRegistered();
     ttt_EnsureRegistered();
+    cvars_EnsureRegistered();
     InstallCmdScoreHook();
     InstallDmctfScoreboardHook();
     MgRegisterConsoleCommand("mg_push", reinterpret_cast<void*>(&mg_Push_f));
@@ -1651,8 +1778,21 @@ void MaintainLayoutClient(void* ent, int slot) {
         if (void* client = ClientForEnt(ent))
             SuppressStockLayoutRefresh(client);
         ApplyLayoutClient(ent, true);
+        if (!Profiles_SlotActive(slot - 1)) {
+            lag_MaintainForSlot(slot);
+            cvars_MaintainForSlot(slot);
+            if (MgGameNeedsProfile(g_displayOwner[slot])) {
+                char id[kMgGameIdLen];
+                CopyGameId(id, kMgGameIdLen, g_displayOwner[slot]);
+                MgReleaseDisplay(slot, id);
+            }
+            if (!DisplayOwnedBy(slot, "mg"))
+                menu_OnMinigameTabOpened(slot);
+        }
         if (MgMinigameLayoutRefreshDue()) {
             lag_MaintainForSlot(slot);
+            cvars_MaintainForSlot(slot);
+            menu_MaintainForSlot(slot);
             if (g_layoutDirty[slot]) {
                 const char* layout = MinigameLayoutForSlot(slot);
                 if (layout[0])
@@ -1662,13 +1802,49 @@ void MaintainLayoutClient(void* ent, int slot) {
     }
 }
 
+// Map change clears the client scoreboard but not these. A leftover
+// StockScoreboard / latch makes the next score press a close.
+void ForgetScoreView(int slot) {
+    if (slot < 1 || slot > kMgMaxSlots)
+        return;
+    g_page[slot] = MgView::Off;
+    g_scoreMinigameLatch[slot] = false;
+    g_visible[slot] = false;
+    g_layoutPrimed[slot] = false;
+    g_layoutDirty[slot] = false;
+    g_layoutCache[slot][0] = '\0';
+    void* ent = MgEdictForSlot(slot);
+    void* client = ent ? ClientForEnt(ent) : nullptr;
+    if (!client)
+        return;
+    if (Readable(static_cast<char*>(client) + kClientShowscoresOfs, sizeof(int)))
+        *reinterpret_cast<int*>(static_cast<char*>(client) + kClientShowscoresOfs) = 0;
+    PokeLayoutBit(client, false);
+}
+
+char g_scoreMapCs[64] = {};
+bool g_scoreMapFresh = false;
+
+void SyncScoreMap() {
+    const char* cs = MgMapChecksum();
+    if (!cs || !cs[0] || std::strcmp(g_scoreMapCs, cs) == 0)
+        return;
+    std::strncpy(g_scoreMapCs, cs, sizeof(g_scoreMapCs) - 1);
+    g_scoreMapCs[sizeof(g_scoreMapCs) - 1] = '\0';
+    g_scoreMapFresh = true;
+    const int n = MgMaxClients();
+    for (int slot = 1; slot <= n && slot <= kMgMaxSlots; ++slot)
+        ForgetScoreView(slot);
+}
+
 void mg_ClientEndServerFramePre(void*& ent) {
+    SyncScoreMap();
     if (!MgPlatformEnabled() || !ent)
         return;
     const int slot = MgSlotForEdict(ent);
     if (slot < 1)
         return;
-    if (LevelIntermission() || ClientWantsStockScoreboard(ent)) {
+    if (!g_scoreMapFresh && (LevelIntermission() || ClientWantsStockScoreboard(ent))) {
         EnsureScoreboardPage(ent, slot);
         return;
     }
@@ -1685,17 +1861,14 @@ void mg_ClientEndServerFramePost(void* ent) {
     if (slot < 1 || g_page[slot] == MgView::Off)
         return;
     if (!MgSlotSpawned(slot)) {
-        g_visible[slot] = false;
-        g_layoutCache[slot][0] = '\0';
-        g_layoutDirty[slot] = false;
-        g_page[slot] = MgView::Off;
+        ForgetScoreView(slot);
         return;
     }
     MaintainLayoutClient(ent, slot);
 }
 
 void mg_CL_SendClientMessagesPre() {
-    if (!MgPlatformEnabled())
+    if (!MgPlatformEnabled() || g_scoreMapFresh)
         return;
     const int n = MgMaxClients();
     for (int slot = 1; slot <= n; ++slot) {
@@ -1712,6 +1885,9 @@ void mg_CL_SendClientMessagesPre() {
 
 void mg_SvFramePost(int msec) {
     (void)msec;
+    SyncScoreMap();
+    g_scoreMapFresh = false;
+    MgEnsureClientCommandOuter();
     if (!MgPlatformEnabled())
         return;
     // After CL_SendClientMessages (SV_Frame Post). Never SP_Register from
@@ -1747,6 +1923,10 @@ extern "C" void Minigames_Shutdown() {
     }
     g_originalClientCommand = nullptr;
     g_geClientCommandSlot = nullptr;
+    if (g_spsvCmdTrampoline) {
+        DetourRemove(&g_spsvCmdTrampoline);
+        g_spsvCmdTrampoline = nullptr;
+    }
     if (g_scoreTrampoline) {
         DetourRemove(&g_scoreTrampoline);
         g_scoreTrampoline = nullptr;
@@ -1769,6 +1949,8 @@ extern "C" void Minigames_Shutdown() {
         p = MgView::Off;
     for (bool& l : g_scoreMinigameLatch)
         l = false;
+    g_scoreMapCs[0] = '\0';
+    g_scoreMapFresh = false;
     for (char* row : g_displayOwner)
         row[0] = '\0';
     g_runningSession[0] = '\0';

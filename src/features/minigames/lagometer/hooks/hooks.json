@@ -1,5 +1,23 @@
 [
   {
+    "function": "PutClientInServer",
+    "callback": "lag_PutClientInServerPost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
+    "function": "respawn",
+    "callback": "lag_RespawnPost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
+    "function": "player_die",
+    "callback": "lag_PlayerDiePost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
     "function": "SV_ReadPackets",
     "callback": "lag_ReadPacketsPre",
     "phase": "Pre",
@@ -12,14 +30,20 @@
     "priority": 3
   },
   {
-    "function": "SV_ClientThink",
-    "callback": "lag_SvClientThinkPre",
+    "function": "SV_RunGameFrame",
+    "callback": "lag_RunGameFramePost",
+    "phase": "Post",
+    "priority": 3
+  },
+  {
+    "function": "SV_ExecuteClientMessage",
+    "callback": "lag_ClcMovePre",
     "phase": "Pre",
     "priority": 1
   },
   {
-    "function": "SV_ClientThink",
-    "callback": "lag_SvClientThinkPost",
+    "function": "SV_ExecuteClientMessage",
+    "callback": "lag_ClcMovePost",
     "phase": "Post",
     "priority": 1
   },
@@ -30,9 +54,21 @@
     "priority": 2
   },
   {
+    "function": "CL_SendClientMessages",
+    "callback": "lag_SendClientMessagesPre",
+    "phase": "Pre",
+    "priority": 1
+  },
+  {
+    "function": "CL_SendClientMessages",
+    "callback": "lag_SendClientMessagesPost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
     "function": "SV_Frame",
     "callback": "lag_SvFramePost",
     "phase": "Post",
-    "priority": 52
+    "priority": 1
   }
 ]

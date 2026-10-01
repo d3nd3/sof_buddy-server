@@ -4,9 +4,7 @@ Platform for 2D minigames on the client screen (tictactoe now, chess
 later). Games implement rules + drawing; the platform owns the three
 tricky pieces:
 
-1. **Input routing** — detours the stock game DLL's `ClientCommand` and
-   delivers client console words (`ttt ...`) to the registered game.
-   Everything else passes through to stock untouched.
+1. **Input routing** — `ge+0x34` `ClientCommand`, and a detour on `spsv.dll` `ClientCommand_HOOK` (`RVA 0x11260`, the `mov eax, 0x100C` prologue). spsv installs that hook after `GetGameAPI` and answers unknown `.commands` itself, so the detour runs first. Minigame words (`.mg`, `.mg_lag`, `say .mg_ttt`, …) are taken here; everything else, including sofplus user functions, still goes into spsv.
 2. **Layout channel** — two server paths hit the same client `layout_string`
    buffer (cap `0x400`). See [Layout delivery](#layout-delivery-svc_layout-vs-sp_print)
    below for when to use each.
@@ -62,8 +60,13 @@ detour (wired in `DllMain` detach).
 |---------|---------|---------|
 | `_sofbuddy_minigames_enable` | `1` | Platform master switch (Tab cycle, `mg_*`, idle banner). `0` = no routing, no platform ghoul/sprites. |
 | `_sofbuddy_minigames_bg` | `0` | Idle/`mg_test` backdrop: `0` = `sb/mg/pn` tile, `1` = `sb/mg/bg` panel. |
-| `_sofbuddy_ttt_enable` | `0` | Offer tictactoe on this server (`ttt`, `ttt_*`, `sb/tt/*`). Not “active game”; display is per-slot via `MgTakeDisplay`. |
-| `_sofbuddy_lagometer_enable` | `1` | Offer lagometer (`lag` client cmd, `lag_show` admin). Unregistered `lag` falls through to stock chat — see lagometer README. |
+| `_sofbuddy_ttt_enable` | `0` | Offer tictactoe on this server (`.mg_ttt`, `ttt_*`, `sb/tt/*`). Not “active game”; display is per-slot via `MgTakeDisplay`. |
+| `_sofbuddy_lagometer_enable` | `1` | Offer lagometer (`.mg_lag`, `lag_show` admin). See lagometer README. |
+| `_sofbuddy_lagometer_warmup_frames` | `200` | Skip N eligible ticks for “busiest” after each map change (`0` = off). |
+
+**Menu** (`.mg`): centered layout listing every minigame, including `.mg`. `.mg list` prints that list in the player console.
+
+**Cvar browser** (`.mg_cvars`): opens a category list. `.mg_cvars clamp` opens that category, `.mg_cvars clamp 2` its page. See `cvarview/README.md`.
 
 ## Console API for scripts (`mg_*`)
 
@@ -214,7 +217,7 @@ case `0x2`; SP layout merge @ `Print_SP_Message` when flag `0x10` is set.
 
 | Goal | Use |
 |------|-----|
-| **Own the full screen** (minigame page, default lagometer when enabled) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
+| **Own the full screen** (minigame page, default `.mg` menu when enabled) | `SP_Print(DM_GENERIC_LAYOUT_RESET)` then **`svc_layout`** with the new token stream — what `PushLayoutPayload` / `MgPushLayout` do. You are replacing the canvas on purpose. |
 | **Add tokens to an existing layout** (e.g. one line on a stock scoreboard) | **`SP_Print` layout append** only. A trailing `svc_layout` would destroy the scoreboard. Needs a registered `.sp` entry with `SP_FLAG_LAYOUT` and `%s`; minigames auto-create **`strip/sofbuddy.sp`** (`0x0700`) when missing. |
 | **Text outside the layout channel** | `mg_center` / `centerprintf`, captions, etc. — separate opcodes, no merge rules. Not used for the CTF scoreboard hint (layout append only). |
 

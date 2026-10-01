@@ -31,7 +31,7 @@ The same game as a SoFPlus script — pick it *or* the C game:
 
 | | C game | Script game |
 |---|---|---|
-| Client command | `ttt <1-9>` | `.ttt <1-9>` (dot-command) |
+| Client command | `.mg_ttt <1-9>` | `.ttt <1-9>` (script dot-command) |
 | Start (admin) | `ttt_start <slotX> <slotO>` | `.ttt_new <slotX> <slotO>` |
 | End (admin) | `ttt_end` | `.ttt_end` |
 | Rules live in | `tictactoe_logic.h` | script cvars |

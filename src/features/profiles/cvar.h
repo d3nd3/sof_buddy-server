@@ -6,6 +6,12 @@ void Profiles_InitCvars();
 /** Master switch cvar (_sofbuddy_profiles). Read live on every hook/command. */
 bool Profiles_IsEnabled();
 
+/** 0-based slot has a roster profile signed in. When profiles are off, every slot passes. */
+bool Profiles_SlotActive(int slot0);
+
+/** index-th signed-in slot (0-based). Writes a short display name. */
+bool Profiles_SignedInAt(int index, int* slot0, char* name, int nameCap);
+
 /** Stufftext delivery switch (_sofbuddy_profiles_stufftext, default 1).
  *  0 = print the fix line instead of stuffing (manual mode, mirrors
  *  _prof_use_stufftext 0 in profiles.func). */

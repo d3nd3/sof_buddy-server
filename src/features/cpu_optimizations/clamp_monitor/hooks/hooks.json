@@ -11,6 +11,12 @@
     "priority": 5
   },
   {
+    "function": "SV_Frame",
+    "callback": "clampmon_SvFramePost",
+    "phase": "Post",
+    "priority": 60
+  },
+  {
     "function": "SV_ReadPackets",
     "callback": "clampmon_ReadPacketsPost",
     "phase": "Post"

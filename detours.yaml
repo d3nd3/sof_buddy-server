@@ -64,6 +64,14 @@ functions:
       - type: int
         name: msec
 
+  - name: SV_RunGameFrame
+    module: SofExe
+    identifier: "0x2005F3F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
   # SV_ReadPackets @0x2005F100: called from SV_Frame @0x2005F5EF and from
   # nowhere else (verified: one caller). It sits *after* the
   # `svs.realtime += msec` at 0x2005F5E2 and *before* the lowclamp test at
@@ -92,6 +100,22 @@ functions:
         name: client
       - type: void*
         name: cmd
+
+  # SV_ExecuteClientMessage @0x200636C0: (client_t* cl) from SV_ReadPackets.
+  # Full per-client packet dispatch: clc_move branch does checksum +
+  # lastServerFrame + InPacket decrypt + 3x MSG_ReadDeltaUserCmd + CRC +
+  # all SV_ClientThink calls for that packet (see IDA callees); also handles
+  # clc_userinfo / clc_stringcmd. Lagometer times this as the clc_move cost
+  # instead of timing individual SV_ClientThink calls.
+  - name: SV_ExecuteClientMessage
+    module: SofExe
+    identifier: "0x200636C0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: client
 
   - name: Cbuf_Execute
     module: SofExe
@@ -323,6 +347,27 @@ functions:
         name: ent
       - type: char*
         name: out
+
+  # gamex86.dll @ image base 0x50000000 (IDA gamex86.i64)
+  - name: PutClientInServer
+    module: GameDll
+    identifier: "0xF38A0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: respawn
+    module: GameDll
+    identifier: "0xF3550"
+    return_type: short
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
 
   - name: player_die
     module: GameDll

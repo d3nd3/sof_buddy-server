@@ -15,7 +15,7 @@
 namespace {
 
 constexpr int kEndDisplayMs = 5000;
-constexpr char kTttGameId[] = "ttt";
+constexpr char kTttGameId[] = "mg_ttt";
 
 TttGame g_game;
 bool g_active = false;
@@ -164,7 +164,7 @@ void OnClientCmd(int slot1) {
             Buddy_ClientPrintf(ent, 2, "TicTacToe: game over\n");
     } else if (cell < 1) {
         if (ent)
-            Buddy_ClientPrintf(ent, 2, "TicTacToe: use ttt <1-9> - empty cells show their number\n");
+            Buddy_ClientPrintf(ent, 2, "TicTacToe: use .mg_ttt <1-9> - empty cells show their number\n");
     } else if (!PlayCell(slot1, cell)) {
         if (ent)
             Buddy_ClientPrintf(ent, 2, "TicTacToe: illegal move (not your turn or cell taken)\n");
@@ -262,7 +262,7 @@ void OnSessionEnd() {
     EndGameImmediate();
 }
 
-const MgGameOps kTttOps = {"ttt", OnClientCmd, OnUserCmd, OnSessionEnd};
+const MgGameOps kTttOps = {"mg_ttt", OnClientCmd, OnUserCmd, OnSessionEnd, "tic-tac-toe"};
 
 void TttTryRegister() {
     if (!Ttt_Enabled() || g_registered)
