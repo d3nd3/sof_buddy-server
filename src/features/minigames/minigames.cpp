@@ -19,6 +19,7 @@
 //   STAT_LAYOUTS ................ stats[9] (game + engine agree)
 
 #include "cvar.h"
+#include "commands/commands.h"
 #include "lagometer/lagometer.h"
 #include "minigames_api.h"
 
@@ -720,7 +721,10 @@ bool StockWouldSayAsChat(const char* cmd) {
     if (SameNoCase(cmd, "lag") || SameNoCase(cmd, "sofbuddy_lag") ||
         std::strcmp(cmd, ".lag") == 0)
         return true;
-    return SameNoCase(cmd, "ttt");
+    if (SameNoCase(cmd, "ttt"))
+        return true;
+    return SameNoCase(cmd, "cmds") || SameNoCase(cmd, "commands") ||
+           SameNoCase(cmd, "sofbuddy_cmds");
 }
 
 bool DispatchMinigameClientCmd(void* ent, const char* cmd) {
@@ -745,6 +749,7 @@ void __cdecl HkClientCommand(void* ent) {
         if (cmd && cmd[0]) {
             lag_EnsureRegistered();
             ttt_EnsureRegistered();
+            cmds_EnsureRegistered();
             if (DispatchMinigameClientCmd(ent, cmd))
                 return;
             if (StockWouldSayAsChat(cmd)) {
@@ -1559,6 +1564,7 @@ void mg_OnGameDllLoaded(void* gameExport) {
     InstallClientCommandHook(gameExport);
     lag_EnsureRegistered();
     ttt_EnsureRegistered();
+    cmds_EnsureRegistered();
     InstallCmdScoreHook();
     InstallDmctfScoreboardHook();
     MgRegisterConsoleCommand("mg_push", reinterpret_cast<void*>(&mg_Push_f));

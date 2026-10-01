@@ -63,6 +63,7 @@ detour (wired in `DllMain` detach).
 | `_sofbuddy_minigames_bg` | `0` | Idle/`mg_test` backdrop: `0` = `sb/mg/pn` tile, `1` = `sb/mg/bg` panel. |
 | `_sofbuddy_ttt_enable` | `0` | Offer tictactoe on this server (`ttt`, `ttt_*`, `sb/tt/*`). Not “active game”; display is per-slot via `MgTakeDisplay`. |
 | `_sofbuddy_lagometer_enable` | `1` | Offer lagometer (`lag` client cmd, `lag_show` admin). Unregistered `lag` falls through to stock chat — see lagometer README. |
+| `_sofbuddy_cmds_enable` | `1` | Offer commands viewer (`cmds`/`commands` client, `cmds_show`/`cmds_list` admin). See `commands/README.md`. |
 
 ## Console API for scripts (`mg_*`)
 

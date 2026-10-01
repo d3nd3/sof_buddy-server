@@ -1,0 +1,8 @@
+[
+  {
+    "function": "ClientEndServerFrame",
+    "callback": "cmds_ClientEndServerFramePost",
+    "phase": "Post",
+    "priority": 2
+  }
+]
