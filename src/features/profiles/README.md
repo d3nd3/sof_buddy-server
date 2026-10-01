@@ -309,7 +309,7 @@ not needed. Legacy `prof_*` aliases (`prof_admin_add`, `prof_admin_del`,
 | `profile_signin` | `<slot> <guid/nickname>` | explicit: push a roster entry to the slot (nickname accepted, no guid copy-paste). Refuses when that guid is already on another connected slot |
 | `profile_signoff` | `<slot> / <guid> / <nickname>` | unbind: clear the slot guid and collapse client `team_red_blue` to bare team bit |
 | `profile_query` | — | audit every connected player, repair `wrong` slots (§7) |
-| `profile_get_slot_by_id` / `by_nick` | guid / nickname | prints slot, sets `_profile_found_slot` (and legacy `_prof_found_slot`) |
+| `profile_get_slot_by_id` / `by_nick` | guid / nickname | prints slot, sets `_sb_internal_profile_found_slot` (and legacy `_profile_found_slot`, `_prof_found_slot`) |
 | `profile_save` / `load` | — | save/load registry file |
 
 When to use `profile_import`: only when the player's client already
@@ -336,8 +336,8 @@ automatically with no `profile_signin` needed. In every other case use
 | `_sofbuddy_profiles_slots` | slots currently bound to a roster player |
 | `_sofbuddy_profiles_errors` | failed / rejected operations |
 
-`profile_get_slot_by_id/nick` maintain `_profile_found_slot` and the
-legacy `_prof_found_slot` for script-compat (set via `Cvar_SetValue`).
+`profile_get_slot_by_id/nick` maintain `_sb_internal_profile_found_slot` and the
+legacy `_profile_found_slot` / `_prof_found_slot` for script-compat (set via `Cvar_SetValue`).
 
 ## Wiring (native)
 

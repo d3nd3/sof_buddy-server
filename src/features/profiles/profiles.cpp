@@ -1275,8 +1275,12 @@ extern "C" void __cdecl profile_Signoff_f() {
 }
 
 void PublishFoundSlot(int found) {
-    // New canonical output + legacy alias so old configs/scripts keep working.
-    void* cv = Buddy_GetEngineCvar("_profile_found_slot", "-1", 0, nullptr);
+    // Canonical internal output (_sb_internal_ by policy) + legacy aliases so
+    // old configs/scripts keep working.
+    void* cv = Buddy_GetEngineCvar("_sb_internal_profile_found_slot", "-1", 0, nullptr);
+    if (cv)
+        Buddy_SetEngineCvarValue("_sb_internal_profile_found_slot", static_cast<float>(found));
+    cv = Buddy_GetEngineCvar("_profile_found_slot", "-1", 0, nullptr);
     if (cv)
         Buddy_SetEngineCvarValue("_profile_found_slot", static_cast<float>(found));
     cv = Buddy_GetEngineCvar("_prof_found_slot", "-1", 0, nullptr);

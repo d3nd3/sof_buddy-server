@@ -71,8 +71,16 @@ void Collect() {
         char* str = *reinterpret_cast<char**>(static_cast<char*>(node) + 4);
         void* next = *reinterpret_cast<void**>(static_cast<char*>(node) + kCvarNextOfs);
         char nb[kCvarNameCap];
-        if (ReadCStr(name, nb, static_cast<int>(sizeof(nb))) &&
-            std::strncmp(nb, "_sofbuddy_", 10) == 0 && nb[10]) {
+        if (ReadCStr(name, nb, static_cast<int>(sizeof(nb)))) {
+            // Public admin cvars (_sofbuddy_) plus internal plumbing
+            // (_sb_internal_); both belong to sof_buddy.
+            const bool buddy =
+                (std::strncmp(nb, "_sofbuddy_", 10) == 0 && nb[10]) ||
+                (std::strncmp(nb, "_sb_internal_", 13) == 0 && nb[13]);
+            if (!buddy) {
+                node = next;
+                continue;
+            }
             CvarLine& row = g_rows[g_rowCount++];
             CvarCopy(row.name, kCvarNameCap, nb);
             if (!ReadCStr(str, row.value, kCvarValueCap))

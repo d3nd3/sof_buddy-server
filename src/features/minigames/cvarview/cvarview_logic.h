@@ -66,6 +66,8 @@ inline void CvarGroup(const char* name, char* out, int cap) {
     const char* p = name ? name : "";
     if (std::strncmp(p, "_sofbuddy_", 10) == 0)
         p += 10;
+    else if (std::strncmp(p, "_sb_internal_", 13) == 0)
+        p += 13;
     char raw[16];
     int i = 0;
     for (; p[i] && p[i] != '_' && i < static_cast<int>(sizeof(raw)) - 1; ++i)
@@ -216,6 +218,8 @@ inline void CvarAnnotate(CvarLine& row) {
 inline const char* CvarTail(const char* name) {
     if (name && std::strncmp(name, "_sofbuddy_", 10) == 0)
         return name + 10;
+    if (name && std::strncmp(name, "_sb_internal_", 13) == 0)
+        return name + 13;
     return name ? name : "";
 }
 

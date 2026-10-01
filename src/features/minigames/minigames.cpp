@@ -19,6 +19,7 @@
 //   STAT_LAYOUTS ................ stats[9] (game + engine agree)
 
 #include "cvar.h"
+#include "commands/commands.h"
 #include "cvarview/cvarview.h"
 #include "../profiles/cvar.h"
 #include "lagometer/lagometer.h"
@@ -803,6 +804,7 @@ static bool MgTakeClientCommand(void* ent) {
     lag_EnsureRegistered();
     ttt_EnsureRegistered();
     cvars_EnsureRegistered();
+    cmds_EnsureRegistered();
     g_clientCmdArgvBase = MgClientCmdArgvBase(arg0, arg1);
     const char* cmd = Buddy_ClientArgv(g_clientCmdArgvBase);
     if (splitN >= 1 && MgWordIsRegistered(words[0])) {
@@ -1733,6 +1735,7 @@ void mg_OnGameDllLoaded(void* gameExport) {
     lag_EnsureRegistered();
     ttt_EnsureRegistered();
     cvars_EnsureRegistered();
+    cmds_EnsureRegistered();
     InstallCmdScoreHook();
     InstallDmctfScoreboardHook();
     MgRegisterConsoleCommand("mg_push", reinterpret_cast<void*>(&mg_Push_f));
@@ -1781,6 +1784,7 @@ void MaintainLayoutClient(void* ent, int slot) {
         if (!Profiles_SlotActive(slot - 1)) {
             lag_MaintainForSlot(slot);
             cvars_MaintainForSlot(slot);
+            cmds_MaintainForSlot(slot);
             if (MgGameNeedsProfile(g_displayOwner[slot])) {
                 char id[kMgGameIdLen];
                 CopyGameId(id, kMgGameIdLen, g_displayOwner[slot]);
@@ -1792,6 +1796,7 @@ void MaintainLayoutClient(void* ent, int slot) {
         if (MgMinigameLayoutRefreshDue()) {
             lag_MaintainForSlot(slot);
             cvars_MaintainForSlot(slot);
+            cmds_MaintainForSlot(slot);
             menu_MaintainForSlot(slot);
             if (g_layoutDirty[slot]) {
                 const char* layout = MinigameLayoutForSlot(slot);

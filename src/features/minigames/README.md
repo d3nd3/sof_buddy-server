@@ -63,10 +63,13 @@ detour (wired in `DllMain` detach).
 | `_sofbuddy_ttt_enable` | `0` | Offer tictactoe on this server (`.mg_ttt`, `ttt_*`, `sb/tt/*`). Not “active game”; display is per-slot via `MgTakeDisplay`. |
 | `_sofbuddy_lagometer_enable` | `1` | Offer lagometer (`.mg_lag`, `lag_show` admin). See lagometer README. |
 | `_sofbuddy_lagometer_warmup_frames` | `200` | Skip N eligible ticks for “busiest” after each map change (`0` = off). |
+| `_sofbuddy_cmds_enable` | `1` | Offer commands viewer (`.mg_cmds` client, `cmds_show`/`cmds_list` admin). See `commands/README.md`. |
 
 **Menu** (`.mg`): centered layout listing every minigame, including `.mg`. `.mg list` prints that list in the player console.
 
 **Cvar browser** (`.mg_cvars`): opens a category list. `.mg_cvars clamp` opens that category, `.mg_cvars clamp 2` its page. See `cvarview/README.md`.
+
+**Commands viewer** (`.mg_cmds`): paged server-command catalog, `.mg_cmds 2` for page 2. See `commands/README.md`.
 
 ## Console API for scripts (`mg_*`)
 

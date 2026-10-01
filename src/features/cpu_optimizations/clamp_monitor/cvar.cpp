@@ -112,7 +112,7 @@ OutputCvar g_outGained;      // _sofbuddy_lowclamp_gained_ms
 OutputCvar g_outWorstLow;    // _sofbuddy_lowclamp_worst
 
 void* g_cvNotify = nullptr;             // _sofbuddy_clamp_notify_ms
-void* g_cvLowDebug = nullptr;           // _sofbuddy_lowclamp_debug
+void* g_cvLowDebug = nullptr;           // _sb_internal_lowclamp_debug (internal)
 void* g_cvWindow = nullptr;             // _sofbuddy_clamp_window (seconds)
 void* g_cvBroadcastMs = nullptr;        // _sofbuddy_clamp_broadcast_ms (0 = off)
 void* g_cvBroadcastInterval = nullptr;  // _sofbuddy_clamp_broadcast_interval (seconds)
@@ -136,7 +136,8 @@ void ClampMonitor_InitCvars() {
         // Off by default: shim-log lines are opt-in (set >0 to enable).
         g_cvNotify = Buddy_GetEngineCvar("_sofbuddy_clamp_notify_ms", "0", kCvarFlagArchive, nullptr);
     if (!g_cvLowDebug)
-        g_cvLowDebug = Buddy_GetEngineCvar("_sofbuddy_lowclamp_debug", "1", kCvarFlagArchive, nullptr);
+        // Internal debug flag: _sb_internal_ prefix by policy (never _sofbuddy_).
+        g_cvLowDebug = Buddy_GetEngineCvar("_sb_internal_lowclamp_debug", "1", kCvarFlagArchive, nullptr);
     if (!g_cvWindow)
         g_cvWindow = Buddy_GetEngineCvar("_sofbuddy_clamp_window", "2", kCvarFlagArchive, nullptr);
     if (!g_cvBroadcastMs)

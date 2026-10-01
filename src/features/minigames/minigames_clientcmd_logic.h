@@ -79,5 +79,6 @@ inline bool MgClientCmdMatches(const char* word, const char* registered) {
 
 inline bool MgClientCmdIsMinigameChatWord(const char* word) {
     return MgClientCmdMatches(word, "mg") || MgClientCmdMatches(word, "mg_lag") ||
-           MgClientCmdMatches(word, "mg_cvars") || MgClientCmdMatches(word, "mg_ttt");
+           MgClientCmdMatches(word, "mg_cvars") || MgClientCmdMatches(word, "mg_ttt") ||
+           MgClientCmdMatches(word, "mg_cmds");
 }

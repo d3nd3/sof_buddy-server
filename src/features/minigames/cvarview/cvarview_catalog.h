@@ -1,6 +1,7 @@
 #pragma once
 
-// Creation default and a one-line description for every _sofbuddy_* cvar.
+// Creation default and a one-line description for every sof_buddy cvar
+// (_sofbuddy_* public settings/gauges plus _sb_internal_* plumbing).
 // Names are strcmp-sorted so CvarLookup can binary-search. Defaults match
 // the Buddy_GetEngineCvar / Bind() call in the owning feature. Gauges Bind
 // as "0".
@@ -12,6 +13,8 @@ struct CvarInfo {
 };
 
 static const CvarInfo kCvarInfo[] = {
+    {"_sb_internal_lowclamp_debug", "1", "log lowclamp clock jumps"},
+    {"_sb_internal_profile_found_slot", "-1", "slot of the last profile lookup"},
     {"_sofbuddy_cbuf_insert", "1", "shift the command buffer in place"},
     {"_sofbuddy_cbuf_insert_bytes", "0", "bytes shifted in place"},
     {"_sofbuddy_cbuf_insert_max", "0", "peak buffer size seen"},
@@ -50,6 +53,7 @@ static const CvarInfo kCvarInfo[] = {
     {"_sofbuddy_cmdpark_defers", "0", "queues moved aside before the tick"},
     {"_sofbuddy_cmdpark_reserve_ms", "0", "park when the tick is this close"},
     {"_sofbuddy_cmdpark_strict", "1", "run console text after the tick"},
+    {"_sofbuddy_cmds_enable", "1", "offer the commands viewer"},
     {"_sofbuddy_cpuopt", "1", "master switch for cpu optimizations"},
     {"_sofbuddy_custom_respawn", "1", "CTF spawn away from enemies"},
     {"_sofbuddy_example_enabled", "1", "template feature switch"},
@@ -58,7 +62,6 @@ static const CvarInfo kCvarInfo[] = {
     {"_sofbuddy_lagometer_enable", "1", "offer the lagometer minigame"},
     {"_sofbuddy_lagometer_warmup_frames", "200", "ticks skipped after a map change"},
     {"_sofbuddy_lowclamp_checks", "0", "tick decisions observed"},
-    {"_sofbuddy_lowclamp_debug", "1", "log lowclamp clock jumps"},
     {"_sofbuddy_lowclamp_gained_ms", "0", "ms invented by lowclamps"},
     {"_sofbuddy_lowclamp_worst", "0", "worst single lowclamp jump ms"},
     {"_sofbuddy_lowclamps", "0", "clock jumps of a tick or more"},
