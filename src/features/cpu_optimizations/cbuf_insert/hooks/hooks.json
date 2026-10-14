@@ -1,0 +1,7 @@
+[
+  {
+    "function": "Cbuf_InsertText",
+    "callback": "cbufinsert_InsertText",
+    "override": true
+  }
+]

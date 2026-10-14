@@ -1,0 +1,8 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "gamepark_SvFramePost",
+    "phase": "Post",
+    "priority": 55
+  }
+]

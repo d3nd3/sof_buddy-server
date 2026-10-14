@@ -1,0 +1,7 @@
+//
+// Print stats
+//
+function .stats(~par_slot) { echo hi }
+// Whisper to player
+function .whisper(~par_slot, *) {}
+function .nodesc(~par_slot) {}

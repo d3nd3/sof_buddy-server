@@ -1,0 +1,30 @@
+string-length scaling (µs/call)  hashmap=1
+blob = 'A'*len in _cmdcost_blob (capped 256). append dest pre-copied from blob.
+'<x' = flood/cap hit before one QPC tick (upper bound, not zero).
+
+command                               0          8         16         32         64        128        256
+---------------------------------------------------------------------------------------------------------
+sp_sc_cvar_len                    0.240      0.272      0.480      0.480      0.320      0.320      0.640
+sp_sc_cvar_copy                   0.480      0.480      0.256      0.240      0.320      0.480      1.440
+sp_sc_cvar_escape                 0.176      0.192      0.224      0.320      0.320      0.640      0.960
+sp_sc_cvar_unescape               0.320      0.144      0.176      0.320      0.320      0.320      0.960
+sp_sc_cvar_hex                    0.320      0.224      0.640      0.800      1.120      2.080          —
+sp_sc_cvar_unhex                  0.480      0.208      0.480      0.800      0.800      1.280          —
+sp_sc_cvar_nbsp                   0.320      0.208      0.320      0.320      1.280      0.480      3.200
+sp_sc_cvar_no_color               0.320      0.208      0.176      0.192      0.480      0.640      0.800
+sp_sc_cvar_replace               11.200      6.400      8.000     11.200      8.000      8.000      8.000
+sp_sc_cvar_substr                 0.480      0.480      0.320      0.320      0.640      0.480      0.800
+sp_sc_cvar_split                  1.120      0.960      0.640      3.200      0.800      0.800      1.280
+sp_sc_cvar_append                 8.000      8.000     11.200      6.400     32.000      8.000     14.400
+sp_sc_cvar_append_newline       112.000      9.600     32.000     16.000      8.000     32.000     16.000
+sp_sc_cvar_save                 800.000    320.000    480.000    320.000   3200.000    320.000          —
+
+append piece size @ dest=0:
+   piece        n       per_us     note
+       1    10000        6.400       ok
+       8    10000        8.000       ok
+      32     1000       32.000       ok
+      64    10000        9.600       ok
+
+Compare columns for O(n). hex/unhex/save skipped at 256 (2× len would overflow).
+compare vs hashmap=0: results_hashmap_compare.txt

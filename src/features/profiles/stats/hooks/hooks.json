@@ -1,0 +1,8 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "stats_SvFramePost",
+    "phase": "Post",
+    "priority": 50
+  }
+]

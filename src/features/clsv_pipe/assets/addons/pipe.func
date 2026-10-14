@@ -1,0 +1,77 @@
+//*******************************************
+// pipe.func - clsv_pipe listener, client side (SoFplus addon)
+//
+// Auto-loaded by spf_sc_addons_init (sofplus/spf_sc_addons.func scans
+// sofplus/addons/*.func, loads each file, execs <basename>_init — here
+// pipe_init). A leading "-" (e.g. -pipe.func) disables loading.
+//
+// Receives dynamic content pushed by the sof_buddy-server `clsv_pipe`
+// feature over the _sp_cl_sv_* cvars (the same cvars SoFplus servers drive
+// with sp_sv_client_cvar_set SLOT NUMBER STRING).
+//
+// Wire protocol (see sof_buddy-server src/features/clsv_pipe/README.md):
+//   _sp_cl_sv_98 : "<gen>"   job tag, first send of every job
+//   _sp_cl_sv_L  : one executable command per arrival:
+//                    - "sset <name> <escaped-value>"  (define chunk)
+//                    - "sp_sc_cvar_unescape <n> <n>"   (decode in place)
+//                    - "sp_sc_func_load_cvar <entry>" (activate function)
+//   _sp_cl_sv_99 : "<gen>"   job tag, last send of every job
+//
+// The handlers below deliberately PARSE NOTHING: every data arrival is
+// executed verbatim and counted. Order is guaranteed by the reliable
+// channel (DONE arrives last), so no sequence tracking is needed.
+//
+// Install: place this file at sofplus/addons/pipe.func (first install via
+// the server's `download` unlock, a mod pack, or by hand) and restart the
+// client. The lane count MUST cover the server's _sofbuddy_clsv_lanes
+// (4 here). For any other lane count, regenerate with:
+//   python3 tools/clsv_gen_listener.py --lanes N
+//
+
+function pipe_init( )
+{
+  set _pipe_got 0
+  sp_sc_on_change _sp_cl_sv_98 pipe_on_info
+  sp_sc_on_change _sp_cl_sv_0 pipe_on_0
+  sp_sc_on_change _sp_cl_sv_1 pipe_on_1
+  sp_sc_on_change _sp_cl_sv_2 pipe_on_2
+  sp_sc_on_change _sp_cl_sv_3 pipe_on_3
+  sp_sc_on_change _sp_cl_sv_99 pipe_on_done
+  echo "pipe: listener ready (4 lanes)"
+}
+
+function pipe_on_info( * )
+{
+  set _pipe_got 0
+  echo "pipe: transfer started"
+}
+
+function pipe_on_0( * )
+{
+  sp_sc_exec_cvar _sp_cl_sv_0
+  sp_sc_cvar_math_add _pipe_got 1
+}
+
+function pipe_on_1( * )
+{
+  sp_sc_exec_cvar _sp_cl_sv_1
+  sp_sc_cvar_math_add _pipe_got 1
+}
+
+function pipe_on_2( * )
+{
+  sp_sc_exec_cvar _sp_cl_sv_2
+  sp_sc_cvar_math_add _pipe_got 1
+}
+
+function pipe_on_3( * )
+{
+  sp_sc_exec_cvar _sp_cl_sv_3
+  sp_sc_cvar_math_add _pipe_got 1
+}
+
+function pipe_on_done( * )
+{
+  echo "pipe: transfer complete, got #_pipe_got chunks"
+  pipeack #_pipe_got
+}

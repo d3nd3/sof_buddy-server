@@ -1,0 +1,3 @@
+[
+  { "hook": "GameDllLoaded", "callback": "gamepark_OnGameDllLoaded", "priority": 11, "phase": "Post" }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "function": "SV_ClientThink",
+    "callback": "svtrack_ClientThinkPre",
+    "phase": "Pre",
+    "priority": 0
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "svtrack_SvFramePost",
+    "phase": "Post",
+    "priority": 0
+  }
+]

@@ -1,0 +1,9 @@
+// while_cpu - lag-counter shape without per-iter engine alias (see results_math_add_vs_add.txt).
+// wcnt is an engine cvar: reset with `set wcnt 0` before exec, not func-body `set`.
+function while_cpu_run()
+{
+  sp_sc_flow_while number cvar wcnt < val 2500
+  {
+    sp_sc_cvar_math_add wcnt 1
+  }
+}

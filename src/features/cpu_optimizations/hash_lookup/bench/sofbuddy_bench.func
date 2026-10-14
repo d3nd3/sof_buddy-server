@@ -1,0 +1,361 @@
+// sofbuddy_bench.func - measures what the hash_lookup feature actually buys.
+//
+// Install:  copy to  user/sofplus/sofbuddy_bench.func
+// Load:     sp_sc_func_load_file sofplus/sofbuddy_bench.func
+//           sp_sc_func_exec sofbuddy_bench_init
+//
+// ---------------------------------------------------------------------------
+// Design notes, all from spsv.dll:
+//
+//  * sp_sc_flow_* share ONE budget of 100000 iterations per server frame
+//    (counter @0x1002F9F0 vs 0x186A0 @0x100048D2, reset only @0x1000C37A in
+//    sofplus's per-frame hook). It refills per FRAME, not per function, so
+//    each round below runs in its own frame, chained by 1 ms timers.
+//  * That same hook then calls @0x10005750, freeing every '~' temporary, so
+//    state crossing a timer lives in permanent cvars.
+//
+// Measurement is ADAPTIVE so it can neither hang nor return 0: each phase adds
+// rounds until at least _sofbuddy_bench_target seconds of wall clock have
+// passed, or _sofbuddy_bench_maxrounds is reached. It then reports throughput
+// in operations per second, which is comparable between runs regardless of how
+// many rounds each needed.
+//
+// Wall clock is whole seconds (_sp_sc_info_time_sec) - the only clock sofplus
+// exposes. Each round also costs one frame (~100 ms) of timer latency, which
+// is counted in the elapsed time, so the fast side is understated: treat the
+// resulting ratio as a LOWER BOUND on the real speedup.
+//
+// Run on an EMPTY server: each round freezes the engine thread.
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_init()
+{
+  // Flow iterations per round. Must stay under the 100000/frame budget.
+  set _sofbuddy_bench_iters 80000
+  // Keep adding rounds until this many seconds have elapsed...
+  set _sofbuddy_bench_target 3
+  // ...but never more than this many (bounds the worst case).
+  set _sofbuddy_bench_maxrounds 20
+
+  set _sofbuddy_bench_phase 0
+  set _sofbuddy_bench_round 0
+  set _sofbuddy_bench_t0 0
+  set _sofbuddy_bench_done 0
+  set _sofbuddy_bench_var 0
+  set _sofbuddy_bench_sink 0
+
+  set _sofbuddy_bench_off_a 0
+  set _sofbuddy_bench_off_b 0
+  set _sofbuddy_bench_off_c 0
+  set _sofbuddy_bench_off_d 0
+  set _sofbuddy_bench_on_a 0
+  set _sofbuddy_bench_on_b 0
+  set _sofbuddy_bench_on_c 0
+  set _sofbuddy_bench_on_d 0
+
+  echo "[sofbuddy_bench] loaded. _sofbuddy_hashmap is" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench] check plumbing: sp_sc_func_exec sofbuddy_bench_diag"
+  echo "[sofbuddy_bench] then measure:   sp_sc_func_exec sofbuddy_bench_run"
+}
+
+function sofbuddy_bench_diag()
+{
+  sp_sc_info_time
+  echo "[diag] hashmap       =" #_sofbuddy_hashmap
+  echo "[diag] time_sec      =" #_sp_sc_info_time_sec
+  echo "[diag] clamp_lost_ms =" #_sofbuddy_clamp_lost_ms
+  echo "[diag] iters cvar    =" #_sofbuddy_bench_iters
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val 1000
+  {
+    add ~i 1
+  }
+  echo "[diag] loop of 1000 ended at i =" #~i
+  echo "[diag] now timing one full round - expect a freeze"
+  sp_sc_info_time
+  set _sofbuddy_bench_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_work_a
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_t0
+  echo "[diag] one round of" #_sofbuddy_bench_iters "x 10 ops took" #~e "s, loop ended at" #_sofbuddy_bench_done
+  echo "[diag] clamp_lost_ms now =" #_sofbuddy_clamp_lost_ms
+}
+
+// A - permanent (non-'~') script variables: the ordinary scripting case and
+// what the feature targets. Every line is a Cmd_ExecuteString too.
+function sofbuddy_bench_work_a()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_iters
+  {
+    add _sofbuddy_bench_var 1
+    set _sofbuddy_bench_sink #_sofbuddy_bench_var
+    add _sofbuddy_bench_var 1
+    set _sofbuddy_bench_sink #_sofbuddy_bench_var
+    add _sofbuddy_bench_var 1
+    set _sofbuddy_bench_sink #_sofbuddy_bench_var
+    add _sofbuddy_bench_var 1
+    set _sofbuddy_bench_sink #_sofbuddy_bench_var
+    add _sofbuddy_bench_var 1
+    set _sofbuddy_bench_sink #_sofbuddy_bench_var
+    add ~i 1
+  }
+  set _sofbuddy_bench_done #~i
+}
+
+// B - deep engine cvars. Cvars are prepended, so the engine's own (created at
+// startup) sit at the BOTTOM of the list and cost most to reach. All five are
+// numeric and present in SoF.exe - it is `maxclients`, not `sv_maxclients`,
+// and `hostname` is avoided because its spaces break `set`.
+function sofbuddy_bench_work_b()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_iters
+  {
+    set _sofbuddy_bench_sink #maxclients
+    set _sofbuddy_bench_sink #timelimit
+    set _sofbuddy_bench_sink #fraglimit
+    set _sofbuddy_bench_sink #deathmatch
+    set _sofbuddy_bench_sink #dmflags
+    set _sofbuddy_bench_sink #maxclients
+    set _sofbuddy_bench_sink #timelimit
+    set _sofbuddy_bench_sink #fraglimit
+    set _sofbuddy_bench_sink #deathmatch
+    set _sofbuddy_bench_sink #dmflags
+    add ~i 1
+  }
+  set _sofbuddy_bench_done #~i
+}
+
+// C - worst case: lines that are neither command nor alias, so Cmd_ExecuteString
+// scans EVERY command, then EVERY alias, then falls into Cvar_Command which
+// scans EVERY cvar. With argc > 1 the set is silent.
+function sofbuddy_bench_work_c()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_iters
+  {
+    _sofbuddy_bench_var 1
+    _sofbuddy_bench_var 2
+    _sofbuddy_bench_var 3
+    _sofbuddy_bench_var 4
+    _sofbuddy_bench_var 5
+    _sofbuddy_bench_var 6
+    _sofbuddy_bench_var 7
+    _sofbuddy_bench_var 8
+    _sofbuddy_bench_var 9
+    _sofbuddy_bench_var 10
+    add ~i 1
+  }
+  set _sofbuddy_bench_done #~i
+}
+
+// D - '~' temporaries: isolates the CVAR half only. Never indexed, because
+// sofplus frees them every frame and caching a pointer to one is a
+// use-after-free. Not a pure control: `add ~t 1` is still a console command,
+// so its Cmd_ExecuteString scan IS indexed - expect ~1.2x, and treat this
+// phase's per-op cost as the floor that no amount of hashing can remove.
+function sofbuddy_bench_work_d()
+{
+  set ~i 0
+  set ~t 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_iters
+  {
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_done #~i
+}
+
+// ---------------------------------------------------------------------------
+// Driver: adaptive rounds, one round per frame.
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_run()
+{
+  echo "[sofbuddy_bench] ------------------------------------------"
+  echo "[sofbuddy_bench] _sofbuddy_hashmap =" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench] iters/round" #_sofbuddy_bench_iters "target" #_sofbuddy_bench_target "s  max rounds" #_sofbuddy_bench_maxrounds
+  echo "[sofbuddy_bench] the server will freeze in bursts - this is expected"
+  set _sofbuddy_bench_phase 0
+  sp_sc_func_exec sofbuddy_bench_phase_start
+}
+
+function sofbuddy_bench_phase_start()
+{
+  set _sofbuddy_bench_round 0
+  sp_sc_info_time
+  set _sofbuddy_bench_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_round_start
+}
+
+function sofbuddy_bench_round_start()
+{
+  sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 0
+  {
+    sp_sc_func_exec sofbuddy_bench_work_a
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 1
+  {
+    sp_sc_func_exec sofbuddy_bench_work_b
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 2
+  {
+    sp_sc_func_exec sofbuddy_bench_work_c
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 3
+  {
+    sp_sc_func_exec sofbuddy_bench_work_d
+  }
+  add _sofbuddy_bench_round 1
+
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_t0
+
+  sp_sc_flow_if number val #~e >= val #_sofbuddy_bench_target
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_phase_done"
+  }
+  else
+  {
+    sp_sc_flow_if number cvar _sofbuddy_bench_round >= val #_sofbuddy_bench_maxrounds
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_phase_done"
+    }
+    else
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_round_start"
+    }
+  }
+}
+
+function sofbuddy_bench_phase_done()
+{
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_t0
+
+  // ops = rounds * iters * 10
+  set ~ops #_sofbuddy_bench_round
+  sp_sc_cvar_math_mul ~ops #_sofbuddy_bench_iters
+  sp_sc_cvar_math_mul ~ops 10
+
+  // ops/sec, guarding a sub-second elapsed
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+
+  sp_sc_flow_if number cvar _sofbuddy_hashmap == val 0
+  {
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 0
+    {
+      set _sofbuddy_bench_off_a #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 1
+    {
+      set _sofbuddy_bench_off_b #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 2
+    {
+      set _sofbuddy_bench_off_c #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 3
+    {
+      set _sofbuddy_bench_off_d #~rate
+    }
+  }
+  else
+  {
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 0
+    {
+      set _sofbuddy_bench_on_a #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 1
+    {
+      set _sofbuddy_bench_on_b #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 2
+    {
+      set _sofbuddy_bench_on_c #~rate
+    }
+    sp_sc_flow_if number cvar _sofbuddy_bench_phase == val 3
+    {
+      set _sofbuddy_bench_on_d #~rate
+    }
+  }
+
+  echo "[sofbuddy_bench]  phase" #_sofbuddy_bench_phase ": rounds" #_sofbuddy_bench_round "ops" #~ops "in" #~e "s =" #~rate "ops/sec  (loop ended at" #_sofbuddy_bench_done ")"
+
+  add _sofbuddy_bench_phase 1
+  sp_sc_flow_if number cvar _sofbuddy_bench_phase < val 4
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_phase_start"
+  }
+  else
+  {
+    sp_sc_func_exec sofbuddy_bench_finished
+  }
+}
+
+function sofbuddy_bench_finished()
+{
+  echo "[sofbuddy_bench] phases: 0=script vars 1=deep cvars 2=non-command 3='~' control"
+  echo "[sofbuddy_bench] 'loop ended at' must equal" #_sofbuddy_bench_iters
+  sp_sc_flow_if number cvar _sofbuddy_hashmap == val 0
+  {
+    echo "[sofbuddy_bench] OFF baseline stored."
+    echo "[sofbuddy_bench] next: _sofbuddy_hashmap 1 ; map <same map> ; run again"
+  }
+  else
+  {
+    echo "[sofbuddy_bench] ON result stored."
+    echo "[sofbuddy_bench] next: sp_sc_func_exec sofbuddy_bench_report"
+  }
+}
+
+function sofbuddy_bench_line( ~label, ~off, ~on )
+{
+  sp_sc_flow_if number val #~off <= val 0
+  {
+    echo "[sofbuddy_bench] " #~label ": no OFF baseline"
+  }
+  else
+  {
+    sp_sc_flow_if number val #~on <= val 0
+    {
+      echo "[sofbuddy_bench] " #~label ": no ON result"
+    }
+    else
+    {
+      set ~r #~on
+      sp_sc_cvar_math_div ~r #~off
+      echo "[sofbuddy_bench] " #~label ":" #~off "->" #~on "ops/sec   x" #~r
+    }
+  }
+}
+
+function sofbuddy_bench_report()
+{
+  echo "[sofbuddy_bench] ===== hashmap OFF -> ON (ops/sec, higher is better) ====="
+  sp_sc_func_exec sofbuddy_bench_line "A permanent script vars " #_sofbuddy_bench_off_a #_sofbuddy_bench_on_a
+  sp_sc_func_exec sofbuddy_bench_line "B deep engine cvars     " #_sofbuddy_bench_off_b #_sofbuddy_bench_on_b
+  sp_sc_func_exec sofbuddy_bench_line "C non-command lines     " #_sofbuddy_bench_off_c #_sofbuddy_bench_on_c
+  sp_sc_func_exec sofbuddy_bench_line "D '~' temporaries (ctrl)" #_sofbuddy_bench_off_d #_sofbuddy_bench_on_d
+  echo "[sofbuddy_bench] D isolates the cvar half; its gain is command dispatch only."
+  echo "[sofbuddy_bench] D's per-op cost is the floor: tokenise + interpreter + string alloc."
+  echo "[sofbuddy_bench] Ratios are a LOWER BOUND - timer latency is charged to the fast side."
+}

@@ -1,0 +1,7 @@
+[
+  {
+    "function": "SetupIpUdpSocket",
+    "callback": "recvbuf_SetupIpUdpSocketPost",
+    "phase": "Post"
+  }
+]

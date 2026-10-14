@@ -1,0 +1,660 @@
+# Registry of symbols the shim may resolve or hook.
+# RVAs (< 0x10000000) are relative to the PE module named in `module` (see runtime/detours.cpp).
+# Absolute addresses are used as-is.
+#
+# Com_DPrintf: id-style developer logging (guarded by developer cvar in the engine).
+# Address from sof_buddy / retail SoF.exe — verify for your server binary if needed.
+
+functions:
+  - name: Com_DPrintf
+    module: SofExe
+    identifier: "0x2001C8E0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    variadic: true
+    params:
+      - type: const char*
+        name: fmt
+
+  - name: Com_Printf
+    module: SofExe
+    identifier: "0x2001C6E0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    variadic: true
+    params:
+      - type: const char*
+        name: fmt
+
+  # SoF-spsv.exe / SoF.exe share engine .text (verified address-identical).
+  # SV_RunGameFrame @ 0x2005F3F0: framenum++ → sv_time=fn*100 → ge->RunFrame()
+  # → if (sv_time < svs_realtime) { "sv highclamp"; svs_realtime = sv_time; }
+
+  # --- engine frame loop (tick_pacing) -------------------------------------
+  # Absolute addresses on purpose: SofExe RVA resolution goes through
+  # GetModuleHandleA("SoF.exe"), which is NULL on a SoF-spsv.exe server.
+  #
+  # WinMain @0x20066300:  Sleep(1) -> PeekMessage pump -> spin until
+  #   (Sys_Milliseconds() - oldtime) >= 1 -> Qcommon_frame(msec) -> oldtime=newtime
+  # Qcommon_frame @0x2001F720: Sys_ConsoleInput/Cbuf_Execute @0x2001F885, then
+  #   SV_Frame(msec) @0x2001F8BB, then CL_Frame(msec) (returns at once when
+  #   the `dedicated` cvar is set).
+  # SV_Frame @0x2005F5B0: svs.realtime += msec; SV_ReadPackets(); then
+  #   `if (svs.realtime < sv.time) { maybe lowclamp; return; }` else
+  #   SV_RunGameFrame() @0x2005F3F0 (which is where "sv highclamp" lives).
+  - name: Qcommon_frame
+    module: SofExe
+    identifier: "0x2001F720"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: msec
+
+  - name: SV_Frame
+    module: SofExe
+    identifier: "0x2005F5B0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: msec
+
+  - name: SV_RunGameFrame
+    module: SofExe
+    identifier: "0x2005F3F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # SV_ReadPackets @0x2005F100: called from SV_Frame @0x2005F5EF and from
+  # nowhere else (verified: one caller). It sits *after* the
+  # `svs.realtime += msec` at 0x2005F5E2 and *before* the lowclamp test at
+  # 0x2005F60A, which makes a Post hook on it the exact analogue of what
+  # clamp_monitor already does for highclamp via G_RunFrame: the two globals
+  # hold precisely the values the engine's own `sv.time - svs.realtime > 100`
+  # is about to be computed from, and nothing can perturb them in between.
+  - name: SV_ReadPackets
+    module: SofExe
+    identifier: "0x2005F100"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # SV_CalcPings @0x2005F060: averages cl_frame_latency → client ping (SV_Frame
+  # before SV_RunGameFrame). cmdtext_parking Post hook subtracts last post-tick
+  # drain ms so scoreboard ping is not inflated by cmd_text work.
+  - name: SV_CalcPings
+    module: SofExe
+    identifier: "0x2005F060"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # NET_GetPacket @0x2004E630: non-blocking recv drain inside SV_ReadPackets.
+  - name: NET_GetPacket
+    module: SofExe
+    identifier: "0x2004E630"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: sock
+      - type: void*
+        name: net_from
+      - type: void*
+        name: net_message
+
+  # SV_ClientThink @0x200635F0: (client_t* cl, usercmd_t* cmd) from clc_move
+  # after MSG_ReadDeltaUserCmd; calls ge->ClientThink unless cinematic freeze.
+  - name: SV_ClientThink
+    module: SofExe
+    identifier: "0x200635F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: client
+      - type: void*
+        name: cmd
+
+  # SV_ExecuteClientMessage @0x200636C0: (client_t* cl) from SV_ReadPackets.
+  # Full per-client packet dispatch: clc_move branch does checksum +
+  # lastServerFrame + InPacket decrypt + 3x MSG_ReadDeltaUserCmd + CRC +
+  # all SV_ClientThink calls for that packet (see callees); also handles
+  # clc_userinfo / clc_stringcmd. Lagometer times this as the clc_move cost
+  # instead of timing individual SV_ClientThink calls.
+  - name: SV_ExecuteClientMessage
+    module: SofExe
+    identifier: "0x200636C0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: client
+
+  - name: Cbuf_Execute
+    module: SofExe
+    identifier: "0x20018530"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # Cbuf_AddText @0x20018180: append; overflow drops the new text.
+  # sofplus ClientCommand_HOOK (.COMMAND / "say .COMMAND") reaches this via
+  # ScriptEventDispatcher(directInsert=0) from SV_ReadPackets, i.e. after
+  # this loop's Cbuf_Execute and often on an inter-tick SV_Frame.
+  - name: Cbuf_AddText
+    module: SofExe
+    identifier: "0x20018180"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
+
+  # Cbuf_InsertText @0x200181D0: stock Quake 2, with Cbuf_AddText inlined -
+  # Z_Malloc(cursize) + copy out + SZ_Clear + AddText + copy back + Z_Free.
+  # Only one engine caller (newsave @0x20061690); sofplus calls it directly by
+  # address, which is what makes it worth overriding. Note Cbuf_ExecuteText
+  # @0x20018380 carries a second, inlined copy of the same body for its
+  # EXEC_INSERT branch (@0x2001842A) - not reachable from this hook.
+  - name: Cbuf_InsertText
+    module: SofExe
+    identifier: "0x200181D0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
+
+  # Cbuf_ExecuteText @0x20018380: EXEC_NOW=0 / INSERT=1 / APPEND=2. Insert and
+  # append inlined (do not call Cbuf_InsertText / Cbuf_AddText).
+  - name: Cbuf_ExecuteText
+    module: SofExe
+    identifier: "0x20018380"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: exec_when
+      - type: char*
+        name: text
+
+  # Cmd_ExecuteString @0x200194F0: per-command call inside Cbuf_Execute
+  # (0x200185BC). cmd_cost times Pre/Post only — never cmd_wait.
+  - name: Cmd_ExecuteString
+    module: SofExe
+    identifier: "0x200194F0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: text
+
+  # Retail gamex86.dll (as oldgamex86.dll) — RVAs from retail disassembly image base 0x50000000; verify for your build.
+  - name: SelectTeamDeathmatchSpawnPoint
+    module: GameDll
+    identifier: "0xF2FD0"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: SelectRandomDeathmatchSpawnPoint
+    module: GameDll
+    identifier: "0xF2E20"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: G_Find
+    module: GameDll
+    identifier: "0xC26A0"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: from
+      - type: int
+        name: fieldofs
+      - type: char*
+        name: match
+      - type: int
+        name: cmp
+
+  - name: OnSameTeam
+    module: GameDll
+    identifier: "0x887E0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: a
+      - type: void*
+        name: b
+
+  - name: Info_ValueForKey
+    module: GameDll
+    identifier: "0xFE320"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: const char*
+        name: s
+      - type: const char*
+        name: key
+
+  - name: WP_Team1SpawnIndex
+    module: GameDll
+    identifier: "0x617F0"
+    return_type: short
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: int
+        name: spawn_id
+
+  - name: WP_Team2SpawnIndex
+    module: GameDll
+    identifier: "0x61920"
+    return_type: short
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: int
+        name: spawn_id
+
+  # G_RunFrame: engine calls this every server tick, immediately before its own
+  # "sv highclamp" check (sv_time < svs_realtime). Used by clamp_monitor to
+  # observe the exact pre-clamp values instead of polling from a background
+  # thread. This is also the function SoFPlus (spsv.dll) hooks; going through
+  # the normal trampoline detour here (not a game_export_t pointer swap) makes
+  # us compose correctly with it regardless of load order - see
+  # src/features/cpu_optimizations/clamp_monitor/README.md.
+  # ClientEndServerFrame(edict): G_SetStats + scoreboard; runs inside
+  # SV_RunGameFrame before CL_SendClientMessages. Layout visibility and
+  # svc_layout must be pushed here (not SV_Frame Post) or clients never
+  # receive STAT_LAYOUTS bit 0 / layout in the same tick.
+  - name: ClientEndServerFrame
+    module: GameDll
+    identifier: "0xF9A00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: G_RunFrame
+    module: GameDll
+    identifier: "0xAE340"
+    return_type: float
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: serverframe
+
+  # dmctf_c::AssignTeam body (retail gamex86 @ 0x5006d070). Profiles filters
+  # collapsed/garbage team_red_blue so team-menu changes don't run twice
+  # (kill + restore echo) before the guid-bearing value is pushed back.
+  - name: orig_AssignTeam
+    module: GameDll
+    identifier: "0x6D070"
+    return_type: void
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: void*
+        name: ent
+      - type: char*
+        name: userinfo
+
+  - name: PB_InitBody
+    module: GameDll
+    identifier: "0xEFE50"
+    return_type: bool
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: userinfo
+
+  - name: PB_GetActualSkinName
+    module: GameDll
+    identifier: "0xEFBC0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: out
+
+  - name: PB_GetActualTeamName
+    module: GameDll
+    identifier: "0xEFCA0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: out
+
+  # gamex86.dll @ image base 0x50000000 (retail disassembly gamex86.dll)
+  - name: PutClientInServer
+    module: GameDll
+    identifier: "0xF38A0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: respawn
+    module: GameDll
+    identifier: "0xF3550"
+    return_type: short
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: player_die
+    module: GameDll
+    identifier: "0xF2A30"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: self
+      - type: void*
+        name: inflictor
+      - type: void*
+        name: attacker
+      - type: int
+        name: damage
+      - type: float*
+        name: point
+
+  # SV_Configstring. CS_PLAYERSKINS (0x587) is name\team\skin\bit. A leading
+  # * on team is the client "doesn't recognise teamname" line.
+  - name: configstring
+    module: SofExe
+    identifier: "0x5CA40"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: num
+      - type: char*
+        name: s
+
+  # ---------------------------------------------------------------------
+  # Zone allocator (SoF.exe). Z_Malloc/Z_Free are the engine's single
+  # allocation chokepoint - 36 and 56 call sites respectively - and every
+  # console line runs several of them (Cmd_TokenizeString Z_Frees and
+  # Z_Mallocs one block per argument @0x20018FD8/@0x200190BD, and Cvar_Set2
+  # frees + CopyStrings the value on every write). Under Wine each pair is a
+  # RtlAllocateHeap/RtlFreeHeap round trip. See src/features/cpu_optimizations/zpool/.
+  # ---------------------------------------------------------------------
+  - name: Z_Malloc
+    module: SofExe
+    identifier: "0x2001F120"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: size
+
+  - name: Z_Free
+    module: SofExe
+    identifier: "0x2001EBC0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ptr
+
+  # The CRT entries Z_Malloc/Z_Free themselves call. The pool must allocate
+  # through *these*, not through this DLL's own statically linked CRT: blocks
+  # outlive our detours (spsv reloads this DLL), and the engine's restored
+  # Z_Free would hand them to the engine's free().
+  - name: EngineMalloc
+    module: SofExe
+    identifier: "0x200FABFE"
+    return_type: void*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: unsigned int
+        name: size
+
+  - name: EngineFree
+    module: SofExe
+    identifier: "0x200F9D32"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ptr
+
+
+  - name: Sys_Milliseconds
+    module: SofExe
+    identifier: "0x20055930"
+    return_type: int
+    params: []
+    calling_convention: __cdecl
+    detour_len: 0
+
+  # setupIpUdpSocket @0x2004ECB0: Quake 2's UDP_OpenSocket
+  # (net_interface, port) -> SOCKET, 0 on failure. Verified retail disassembly SoF.exe:
+  # socket -> ioctlsocket(FIONBIO) -> setsockopt(SO_BROADCAST) -> bind,
+  # single caller NET_OpenIP @0x2004EE30. Only SO_BROADCAST is ever set.
+  - name: SetupIpUdpSocket
+    module: SofExe
+    identifier: "0x2004ECB0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: net_interface
+      - type: int
+        name: port
+
+  # --- engine console commands (stufftext) -------------------------------
+  # Addresses from the sofplus engine interface scan (see
+  # src/features/cpu_optimizations/hash_lookup/README.md): identical in the 2012 and 2019
+  # server engines, which share .text. Pointer-only (call the engine to
+  # register our own server-console command; never detour these).
+  - name: Cmd_AddCommand
+    module: SofExe
+    identifier: "0x20019130"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: cmd_name
+      - type: void*
+        name: function
+
+  - name: Cmd_Argc
+    module: SofExe
+    identifier: "0x20018D20"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: Cmd_Argv
+    module: SofExe
+    identifier: "0x20018D30"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: int
+        name: n
+
+  - name: Cmd_Args
+    module: SofExe
+    identifier: "0x20018D50"
+    return_type: char*
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  # --- reliable_defer: server→client reliable staging (SZ_Write + MSG_Write*) -
+  # Dedicated server sends frames here (SV_Frame → CL_SendClientMessages).
+  - name: Netchan_Transmit
+    module: SofExe
+    identifier: "0x2004D400"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: netchan
+      - type: int
+        name: length
+      - type: void*
+        name: data
+
+  - name: CL_SendClientMessages
+    module: SofExe
+    identifier: "0x20062560"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params: []
+
+  - name: SZ_Write
+    module: SofExe
+    identifier: "0x2001E7B0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: void*
+        name: data
+      - type: int
+        name: length
+
+  # Reliable server→client staging also uses MSG_Write* (not SZ_Write).
+  - name: MSG_WriteByte
+    module: SofExe
+    identifier: "0x2001CB00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
+  - name: MSG_WriteShort
+    module: SofExe
+    identifier: "0x2001CB70"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
+  - name: MSG_WriteLong
+    module: SofExe
+    identifier: "0x2001CBF0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: int
+        name: c
+
+  - name: MSG_WriteString
+    module: SofExe
+    identifier: "0x2001CD00"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb
+      - type: char*
+        name: s
+
+  # SV_GhoulFileIndex(name): SV_FindIndex(name, 1497, 2048, create=1).
+  # Registers a file in CS_GHOULFILES (first-free slot, multicasts the
+  # update); the client's connect-time precache walk requests every
+  # non-empty entry verbatim, which is how pipe.func auto-downloads.
+  # Pointer-only (never detoured). Verified: SoF.exe 0x2005D5B0.
+  - name: SV_GhoulFileIndex
+    module: SofExe
+    identifier: "0x2005D5B0"
+    return_type: int
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: char*
+        name: name
+
+  - name: SZ_Clear
+    module: SofExe
+    identifier: "0x2001E730"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: sb

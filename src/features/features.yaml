@@ -1,0 +1,23 @@
+# Optional features: each key is a directory under src/features/<name>/.
+# Core (src/core/) is always included — not listed here.
+# Use true / false so every feature can be toggled explicitly in one place.
+
+features:
+  example: false
+  ctf_spawn: false
+  # Tick/CPU modules under src/features/cpu_optimizations/ (includes
+  # cmd_cost; zpool compiled, cvar 0). See that folder's README.
+  cpu_optimizations: true
+  stufftext: true
+  reliable_defer: true
+  print_guard: true
+  minigames: true
+  clsv_pipe: true
+  profiles: true
+  skinteam_quiet: true
+  sv_tracktime: true
+  # my_feature: false
+
+# Alternative: list only enabled names (merged with `features:` above if both present).
+# enabled:
+#   - example

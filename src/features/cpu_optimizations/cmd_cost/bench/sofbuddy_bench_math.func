@@ -1,0 +1,439 @@
+// sofbuddy_bench_math.func - sp_sc_cvar_math_add vs script `add`, head to head.
+//
+// Install:  copy to  user/sofplus/addons/sofbuddy_bench_math.func
+// Load:     sp_sc_func_load_file sofplus/addons/sofbuddy_bench_math.func
+//           sp_sc_func_exec sofbuddy_bench_math_init
+//
+// ---------------------------------------------------------------------------
+// What is being compared: the cost of incrementing a counter by one, per
+// loop iteration, inside an IDENTICAL while loop. Only the increment differs:
+//
+//   M  10x `sp_sc_cvar_math_add _sofbuddy_bench_mvar 1`  (sofplus command:
+//      Cvar_Get + atof + Cvar_SetValue)
+//   S  10x `add _sofbuddy_bench_svar 1`                  (engine command:
+//      Cvar_Add = VariableValue + atof + Cvar_SetValue)
+//   T  10x `add ~t 1`                                   (same engine `add`,
+//      '~' temporary: hashmap bench phase D shape)
+//
+// The loop counter (`add ~i 1`) and the condition are identical everywhere,
+// so they cancel out of every ratio. Hashmap state is recorded, not varied:
+// math_add's cvar lookup is hashmap-sensitive, `add` on a permanent var goes
+// through the same cvar store, `~t` never touches it.
+//
+// Design notes, inherited from sofbuddy_bench.func (spsv.dll):
+//
+//  * sp_sc_flow_* share ONE budget of 100000 iterations per server frame,
+//    refilled per FRAME, so each round below runs in its own frame, chained
+//    by 1 ms timers.
+//  * That same hook then frees every '~' temporary, so state crossing a
+//    timer lives in permanent cvars.
+//
+// Measurement is ADAPTIVE so it can neither hang nor return 0: each phase adds
+// rounds until at least _sofbuddy_bench_math_target seconds of wall clock have
+// passed, or _sofbuddy_bench_math_maxrounds is reached. It then reports
+// throughput in operations per second.
+//
+// Wall clock is whole seconds (_sp_sc_info_time_sec) - the only clock sofplus
+// exposes. Each round also costs one frame (~100 ms) of timer latency, which
+// is counted in the elapsed time, so the fast side is understated: treat the
+// resulting ratio as a LOWER BOUND on the real speedup.
+//
+// Run on an EMPTY server: each round freezes the engine thread.
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_math_init()
+{
+  // Flow iterations per round. Must stay under the 100000/frame budget.
+  set _sofbuddy_bench_math_iters 80000
+  // Keep adding rounds until this many seconds have elapsed...
+  set _sofbuddy_bench_math_target 3
+  // ...but never more than this many (bounds the worst case).
+  set _sofbuddy_bench_math_maxrounds 20
+
+  set _sofbuddy_bench_math_phase 0
+  set _sofbuddy_bench_math_round 0
+  set _sofbuddy_bench_math_t0 0
+  set _sofbuddy_bench_math_done 0
+  set _sofbuddy_bench_math_mvar 0
+  set _sofbuddy_bench_math_svar 0
+  set _sofbuddy_bench_math_sink 0
+
+  set _sofbuddy_bench_math_m 0
+  set _sofbuddy_bench_math_s 0
+  set _sofbuddy_bench_math_t 0
+
+  echo "[sofbuddy_bench_math] loaded. _sofbuddy_hashmap is" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench_math] check plumbing: sp_sc_func_exec sofbuddy_bench_math_diag"
+  echo "[sofbuddy_bench_math] then measure:   sp_sc_func_exec sofbuddy_bench_math_run"
+}
+
+function sofbuddy_bench_math_diag()
+{
+  sp_sc_info_time
+  echo "[diag] hashmap       =" #_sofbuddy_hashmap
+  echo "[diag] time_sec      =" #_sp_sc_info_time_sec
+  echo "[diag] clamp_lost_ms =" #_sofbuddy_clamp_lost_ms
+  echo "[diag] iters         =" #_sofbuddy_bench_math_iters
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val 1000
+  {
+    add ~i 1
+  }
+  echo "[diag] loop of 1000 ended at i =" #~i
+  echo "[diag] now timing one M round - expect a freeze"
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_work_m
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+  echo "[diag] one M round took" #~e "s, loop ended at" #_sofbuddy_bench_math_done
+  echo "[diag] clamp_lost_ms now =" #_sofbuddy_clamp_lost_ms
+}
+
+// M - console-command increment: 10x sp_sc_cvar_math_add on a permanent cvar
+// per iteration. This is the while_cpu.cfg / lag-counter shape.
+function sofbuddy_bench_math_work_m()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_math_iters
+  {
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    sp_sc_cvar_math_add _sofbuddy_bench_math_mvar 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_math_done #~i
+}
+
+// S - engine `add` on a permanent script cvar. Same storage class as M.
+function sofbuddy_bench_math_work_s()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_math_iters
+  {
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add _sofbuddy_bench_math_svar 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_math_done #~i
+}
+
+// T - engine `add` on '~' temporaries (hashmap bench phase D shape).
+function sofbuddy_bench_math_work_t()
+{
+  set ~i 0
+  set ~t 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_math_iters
+  {
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~t 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_math_done #~i
+}
+
+// ---------------------------------------------------------------------------
+// Driver: adaptive rounds, one round per frame.
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_math_run()
+{
+  echo "[sofbuddy_bench_math] ------------------------------------------"
+  echo "[sofbuddy_bench_math] _sofbuddy_hashmap =" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench_math] iters/round" #_sofbuddy_bench_math_iters "target" #_sofbuddy_bench_math_target "s  max rounds" #_sofbuddy_bench_math_maxrounds
+  echo "[sofbuddy_bench_math] the server will freeze in bursts - this is expected"
+  set _sofbuddy_bench_math_phase 0
+  sp_sc_func_exec sofbuddy_bench_math_phase_start
+}
+
+function sofbuddy_bench_math_phase_start()
+{
+  set _sofbuddy_bench_math_round 0
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_round_start
+}
+
+function sofbuddy_bench_math_round_start()
+{
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 0
+  {
+    sp_sc_func_exec sofbuddy_bench_math_work_m
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 1
+  {
+    sp_sc_func_exec sofbuddy_bench_math_work_s
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 2
+  {
+    sp_sc_func_exec sofbuddy_bench_math_work_t
+  }
+  add _sofbuddy_bench_math_round 1
+
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+
+  sp_sc_flow_if number val #~e >= val #_sofbuddy_bench_math_target
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_math_phase_done"
+  }
+  else
+  {
+    sp_sc_flow_if number cvar _sofbuddy_bench_math_round >= val #_sofbuddy_bench_math_maxrounds
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_math_phase_done"
+    }
+    else
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_math_round_start"
+    }
+  }
+}
+
+function sofbuddy_bench_math_phase_done()
+{
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+
+  // ops = rounds * iters * 10
+  set ~ops #_sofbuddy_bench_math_round
+  sp_sc_cvar_math_mul ~ops #_sofbuddy_bench_math_iters
+  sp_sc_cvar_math_mul ~ops 10
+
+  // ops/sec, guarding a sub-second elapsed
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 0
+  {
+    set _sofbuddy_bench_math_m #~rate
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 1
+  {
+    set _sofbuddy_bench_math_s #~rate
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 2
+  {
+    set _sofbuddy_bench_math_t #~rate
+  }
+
+  echo "[sofbuddy_bench_math]  phase" #_sofbuddy_bench_math_phase ": rounds" #_sofbuddy_bench_math_round "ops" #~ops "in" #~e "s =" #~rate "ops/sec  (loop ended at" #_sofbuddy_bench_math_done ")"
+
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 0
+  {
+    echo "[sofbuddy_bench_math]  check mvar" #_sofbuddy_bench_math_mvar "want" #~ops
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase == val 1
+  {
+    echo "[sofbuddy_bench_math]  check svar" #_sofbuddy_bench_math_svar "want" #~ops
+  }
+
+  add _sofbuddy_bench_math_phase 1
+  sp_sc_flow_if number cvar _sofbuddy_bench_math_phase < val 3
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_math_phase_start"
+  }
+  else
+  {
+    sp_sc_func_exec sofbuddy_bench_math_finished
+  }
+}
+
+function sofbuddy_bench_math_finished()
+{
+  echo "[sofbuddy_bench_math] phases: M=cvar-math-add S=script-add-permanent T=script-add-temp"
+  echo "[sofbuddy_bench_math] 'loop ended at' must equal" #_sofbuddy_bench_math_iters
+  echo "[sofbuddy_bench_math] M =" #_sofbuddy_bench_math_m "ops/sec"
+  echo "[sofbuddy_bench_math] S =" #_sofbuddy_bench_math_s "ops/sec"
+  echo "[sofbuddy_bench_math] T =" #_sofbuddy_bench_math_t "ops/sec"
+  sp_sc_func_exec sofbuddy_bench_math_report
+}
+
+function sofbuddy_bench_math_report()
+{
+  set ~r 0
+  sp_sc_flow_if number val #_sofbuddy_bench_math_m > val 0
+  {
+    sp_sc_flow_if number val #_sofbuddy_bench_math_s > val 0
+    {
+      set ~r #_sofbuddy_bench_math_s
+      sp_sc_cvar_math_div ~r #_sofbuddy_bench_math_m
+    }
+  }
+  echo "[sofbuddy_bench_math] ===== math_add vs add (ops/sec, higher is better) ====="
+  echo "[sofbuddy_bench_math] S/M ratio (engine add vs sp_sc_cvar_math_add): x" #~r
+  echo "[sofbuddy_bench_math] Ratios are a LOWER BOUND - timer latency is charged to the fast side."
+}
+
+// ---------------------------------------------------------------------------
+// Engine-cvar isolation: the M phase above times math_add on a SCRIPT var
+// (func-body `set`). The production lag shape (while_cpu.cfg) runs it on an
+// ENGINE cvar through an alias instead. These two phases isolate exactly one
+// engine-cvar math_add, with no alias anywhere: F does one per iteration, E
+// does two; (E - F) / iters is one math_add on an engine cvar, timed by the
+// server clock. madd_probe / madd_i are engine cvars (rcon `set`), so their
+// end values are directly readable as proof each op really ran.
+// Run: sp_sc_func_exec sofbuddy_bench_math_run_fe  (fresh names: safe to
+// reload this file over an older copy)
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_math_work_f()
+{
+  // No `set` here on purpose: madd_i is an ENGINE cvar, reset from the
+  // console (`set madd_i 0`) before each run. A func-body `set` would create
+  // a same-named script var shadowing it. Shape mirrors while_cpu.cfg.
+  sp_sc_flow_while number cvar madd_i < val 20000
+  {
+    sp_sc_cvar_math_add madd_i 1
+  }
+}
+
+function sofbuddy_bench_math_work_e()
+{
+  // Same: madd_probe / madd_i are engine cvars, reset from the console.
+  sp_sc_flow_while number cvar madd_i < val 20000
+  {
+    sp_sc_cvar_math_add madd_probe 1
+    sp_sc_cvar_math_add madd_i 1
+  }
+}
+
+function sofbuddy_bench_math_run_fe()
+{
+  echo "[sofbuddy_bench_math] fe: one engine-cvar math_add per iter (F) vs two (E)"
+  echo "[sofbuddy_bench_math] fe: the server will freeze twice - this is expected"
+  set madd_probe 0
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_work_f
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+  echo "[sofbuddy_bench_math] fe: F took" #~e "s, madd_i =" #madd_i
+  set madd_probe 0
+  set madd_i 0
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_work_e
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+  echo "[sofbuddy_bench_math] fe: E took" #~e "s, madd_probe =" #madd_probe "madd_i =" #madd_i
+  echo "[sofbuddy_bench_math] fe: done - expect madd_i 20000 both times, probe 20000 on E"
+}
+
+// ---------------------------------------------------------------------------
+// Engine-cvar add vs math_add: same 80k x 10 loop as M/S but on ENGINE cvars
+// (console `set` before run - func-body `set` would shadow). Proves whether
+// script `add` is faster only on script vars or on engine cvars too.
+// Run: set bench_eadd 0
+//      set bench_emath 0
+//      sp_sc_func_exec sofbuddy_bench_math_run_eng
+// ---------------------------------------------------------------------------
+
+function sofbuddy_bench_math_work_eadd()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_math_iters
+  {
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add bench_eadd 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_math_done #~i
+}
+
+function sofbuddy_bench_math_work_emath()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_math_iters
+  {
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    sp_sc_cvar_math_add bench_emath 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_math_done #~i
+}
+
+function sofbuddy_bench_math_run_eng()
+{
+  echo "[sofbuddy_bench_math] eng: 10x add vs math_add on ENGINE cvars (reset both first)"
+  set bench_eadd 0
+  set bench_emath 0
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_work_eadd
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+  set ~ops #_sofbuddy_bench_math_iters
+  sp_sc_cvar_math_mul ~ops 10
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+  echo "[sofbuddy_bench_math] eng: add  bench_eadd=" #bench_eadd "want" #~ops "in" #~e "s =" #~rate "ops/sec"
+  set bench_eadd 0
+  set bench_emath 0
+  sp_sc_info_time
+  set _sofbuddy_bench_math_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_math_work_emath
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_math_t0
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+  echo "[sofbuddy_bench_math] eng: math bench_emath=" #bench_emath "want" #~ops "in" #~e "s =" #~rate "ops/sec  (loop" #_sofbuddy_bench_math_done ")"
+}

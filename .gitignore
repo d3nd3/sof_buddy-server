@@ -1,0 +1,13 @@
+/build/
+/build-release/
+/cmake-build-*/
+.cache/
+compile_commands.json
+/export/
+__pycache__/
+*.pyc
+/reference/engine/
+session-ses_*.md
+.cursor/
+.claude/
+.venv/

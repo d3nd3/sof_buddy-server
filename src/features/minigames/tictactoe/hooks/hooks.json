@@ -1,0 +1,14 @@
+[
+  {
+    "function": "SV_Frame",
+    "callback": "ttt_SvFramePost",
+    "phase": "Post",
+    "priority": 1
+  },
+  {
+    "function": "ClientEndServerFrame",
+    "callback": "ttt_ClientEndServerFramePost",
+    "phase": "Post",
+    "priority": 1
+  }
+]

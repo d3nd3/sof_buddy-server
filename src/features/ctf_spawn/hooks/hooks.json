@@ -1,0 +1,7 @@
+[
+  {
+    "function": "SelectTeamDeathmatchSpawnPoint",
+    "callback": "ctfspawn_SelectTeamSpawn",
+    "override": true
+  }
+]

@@ -1,0 +1,3 @@
+[
+  { "hook": "GameDllLoaded", "callback": "skinteam_OnGameDllLoaded", "priority": -10, "phase": "Post" }
+]

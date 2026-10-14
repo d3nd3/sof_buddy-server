@@ -1,0 +1,216 @@
+// sofbuddy_bench_alias.func - engine-alias wrapper vs inline body, hashmap A/B.
+//
+// Install:  copy to  user/sofplus/addons/sofbuddy_bench_alias.func
+// Load:     sp_sc_func_load_file sofplus/addons/sofbuddy_bench_alias.func
+//           sp_sc_func_exec sofbuddy_bench_alias_init
+// Run:      set bench_acnt 0
+//           set bench_mcnt 0
+//           sp_sc_func_exec sofbuddy_bench_alias_run
+//
+// Phases (same 80k x 1 op/iter unless adaptive stops early):
+//   0  I_add   - braced `add bench_acnt 1`            (func-body inline)
+//   1  A_add   - `bench_ainc` alias each iter          (while_cpu.cfg shape)
+//   2  I_math  - braced `sp_sc_cvar_math_add ...`
+//   3  A_math  - `bench_minc` alias each iter
+//
+// Aliases are ENGINE aliases (console `alias`), not sp_sc_func_alias.
+
+function sofbuddy_bench_alias_init()
+{
+  set _sofbuddy_bench_alias_iters 8000
+  set _sofbuddy_bench_alias_target 3
+  set _sofbuddy_bench_alias_maxrounds 20
+
+  set _sofbuddy_bench_alias_phase 0
+  set _sofbuddy_bench_alias_round 0
+  set _sofbuddy_bench_alias_t0 0
+  set _sofbuddy_bench_alias_done 0
+
+  set _sofbuddy_bench_alias_i0 0
+  set _sofbuddy_bench_alias_i1 0
+  set _sofbuddy_bench_alias_i2 0
+  set _sofbuddy_bench_alias_i3 0
+
+  alias bench_ainc "add bench_acnt 1"
+  alias bench_minc "sp_sc_cvar_math_add bench_mcnt 1"
+  echo "[sofbuddy_bench_alias] loaded. _sofbuddy_hashmap is" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench_alias] run: set bench_acnt 0 ; set bench_mcnt 0 ; sp_sc_func_exec sofbuddy_bench_alias_run"
+}
+
+function sofbuddy_bench_alias_work_i_add()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_alias_iters
+  {
+    add bench_acnt 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_alias_done #~i
+}
+
+function sofbuddy_bench_alias_work_a_add()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_alias_iters
+  {
+    bench_ainc
+    add ~i 1
+  }
+  set _sofbuddy_bench_alias_done #~i
+}
+
+function sofbuddy_bench_alias_work_i_math()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_alias_iters
+  {
+    sp_sc_cvar_math_add bench_mcnt 1
+    add ~i 1
+  }
+  set _sofbuddy_bench_alias_done #~i
+}
+
+function sofbuddy_bench_alias_work_a_math()
+{
+  set ~i 0
+  sp_sc_flow_while number cvar ~i < val #_sofbuddy_bench_alias_iters
+  {
+    bench_minc
+    add ~i 1
+  }
+  set _sofbuddy_bench_alias_done #~i
+}
+
+function sofbuddy_bench_alias_run()
+{
+  echo "[sofbuddy_bench_alias] ------------------------------------------"
+  echo "[sofbuddy_bench_alias] _sofbuddy_hashmap =" #_sofbuddy_hashmap
+  echo "[sofbuddy_bench_alias] iters/round" #_sofbuddy_bench_alias_iters "target" #_sofbuddy_bench_alias_target "s"
+  set _sofbuddy_bench_alias_phase 0
+  sp_sc_func_exec sofbuddy_bench_alias_phase_start
+}
+
+function sofbuddy_bench_alias_phase_start()
+{
+  set _sofbuddy_bench_alias_round 0
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase < val 2
+  {
+    set bench_acnt 0
+  }
+  else
+  {
+    set bench_mcnt 0
+  }
+  sp_sc_info_time
+  set _sofbuddy_bench_alias_t0 #_sp_sc_info_time_sec
+  sp_sc_func_exec sofbuddy_bench_alias_round_start
+}
+
+function sofbuddy_bench_alias_round_start()
+{
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 0
+  {
+    sp_sc_func_exec sofbuddy_bench_alias_work_i_add
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 1
+  {
+    sp_sc_func_exec sofbuddy_bench_alias_work_a_add
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 2
+  {
+    sp_sc_func_exec sofbuddy_bench_alias_work_i_math
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 3
+  {
+    sp_sc_func_exec sofbuddy_bench_alias_work_a_math
+  }
+  add _sofbuddy_bench_alias_round 1
+
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_alias_t0
+
+  sp_sc_flow_if number val #~e >= val #_sofbuddy_bench_alias_target
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_alias_phase_done"
+  }
+  else
+  {
+    sp_sc_flow_if number cvar _sofbuddy_bench_alias_round >= val #_sofbuddy_bench_alias_maxrounds
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_alias_phase_done"
+    }
+    else
+    {
+      sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_alias_round_start"
+    }
+  }
+}
+
+function sofbuddy_bench_alias_phase_done()
+{
+  sp_sc_info_time
+  set ~e #_sp_sc_info_time_sec
+  sp_sc_cvar_math_sub ~e #_sofbuddy_bench_alias_t0
+
+  set ~ops #_sofbuddy_bench_alias_round
+  sp_sc_cvar_math_mul ~ops #_sofbuddy_bench_alias_iters
+
+  set ~rate 0
+  sp_sc_flow_if number val #~e > val 0
+  {
+    set ~rate #~ops
+    sp_sc_cvar_math_div ~rate #~e
+  }
+
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 0
+  {
+    set _sofbuddy_bench_alias_i0 #~rate
+    echo "[sofbuddy_bench_alias]  I_add  rounds" #_sofbuddy_bench_alias_round "iters" #~ops "in" #~e "s =" #~rate "iter/s  loop" #_sofbuddy_bench_alias_done "cnt" #bench_acnt
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 1
+  {
+    set _sofbuddy_bench_alias_i1 #~rate
+    echo "[sofbuddy_bench_alias]  A_add  rounds" #_sofbuddy_bench_alias_round "iters" #~ops "in" #~e "s =" #~rate "iter/s  loop" #_sofbuddy_bench_alias_done "cnt" #bench_acnt
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 2
+  {
+    set _sofbuddy_bench_alias_i2 #~rate
+    echo "[sofbuddy_bench_alias]  I_math rounds" #_sofbuddy_bench_alias_round "iters" #~ops "in" #~e "s =" #~rate "iter/s  loop" #_sofbuddy_bench_alias_done "cnt" #bench_mcnt
+  }
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase == val 3
+  {
+    set _sofbuddy_bench_alias_i3 #~rate
+    echo "[sofbuddy_bench_alias]  A_math rounds" #_sofbuddy_bench_alias_round "iters" #~ops "in" #~e "s =" #~rate "iter/s  loop" #_sofbuddy_bench_alias_done "cnt" #bench_mcnt
+  }
+
+  add _sofbuddy_bench_alias_phase 1
+  sp_sc_flow_if number cvar _sofbuddy_bench_alias_phase < val 4
+  {
+    sp_sc_timer 1 "sp_sc_func_exec sofbuddy_bench_alias_phase_start"
+  }
+  else
+  {
+    sp_sc_func_exec sofbuddy_bench_alias_report
+  }
+}
+
+function sofbuddy_bench_alias_report()
+{
+  set ~r0 0
+  sp_sc_flow_if number val #_sofbuddy_bench_alias_i1 > val 0
+  {
+    set ~r0 #_sofbuddy_bench_alias_i0
+    sp_sc_cvar_math_div ~r0 #_sofbuddy_bench_alias_i1
+  }
+  set ~r1 0
+  sp_sc_flow_if number val #_sofbuddy_bench_alias_i3 > val 0
+  {
+    set ~r1 #_sofbuddy_bench_alias_i2
+    sp_sc_cvar_math_div ~r1 #_sofbuddy_bench_alias_i3
+  }
+  echo "[sofbuddy_bench_alias] ===== alias overhead (iter/s; lower alias = worse) ====="
+  echo "[sofbuddy_bench_alias] I_add =" #_sofbuddy_bench_alias_i0 " A_add =" #_sofbuddy_bench_alias_i1 " A/I add x" #~r0
+  echo "[sofbuddy_bench_alias] I_math=" #_sofbuddy_bench_alias_i2 " A_math=" #_sofbuddy_bench_alias_i3 " A/I math x" #~r1
+  echo "[sofbuddy_bench_alias] hashmap =" #_sofbuddy_hashmap
+}

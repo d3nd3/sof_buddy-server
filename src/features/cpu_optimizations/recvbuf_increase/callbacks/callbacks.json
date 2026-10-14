@@ -1,0 +1,3 @@
+[
+  { "hook": "GameDllLoaded", "callback": "recvbuf_OnGameDllLoaded", "priority": 0, "phase": "Post" }
+]
