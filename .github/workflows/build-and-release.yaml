@@ -1,0 +1,125 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+jobs:
+  version_gate:
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.gate.outputs.changed }}
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect VERSION bump
+        id: gate
+        run: |
+          VERSION=$(tr -d '\r\n' < VERSION)
+          PREV=$(git show HEAD~1:VERSION 2>/dev/null | tr -d '\r\n' || true)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ -z "$PREV" || "$VERSION" != "$PREV" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "VERSION changed: ${PREV:-<none>} -> $VERSION (will build and release)"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "VERSION unchanged ($VERSION); skipping build and release"
+          fi
+
+  build:
+    needs: version_gate
+    if: needs.version_gate.outputs.version_changed == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.10
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/sof_buddy-server/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      SOFPLUS_CURSOR_RULES: ${{ github.workspace }}/sofplus-cursor-rules
+
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -rf /etc/apt/sources.list* /etc/apt/sources.list.d/* /var/lib/apt/lists/*
+          cat > /etc/apt/sources.list <<'EOF'
+          deb http://old-releases.ubuntu.com/ubuntu/ oracular main restricted universe multiverse
+          deb http://old-releases.ubuntu.com/ubuntu/ oracular-updates main restricted universe multiverse
+          deb http://old-releases.ubuntu.com/ubuntu/ oracular-backports main restricted universe multiverse
+          deb http://old-releases.ubuntu.com/ubuntu/ oracular-security main restricted universe multiverse
+          EOF
+          apt-get update -o Acquire::Check-Valid-Until=false 2>&1 || true
+          apt-get install -y git cmake ninja-build g++-mingw-w64-i686 mingw-w64-i686-dev python3 python3-yaml ccache zip
+          i686-w64-mingw32-g++-posix --version
+
+      - uses: actions/checkout@v4
+        with:
+          path: sof_buddy-server
+
+      - uses: actions/checkout@v4
+        with:
+          repository: d3nd3/sofplus-cursor-rules
+          path: sofplus-cursor-rules
+
+      - name: Hash compiler-cache inputs
+        id: ccache_inputs
+        working-directory: sof_buddy-server
+        run: |
+          hash=$(sha256sum CMakeLists.txt detours.yaml src/features/features.yaml \
+            tools/generate_hooks.py cmake/toolchain-mingw32.cmake \
+            | sha256sum | awk '{print substr($1,1,16)}')
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: sof_buddy-server/.ccache
+          key: ccache-mingw-i686-${{ steps.ccache_inputs.outputs.hash }}-${{ github.sha }}
+          restore-keys: |
+            ccache-mingw-i686-${{ steps.ccache_inputs.outputs.hash }}-
+            ccache-mingw-i686-
+
+      - name: Build gamex86.dll
+        working-directory: sof_buddy-server
+        run: |
+          ccache -z || true
+          ./scripts/build.sh
+          mkdir -p dist
+          cp build/gamex86.dll dist/
+          (cd dist && zip -r ../release_gamex86.zip gamex86.dll)
+          echo "--- ccache statistics ---"
+          ccache -s || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-gamex86
+          path: sof_buddy-server/release_gamex86.zip
+
+  release:
+    needs: [build, version_gate]
+    if: needs.version_gate.outputs.version_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-gamex86
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version_gate.outputs.version }}-build${{ github.run_number }}
+          name: v${{ needs.version_gate.outputs.version }} (build ${{ github.run_number }})
+          files: dist/release_gamex86.zip
+          generate_release_notes: true
