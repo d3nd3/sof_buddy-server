@@ -147,15 +147,25 @@ def main():
     print("Descriptions: src/features/<name>/SUMMARY.md")
     print()
 
+    previous = set()
     for profile in gh.PROFILE_ORDER:
         branch = PROFILE_BRANCH[profile]
         names = enabled[profile]
-        print(f"== {branch} ({profile} profile) - {len(names)} feature(s) ==")
-        if not names:
+        added = [
+            name for name in order
+            if name in names and name not in previous
+        ]
+        if profile == gh.PROFILE_ORDER[0]:
+            print(f"== {branch} ({profile} profile) - {len(names)} feature(s) ==")
+        else:
+            print(
+                f"== {branch} ({profile} profile) - adds {len(added)} "
+                f"feature(s), {len(names)} total ==")
+        if not added:
             print("  (none)")
-        for name in order:
-            if name in names:
-                print_feature(name, metadata)
+        for name in added:
+            print_feature(name, metadata)
+        previous.update(names)
         print()
 
     all_enabled = set().union(*enabled.values())
