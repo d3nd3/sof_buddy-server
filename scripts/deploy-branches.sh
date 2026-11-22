@@ -8,10 +8,13 @@
 #
 # There are no options. Running this script:
 #   1. fetches origin,
-#   2. builds each branch in a detached worktree under .worktrees/,
+#   2. builds each branch in a temporary detached worktree,
 #   3. backs up the current DLL and uploads the new one,
 #   4. verifies the remote checksum,
 #   5. restarts sof_winserver1 (which controls all three servers).
+#
+# The detached worktrees are removed when the script exits. Build output stays
+# in build/branches/<branch>/.
 #
 # Uploads use a temporary file plus rename, so a running server never sees a
 # partial DLL. The restart prompts for the remote sudo password when run from
@@ -89,6 +92,18 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+cleanup_worktrees() {
+  local branch worktree
+  for branch in "${BRANCHES[@]}"; do
+    worktree="$WORKTREE_ROOT/$branch"
+    if [[ -e "$worktree" ]]; then
+      git worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
+    fi
+  done
+  git worktree prune 2>/dev/null || true
+  rmdir "$WORKTREE_ROOT" 2>/dev/null || true
+}
+
 if (( $# > 0 )); then
   case "$1" in
     -h|--help) usage 0 ;;
@@ -106,6 +121,8 @@ if [[ -d "$RULES_DIR" ]]; then
 fi
 
 command -v git >/dev/null 2>&1 || die "git not found"
+
+trap cleanup_worktrees EXIT
 
 echo "==> Fetching origin..."
 if ! git fetch --prune origin; then

@@ -481,8 +481,9 @@ git push origin master unstable experimental
 ```
 
 `scripts/deploy-branches.sh` has no options: it fetches origin, builds each
-branch in its own worktree with the matching profile, backs up and uploads the
-DLLs, verifies the remote checksums, and restarts the shared server service.
+branch in a temporary worktree with the matching profile, backs up and uploads
+the DLLs, verifies the remote checksums, restarts the shared server service,
+and removes the temporary worktrees on exit.
 It refuses a branch that predates the tier/profile system, because such a
 branch would silently ignore `SOF_BUDDY_PROFILE` and deploy the old default
 feature set.
