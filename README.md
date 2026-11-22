@@ -3,6 +3,8 @@
 **[LICENSE](LICENSE)** (MIT) · **[DISCLAIMER.md](DISCLAIMER.md)** (not legal advice;
 does not cover third-party code under `third_party/` or any game assets).
 
+Prefer pictures? Start with **[HUMANS.md](HUMANS.md)**.
+
 A server-side mod for **Soldier of Fortune 1**. It ships as a `gamex86.dll`
 shim that loads the stock game DLL beside it and hosts a data-driven detour
 system, so behaviour changes and instrumentation can be added without touching

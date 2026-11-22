@@ -1,0 +1,152 @@
+# sof_buddy-server — system overview (source of truth).
+# Render:  scripts/render-diagram.sh  (svg: light+dark, png: dark, for gpm desktop)
+# Colours come from the d2 theme, not hardcoded fills, so both light and dark render legibly.
+# Rule: if a feature, hook, data store, or external process changes,
+# update this file in the same commit and re-render the SVG.
+
+title: |md
+  **sof_buddy-server** — a `gamex86.dll` shim for SoF 1 servers: loads the stock game DLL and detours engine/game code by data
+| {near: top-center}
+
+direction: right
+
+entry: Entry points {
+  engine: engine loads `gamex86.dll` · calls `GetGameAPI` {
+    shape: hexagon
+  }
+  admin: admin console / rcon · `_sofbuddy_*` cvars + commands
+  events: gameplay events · usercmd · ClientCommand · map spawn {
+    shape: hexagon
+  }
+}
+
+core: Core · one shim, many patched call sites {
+  shim: `gamex86.cpp` — load `oldgamex86.dll`, forward `GetGameAPI`, undo patches on unload
+  ds: `DetourSystem` — resolve RVA by module, build trampoline, patch, strip on detach
+  gen: `generate_hooks.py` — YAML/JSON → `generated_*` headers at build time
+  hooks: `SharedHookManager` — dispatch `GameDllLoaded` and per-feature callbacks
+
+  stufftext: `stufftext` · stable — console command → `svc_stufftext` to one/all clients
+  printguard: `print_guard` · stable — bound engine printf / Cbuf / macro paths
+  tracktime: `sv_tracktime` · stable — compare claimed `msec` with real `clc_move` rate
+
+  clsv: `clsv_pipe` · unstable — chunked `.sp`/`.func` delivery over the client cvar ring
+  minigames: `minigames` · unstable — client 2D UI, menus, lagometer, tictactoe
+  profiles: `profiles` · unstable — GUID identity, roster privileges, match stats
+  skinteam: `skinteam_quiet` · unstable — stop the false "doesn't recognise teamname" message
+
+  tick: `cpuopt · tick_pacing` — spin to the 100 ms tick boundary
+  park: `cpuopt · cmdtext_parking` — park `cmd_text` inserts in the reserve window
+  cbuf: `cpuopt · cbuf_insert` — shift the command buffer in place
+  hash: `cpuopt · hash_lookup` — cvars/commands/aliases as hash maps
+  zpool: `cpuopt · zpool` — recycle zone allocations
+  clamp: `cpuopt · clamp_monitor` — count high/low clock clamps, optional log + broadcast
+  cost: `cpuopt · cmd_cost` — time each `Cmd_ExecuteString`
+  recv: `cpuopt · recvbuf_increase` — larger UDP receive buffer
+
+  reldef: `reliable_defer` · experimental — queue reliable blobs, drip one per client per tick
+  ctf: `ctf_spawn` · experimental — pick the team spawn farthest from living enemies
+}
+
+state: State {
+  yaml: `features.yaml` — tier per feature; profile picks the compiled set {
+    shape: cylinder
+  }
+  detours: `detours.yaml` + feature `hooks`/`pointers`/`callbacks` JSON {
+    shape: cylinder
+  }
+  generated: `build/generated/` — `generated_detours`, `_registrations`, `_engine_pointers` {
+    shape: cylinder
+  }
+  artifact: `build/gamex86.dll` — the one file an admin installs {
+    shape: cylinder
+  }
+  runtime: in-process runtime state {
+    gauges: `_sofbuddy_*` output cvars — read-only measurement
+    queues: per-client deferred reliable queues
+    maps: hash maps · zpool free lists · per-slot profile cache
+  }
+  disk: on-disk state {
+    registry: `sofplus/data/profiles/registry.cfg` — guid → nick + privilege
+    stats: `sofplus/data/stats/*.cfg` — per-guid match totals
+    clamplog: `sof_buddy-highclamps.txt` — opt-in clamp log
+    log: `User/sof.log` — `gi.dprintf` output with `logfile 1`
+  }
+}
+
+ext: External {
+  oldgame: `oldgamex86.dll` — stock game logic; loaded and detoured, never replaced
+  spsv: `SoF-spsv.exe` / `SoF.exe` — engine frame loop, cvar/command tables, netchan
+  sofplus: SoFplus scripts — drive `Cbuf_InsertText` and bursty prints
+  clients: SoF clients — UDP, userinfo, usercmd
+  gh: GitHub Actions — per-branch build + release zip {
+    shape: cloud
+  }
+  remote: game server host — `scp` + `systemctl restart` {
+    shape: cloud
+  }
+}
+
+ext.sofplus -> entry.admin: "scripts · `stufftext`"
+ext.clients -> entry.events: "UDP · userinfo"
+entry.engine -> core.shim: "`GetGameAPI(import)`"
+entry.admin -> core.stufftext: "commands · cvars"
+entry.admin -> core.profiles: "menus · `profile_*`"
+entry.admin -> core.tick: "`_sofbuddy_cpuopt` · gauges"
+entry.events -> core.hooks: "engine callbacks"
+
+core.shim -> core.ds: "register + apply"
+core.shim -> ext.oldgame: "load · forward"
+core.shim -> core.hooks: "bootstrap once per load"
+core.ds -> ext.oldgame: "patch game functions"
+core.ds -> ext.spsv: "patch tick · cvar · netchan"
+
+state.yaml -> core.gen: "profile"
+state.detours -> core.gen: "symbols + hooks"
+core.gen -> state.generated: "emits C++"
+state.generated -> core.shim: "compiled in"
+
+core.hooks -> core.stufftext: "feature callbacks"
+core.hooks -> core.clsv: "feature callbacks"
+core.hooks -> core.reldef: "feature callbacks"
+
+core.stufftext -> ext.clients: "`svc_stufftext`"
+core.tracktime -> state.runtime.gauges: "writes"
+core.printguard -> ext.spsv: "bounded print paths"
+core.clsv -> ext.clients: "`_sp_cl_sv_*` chunks"
+core.minigames -> ext.clients: "`layout_string` UI"
+core.profiles -> state.disk.registry: "load · save"
+core.profiles -> state.disk.stats: "stats flush"
+core.skinteam -> ext.oldgame: "userinfo / team fix"
+core.tick -> ext.spsv: "frame loop"
+core.clamp -> state.runtime.gauges: "writes"
+core.clamp -> state.disk.clamplog: "opt-in append"
+core.reldef -> ext.clients: "reliable lane"
+core.ctf -> ext.oldgame: "spawn pick"
+
+ext.gh -> state.artifact: "builds per branch"
+state.artifact -> ext.remote: "deploy script"
+core.shim -> state.disk.log: "`gi.dprintf`"
+
+classes: {
+  store: {style.stroke: "#1c7ed6"; style.stroke-width: 2}
+  ext: {style.stroke: "#7048e8"; style.stroke-dash: 3}
+  hot: {style.stroke: "#e8590c"; style.stroke-width: 3}
+}
+
+state.yaml.class: store
+state.detours.class: store
+state.generated.class: store
+state.artifact.class: store
+ext.gh.class: ext
+ext.remote.class: ext
+core.tick.class: hot
+core.park.class: hot
+core.cbuf.class: hot
+core.hash.class: hot
+core.zpool.class: hot
+core.clamp.class: hot
+core.cost.class: hot
+core.recv.class: hot
+core.reldef.class: hot
+core.ctf.class: hot
