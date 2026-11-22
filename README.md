@@ -75,6 +75,13 @@ The code is shared; only the profile changes. `SOF_BUDDY_PROFILE=...` or
 socket paths; it is the usual suspect for movement glitches. Plan:
 [`src/features/cpu_optimizations/README.md`](src/features/cpu_optimizations/README.md)
 
+Each feature's description lives in `src/features/<name>/SUMMARY.md`. Print
+every build with its full feature list and descriptions:
+
+```bash
+./scripts/list-features.sh
+```
+
 ---
 
 ### Feature switches

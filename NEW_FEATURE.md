@@ -5,11 +5,12 @@ Features stack: each one hooks stock game functions through the shared detour
 system, so multiple features can patch the same or different functions without
 touching each other.
 
-There are exactly **four** things a feature can consist of:
+There are exactly **five** things a feature can consist of:
 
 | File | Purpose | Required |
 |------|---------|----------|
 | `<name>.cpp` (+ optional `.h`) | Your code: hook callbacks, cvars, logic. | yes |
+| `SUMMARY.md` | One accurate paragraph describing what the feature does. Printed by `scripts/list-features.sh`. | yes |
 | `hooks/hooks.json` | Full detours (Pre/Post or **override**) on functions declared in `detours.yaml`. | optional |
 | `hooks/pointers.json` | Call-only helpers (`SOF_EP_Name(...)`): resolved address, **no** patch. | optional |
 | `callbacks/callbacks.json` | Lifecycle callbacks (e.g. `GameDllLoaded`). | optional |
@@ -58,13 +59,24 @@ Notes:
 
 ## Step 3 — Classify and enable the feature
 
-Create the folder and add it to **`src/features/features.yaml`** with a tier.
-The tier decides which branches compile it:
+Create the folder, add it to **`src/features/features.yaml`** with a tier, and
+create **`src/features/my_feature/SUMMARY.md`**. The tier decides which
+branches compile it:
 
 ```yaml
 features:
   my_feature:
     tier: stable        # stable | unstable | experimental | dev
+```
+
+`SUMMARY.md` must contain one accurate paragraph about what the feature does,
+which engine or game paths it changes, and any important side effect:
+
+```markdown
+# my_feature
+
+One accurate paragraph describing what the feature actually does. The first
+paragraph after the title is printed by `scripts/list-features.sh`.
 ```
 
 - `stable` — enabled on **master** (and therefore every branch).
@@ -76,14 +88,16 @@ features:
 
 If a feature is not ready for any default profile, add `enabled: false` to keep
 it off everywhere; `enabled: true` forces it on everywhere for a local test.
-Do not add a feature without a tier — the generator rejects it, so every
-feature is explicitly classified.
+Every feature needs a tier and a `SUMMARY.md` — the listing script validates
+that every `src/features/<name>/` directory has both. Do not describe a
+feature by its name alone.
 
 The folder layout:
 
 ```
 src/features/my_feature/
 ├── my_feature.cpp
+├── SUMMARY.md               (required: what it does)
 ├── cvar.h                  (optional, see step 6)
 ├── cvar.cpp
 ├── hooks/hooks.json        (optional)
@@ -277,4 +291,5 @@ game DLLs) and make sure `Base/oldgamex86.dll` is the retail file.
 | Add a runtime switch | copy `cvar.{h,cpp}` pattern; gate on `Buddy_ReadCvarValue` |
 | Run code once at startup | `callbacks/callbacks.json` with `GameDllLoaded` |
 | Toggle a feature | `src/features/features.yaml` (`tier: stable|unstable|experimental`) |
+| Describe a feature | `src/features/<name>/SUMMARY.md` |
 | Add addresses | never hardcode — always `detours.yaml` + generator |

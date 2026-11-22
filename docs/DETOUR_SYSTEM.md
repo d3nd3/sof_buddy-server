@@ -7,7 +7,7 @@ This repo mirrors the **data-driven detour workflow** from the **sof_buddy** cli
 | Path | Role |
 |------|------|
 | `detours.yaml` | Registry of hookable functions (name, module, RVA or absolute address, signature). |
-| `src/features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with per-feature **`tier: stable|unstable|experimental|dev`**, plus the branch **`profiles:`**. Optional **`enabled:`/`disabled:`** lists are legacy escape hatches. **`core`** is not configured here (always on). |
+| `src/features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with per-feature **`tier: stable|unstable|experimental|dev`**, plus the branch **`profiles:`**. Each feature folder also has a **`SUMMARY.md`** with one accurate description paragraph. `scripts/list-features.sh` prints every build from both sources. Optional **`enabled:`/`disabled:`** lists are legacy escape hatches. **`core`** is not configured here (always on). |
 | `src/core/hooks.json` | Optional core function hooks. |
 | `src/core/callbacks.json` | Optional core lifecycle callbacks. |
 | `src/core/pointers.json` | Core pointer-only symbols (resolved to **`detour_Name::oName`**, no detour). Always processed. E.g. **`Com_DPrintf`** for developer print. |

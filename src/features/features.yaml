@@ -20,6 +20,10 @@
 #                game offsets). Enabled only on the experimental branch.
 #   dev          Never enabled by a profile. Templates and manual testing only.
 #
+# Every feature directory also has a SUMMARY.md containing one accurate
+# paragraph about what the feature does. scripts/list-features.sh prints that
+# text for every build and rejects a feature folder without it.
+#
 # A feature entry is a mapping with a required `tier:`. Optional `enabled:
 # true|false` is a hard override for local testing: true forces the feature
 # into every profile, false keeps it out of every profile. Legacy
