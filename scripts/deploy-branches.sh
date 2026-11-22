@@ -90,7 +90,9 @@ Options:
   --no-fetch              do not run "git fetch origin" first
   --debug                 build CMAKE_BUILD_TYPE=Debug instead of Release
   --restart               restart sof_winserver1 after all uploads; that
-                          service brings up all three servers together
+                          service brings up all three servers together.
+                          Prompts for the remote sudo password when run from
+                          a terminal; otherwise requires passwordless sudo
   --backup                save the previous gamex86.dll as
                           gamex86.dll.bak.YYYYMMDD-HHMMSS before overwriting
   --build-only            build the DLLs but do not upload them
@@ -372,8 +374,16 @@ else
   if (( RESTART )); then
     echo
     echo "==> Restarting $RESTART_SERVICE (controls all servers)..."
-    if ! ssh "$REMOTE_HOST" "sudo -n systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
-      die "failed to restart $RESTART_SERVICE (passwordless sudo required)"
+    if [[ -t 0 ]]; then
+      # Allocate a remote TTY so sudo can prompt for the password.
+      if ! ssh -t "$REMOTE_HOST" "sudo systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
+        die "failed to restart $RESTART_SERVICE"
+      fi
+    else
+      # No local TTY (CI/pipe): sudo cannot prompt.
+      if ! ssh "$REMOTE_HOST" "sudo -n systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
+        die "failed to restart $RESTART_SERVICE (run from a terminal to enter the sudo password, or configure passwordless sudo)"
+      fi
     fi
     if ! ssh "$REMOTE_HOST" "systemctl is-active --quiet $(shell_quote "$RESTART_SERVICE")"; then
       die "$RESTART_SERVICE is not active after restart"
