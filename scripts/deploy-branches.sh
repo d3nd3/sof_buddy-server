@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
-# Build the three deployment branches and install each gamex86.dll on the
-# game server:
+# Build the three deployment branches, upload each gamex86.dll to the matching
+# game server, and restart the shared service:
 #
 #   master       -> winserver1/Base/gamex86.dll  (stable features)
 #   unstable     -> winserver2/Base/gamex86.dll  (stable + unstable)
 #   experimental -> winserver3/Base/gamex86.dll  (all features)
 #
-# Each branch is built from a detached git worktree under .worktrees/, so the
-# checkout you are working in is never touched. Build output lives in
-# build/branches/<branch>/.
+# There are no options. Running this script:
+#   1. fetches origin,
+#   2. builds each branch in a detached worktree under .worktrees/,
+#   3. backs up the current DLL and uploads the new one,
+#   4. verifies the remote checksum,
+#   5. restarts sof_winserver1 (which controls all three servers).
 #
-# Uploads write to a temporary file in the destination directory and then
-# rename it over gamex86.dll, so a running server never sees a partial DLL.
-# The running processes keep using the old DLLs until they are restarted; pass
-# --restart to restart sof_winserver1 after all uploads. That service controls
-# all three servers, so they all come back together.
-#
-# Examples:
-#   ./scripts/deploy-branches.sh
-#   ./scripts/deploy-branches.sh --only master
-#   ./scripts/deploy-branches.sh --only master,unstable --restart
-#   ./scripts/deploy-branches.sh --dry-run
+# Uploads use a temporary file plus rename, so a running server never sees a
+# partial DLL. The restart prompts for the remote sudo password when run from
+# a terminal.
 #
 # Environment overrides:
 #   REMOTE_HOST             SSH host (default: plowsof)
@@ -65,42 +60,14 @@ RESTART_SERVICE="${SERVICE_PREFIX}winserver1"
 WORKTREE_ROOT="$ROOT/.worktrees"
 BUILD_ROOT="$ROOT/build/branches"
 
-ONLY=()
-FETCH=1
-SKIP_MISSING=0
-BUILD_ONLY=0
-DRY_RUN=0
-RESTART=0
-BACKUP=0
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-branches.sh [options]
+Usage: scripts/deploy-branches.sh
 
-Builds master/unstable/experimental and uploads each build to the matching
-winserver directory over SSH.
-
-Options:
-  --only BRANCH[,BRANCH]  deploy only the named branches (default: all three)
-  --host HOST             SSH host (default: plowsof, or $REMOTE_HOST)
-  --remote-base DIR       directory containing winserver1..3 on the remote host
-                          (default: remote home, or $REMOTE_BASE)
-  --skip-missing          keep going when a branch does not exist
-  --no-fetch              do not run "git fetch origin" first
-  --debug                 build CMAKE_BUILD_TYPE=Debug instead of Release
-  --restart               restart sof_winserver1 after all uploads; that
-                          service brings up all three servers together.
-                          Prompts for the remote sudo password when run from
-                          a terminal; otherwise requires passwordless sudo
-  --backup                save the previous gamex86.dll as
-                          gamex86.dll.bak.YYYYMMDD-HHMMSS before overwriting
-  --build-only            build the DLLs but do not upload them
-  --dry-run               show what would be built and where, then exit
-  -h, --help              show this help
-
-Branches are built from their local tip when it exists, otherwise from
-origin/<branch>. Committed changes only: uncommitted files are not included.
+Fetches origin, builds master/unstable/experimental, backs up and uploads each
+gamex86.dll to the matching winserver directory, then restarts sof_winserver1.
 EOF
   exit "${1:-1}"
 }
@@ -108,19 +75,6 @@ EOF
 die() {
   echo "error: $*" >&2
   exit 1
-}
-
-branch_selected() {
-  if (( ${#ONLY[@]} == 0 )); then
-    return 0
-  fi
-  local b
-  for b in "${ONLY[@]}"; do
-    if [[ "$b" == "$1" ]]; then
-      return 0
-    fi
-  done
-  return 1
 }
 
 dest_dir_for() {
@@ -135,37 +89,12 @@ shell_quote() {
   printf '%q' "$1"
 }
 
-while [[ $# -gt 0 ]]; do
+if (( $# > 0 )); then
   case "$1" in
-    --only)
-      [[ $# -ge 2 ]] || usage
-      IFS=',' read -r -a ONLY <<< "$2"
-      shift 2
-      ;;
-    --host)
-      [[ $# -ge 2 ]] || usage
-      REMOTE_HOST="$2"
-      shift 2
-      ;;
-    --remote-base)
-      [[ $# -ge 2 ]] || usage
-      REMOTE_BASE="$2"
-      shift 2
-      ;;
-    --skip-missing) SKIP_MISSING=1; shift ;;
-    --no-fetch) FETCH=0; shift ;;
-    --debug) BUILD_TYPE=Debug; shift ;;
-    --restart) RESTART=1; shift ;;
-    --backup) BACKUP=1; shift ;;
-    --build-only) BUILD_ONLY=1; shift ;;
-    --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage 0 ;;
-    *)
-      echo "unknown option: $1" >&2
-      usage
-      ;;
+    *) echo "unknown argument: $1" >&2; usage ;;
   esac
-done
+fi
 
 # Normalise config.
 REMOTE_BASE="${REMOTE_BASE%/}"
@@ -176,30 +105,16 @@ if [[ -d "$RULES_DIR" ]]; then
   RULES_DIR="$(cd "$RULES_DIR" && pwd)"
 fi
 
-if (( ${#ONLY[@]} > 0 )); then
-  for b in "${ONLY[@]}"; do
-    known=0
-    for candidate in "${BRANCHES[@]}"; do
-      if [[ "$b" == "$candidate" ]]; then
-        known=1
-      fi
-    done
-    (( known )) || die "unknown branch '$b' (choose from: ${BRANCHES[*]})"
-  done
-fi
-
 command -v git >/dev/null 2>&1 || die "git not found"
 
-if (( FETCH )); then
-  echo "==> Fetching origin..."
-  if ! git fetch --prune origin; then
-    die "git fetch failed (use --no-fetch to build existing refs)"
-  fi
+echo "==> Fetching origin..."
+if ! git fetch --prune origin; then
+  die "git fetch failed"
 fi
 git worktree prune
 
-# Resolve every selected branch before building anything, so a typo or a
-# missing branch cannot leave a half-deployed set of servers.
+# Resolve every branch before building anything, so a missing branch cannot
+# leave a half-deployed set of servers.
 sel_branches=()
 sel_servers=()
 sel_refs=()
@@ -209,7 +124,6 @@ missing=()
 for i in "${!BRANCHES[@]}"; do
   branch="${BRANCHES[$i]}"
   server="${SERVERS[$i]}"
-  branch_selected "$branch" || continue
 
   ref=""
   if git show-ref --verify --quiet "refs/heads/$branch"; then
@@ -241,27 +155,7 @@ for i in "${!BRANCHES[@]}"; do
 done
 
 if (( ${#missing[@]} > 0 )); then
-  if (( SKIP_MISSING )); then
-    echo "warning: skipping missing branch(es): ${missing[*]}" >&2
-  else
-    echo "error: missing branch(es): ${missing[*]}" >&2
-    echo "       create/push them, or pass --skip-missing." >&2
-    exit 1
-  fi
-fi
-if (( ${#sel_branches[@]} == 0 )); then
-  die "nothing to deploy"
-fi
-
-if (( DRY_RUN )); then
-  echo "==> Dry run: no builds or uploads"
-  for i in "${!sel_branches[@]}"; do
-    printf '    %-12s [%-12s] %s  -> %s:%s/gamex86.dll\n' \
-      "${sel_branches[$i]}" "$(profile_for "${sel_branches[$i]}")" \
-      "${sel_commits[$i]}" \
-      "$REMOTE_HOST" "$(dest_dir_for "${sel_servers[$i]}")"
-  done
-  exit 0
+  die "missing branch(es): ${missing[*]} (create and push them first)"
 fi
 
 command -v cmake >/dev/null 2>&1 || die "cmake not found"
@@ -271,18 +165,16 @@ command -v i686-w64-mingw32-g++ >/dev/null 2>&1 \
 "$PYTHON3" -c 'import yaml' >/dev/null 2>&1 \
   || die "$PYTHON3 does not have PyYAML (set PYTHON3 to a suitable interpreter)"
 
-if (( ! BUILD_ONLY )); then
-  command -v ssh >/dev/null 2>&1 || die "ssh not found"
-  command -v scp >/dev/null 2>&1 || die "scp not found"
+command -v ssh >/dev/null 2>&1 || die "ssh not found"
+command -v scp >/dev/null 2>&1 || die "scp not found"
 
-  echo "==> Checking destination directories on $REMOTE_HOST..."
-  for i in "${!sel_branches[@]}"; do
-    dest_dir="$(dest_dir_for "${sel_servers[$i]}")"
-    if ! ssh "$REMOTE_HOST" "test -d $(shell_quote "$dest_dir")"; then
-      die "cannot access $REMOTE_HOST:$dest_dir (SSH failed or directory is missing)"
-    fi
-  done
-fi
+echo "==> Checking destination directories on $REMOTE_HOST..."
+for i in "${!sel_branches[@]}"; do
+  dest_dir="$(dest_dir_for "${sel_servers[$i]}")"
+  if ! ssh "$REMOTE_HOST" "test -d $(shell_quote "$dest_dir")"; then
+    die "cannot access $REMOTE_HOST:$dest_dir (SSH failed or directory is missing)"
+  fi
+done
 
 if [[ ! -d "$RULES_DIR" ]]; then
   echo "warning: $RULES_DIR not found; command catalog will use the fallback list" >&2
@@ -342,69 +234,52 @@ for i in "${!sel_branches[@]}"; do
     "$dll" "$(wc -c < "$dll")" "${sel_shas[$i]}"
 done
 
-if (( BUILD_ONLY )); then
-  echo
-  echo "==> Build-only: skipping upload"
-else
-  echo
-  echo "==> Uploading to $REMOTE_HOST..."
-  for i in "${!sel_branches[@]}"; do
-    branch="${sel_branches[$i]}"
-    server="${sel_servers[$i]}"
-    dest_dir="$(dest_dir_for "$server")"
-    dest="$dest_dir/gamex86.dll"
-    tmp="$dest_dir/.gamex86.dll.new.$$"
+echo
+echo "==> Uploading to $REMOTE_HOST..."
+for i in "${!sel_branches[@]}"; do
+  branch="${sel_branches[$i]}"
+  server="${sel_servers[$i]}"
+  dest_dir="$(dest_dir_for "$server")"
+  dest="$dest_dir/gamex86.dll"
+  backup="$dest.bak.$STAMP"
+  tmp="$dest_dir/.gamex86.dll.new.$$"
 
-    echo "==> [$branch] $REMOTE_HOST:$dest"
+  echo "==> [$branch] $REMOTE_HOST:$dest"
 
-    if (( BACKUP )); then
-      ssh "$REMOTE_HOST" \
-        "if [ -e $(shell_quote "$dest") ]; then cp -p $(shell_quote "$dest") $(shell_quote "$dest.bak.$STAMP"); fi"
-    fi
+  ssh "$REMOTE_HOST" \
+    "if [ -e $(shell_quote "$dest") ]; then cp -p $(shell_quote "$dest") $(shell_quote "$backup"); fi"
 
-    scp -q "${sel_dlls[$i]}" "$REMOTE_HOST:$tmp"
-    ssh "$REMOTE_HOST" "mv -f $(shell_quote "$tmp") $(shell_quote "$dest")"
+  scp -q "${sel_dlls[$i]}" "$REMOTE_HOST:$tmp"
+  ssh "$REMOTE_HOST" "mv -f $(shell_quote "$tmp") $(shell_quote "$dest")"
 
-    remote_sha="$(ssh "$REMOTE_HOST" "sha256sum $(shell_quote "$dest")" | awk '{print $1}')"
-    if [[ "$remote_sha" != "${sel_shas[$i]}" ]]; then
-      die "[$branch] checksum mismatch after upload to $REMOTE_HOST:$dest"
-    fi
-  done
-
-  if (( RESTART )); then
-    echo
-    echo "==> Restarting $RESTART_SERVICE (controls all servers)..."
-    if [[ -t 0 ]]; then
-      # Allocate a remote TTY so sudo can prompt for the password.
-      if ! ssh -t "$REMOTE_HOST" "sudo systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
-        die "failed to restart $RESTART_SERVICE"
-      fi
-    else
-      # No local TTY (CI/pipe): sudo cannot prompt.
-      if ! ssh "$REMOTE_HOST" "sudo -n systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
-        die "failed to restart $RESTART_SERVICE (run from a terminal to enter the sudo password, or configure passwordless sudo)"
-      fi
-    fi
-    if ! ssh "$REMOTE_HOST" "systemctl is-active --quiet $(shell_quote "$RESTART_SERVICE")"; then
-      die "$RESTART_SERVICE is not active after restart"
-    fi
+  remote_sha="$(ssh "$REMOTE_HOST" "sha256sum $(shell_quote "$dest")" | awk '{print $1}')"
+  if [[ "$remote_sha" != "${sel_shas[$i]}" ]]; then
+    die "[$branch] checksum mismatch after upload to $REMOTE_HOST:$dest"
   fi
+done
+
+echo
+echo "==> Restarting $RESTART_SERVICE (controls all servers)..."
+if [[ -t 0 ]]; then
+  # Allocate a remote TTY so sudo can prompt for the password.
+  if ! ssh -t "$REMOTE_HOST" "sudo systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
+    die "failed to restart $RESTART_SERVICE"
+  fi
+else
+  # No local TTY (CI/pipe): sudo cannot prompt.
+  if ! ssh "$REMOTE_HOST" "sudo -n systemctl restart $(shell_quote "$RESTART_SERVICE")"; then
+    die "failed to restart $RESTART_SERVICE (run from a terminal to enter the sudo password, or configure passwordless sudo)"
+  fi
+fi
+if ! ssh "$REMOTE_HOST" "systemctl is-active --quiet $(shell_quote "$RESTART_SERVICE")"; then
+  die "$RESTART_SERVICE is not active after restart"
 fi
 
 echo
-if (( BUILD_ONLY )); then
-  echo "==> Built artifacts"
-else
-  echo "==> Installed artifacts on $REMOTE_HOST"
-fi
+echo "==> Installed artifacts on $REMOTE_HOST"
 for i in "${!sel_branches[@]}"; do
   printf '    %-12s [%-12s] -> %-11s %s  sha256 %.12s\n' \
     "${sel_branches[$i]}" "$(profile_for "${sel_branches[$i]}")" \
     "${sel_servers[$i]}" \
     "${sel_commits[$i]}" "${sel_shas[$i]}"
 done
-
-if (( ! BUILD_ONLY && ! RESTART )); then
-  echo
-  echo "Note: running servers keep the old DLLs until restarted (use --restart)."
-fi
