@@ -25,11 +25,12 @@
 
 typedef game_export_t *(*lpfn_GetGameAPI)(game_import_t *);
 
-/* Per-feature detach entry points. Each is compiled only when its feature is
- * enabled in src/features/features.yaml, so both the declaration and the call
- * are gated on the SOF_FEATURE_<NAME> definition CMake derives from that same
- * file. Every one of these has to run before this image is unmapped - spsv
- * FreeLibrary/reloads this DLL between game restarts. */
+/* Per-feature detach entry points. Each is compiled only when its feature's
+ * tier is selected by the current profile in src/features/features.yaml, so
+ * both the declaration and the call are gated on the SOF_FEATURE_<NAME>
+ * definition CMake derives from that same selection. Every one of these has
+ * to run before this image is unmapped - spsv FreeLibrary/reloads this DLL
+ * between game restarts. */
 #ifdef SOF_FEATURE_CPU_OPTIMIZATIONS
 extern "C" void ClampMonitor_Shutdown(void);
 extern "C" void HashLookup_Shutdown(void);

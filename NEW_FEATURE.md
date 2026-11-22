@@ -56,16 +56,28 @@ Notes:
 - Only symbols **referenced by an enabled feature** get generated; unused
   declarations cost nothing.
 
-## Step 3 — Enable the feature
+## Step 3 — Classify and enable the feature
 
-Create the folder and toggle it on in **`src/features/features.yaml`**:
+Create the folder and add it to **`src/features/features.yaml`** with a tier.
+The tier decides which branches compile it:
 
 ```yaml
 features:
-  example: true
-  ctf_spawn: true
-  my_feature: true      # <- add this
+  my_feature:
+    tier: stable        # stable | unstable | experimental | dev
 ```
+
+- `stable` — enabled on **master** (and therefore every branch).
+- `unstable` — enabled on **unstable** and **experimental**, not master.
+- `experimental` — enabled only on **experimental**. Use this for deep engine
+  or gameplay changes whose side effects are not fully predictable (tick
+  scheduling, network channel, spawn logic, hard-coded game offsets).
+- `dev` — never auto-enabled; `example` uses this.
+
+If a feature is not ready for any default profile, add `enabled: false` to keep
+it off everywhere; `enabled: true` forces it on everywhere for a local test.
+Do not add a feature without a tier — the generator rejects it, so every
+feature is explicitly classified.
 
 The folder layout:
 
@@ -79,11 +91,12 @@ src/features/my_feature/
 └── callbacks/callbacks.json (optional)
 ```
 
-> Disabling later: set `my_feature: false`. That is the whole step — CMake
-> reads the same `features.yaml` (via `generate_hooks.py --list-enabled`) and
-> compiles only enabled features' sources, so a disabled feature is not built
-> and cannot fail to compile against symbols the generator deliberately did not
-> emit. Editing `features.yaml` re-runs CMake configure.
+> Demoting a feature later: change its tier or set `enabled: false`. That is
+> the whole step — CMake reads the same `features.yaml` (via
+> `generate_hooks.py --list-enabled`) and compiles only the active profile's
+> sources, so an excluded feature is not built and cannot fail to compile
+> against symbols the generator deliberately did not emit. Editing
+> `features.yaml` re-runs CMake configure.
 >
 > If the feature has a detach entry point called from `src/gamex86.cpp`, guard
 > it with `#ifdef SOF_FEATURE_MY_FEATURE` — CMake defines one such macro per
@@ -263,5 +276,5 @@ game DLLs) and make sure `Base/oldgamex86.dll` is the retail file.
 | Just *call* a stock function | `detours.yaml` entry + `hooks/pointers.json`; use `SOF_EP_Name(...)` |
 | Add a runtime switch | copy `cvar.{h,cpp}` pattern; gate on `Buddy_ReadCvarValue` |
 | Run code once at startup | `callbacks/callbacks.json` with `GameDllLoaded` |
-| Toggle a feature | `src/features/features.yaml` (`true`/`false`) |
+| Toggle a feature | `src/features/features.yaml` (`tier: stable|unstable|experimental`) |
 | Add addresses | never hardcode — always `detours.yaml` + generator |

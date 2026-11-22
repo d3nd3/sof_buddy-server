@@ -1,5 +1,10 @@
 # Feature: `ctf_spawn`
 
+**Tier: experimental.** Enabled only on the `experimental` branch (or with an
+explicit `--profile experimental` / `enabled: true`). It replaces stock spawn
+logic using retail game offsets, so it is not part of stable or unstable
+builds.
+
 CTF-only change to **team spawn selection**: pick the team spawn point that is **farthest from the nearest living enemy**, but **avoid** points where a **teammate** is already within ~**56** units (same idea as overlapping a spawn). If **every** team spawn is blocked by a teammate, fall back to the farthest-from-enemy spawn anyway (you can spawn inside a teammate; enemies on the point are still handled by the game’s existing **`KillBox`** / telefrag behaviour).
 
 Non-CTF modes are unchanged: the override forwards to the original **`SelectTeamDeathmatchSpawnPoint`** when `deathmatch` is not **CTF** (`games_t::DM_CTF` = **4**).
@@ -34,7 +39,12 @@ Symbol names and RVAs live in the repo-root **`detours.yaml`** (shared registry)
 
 ## Enabling
 
-Set **`ctf_spawn: true`** in **`src/features/features.yaml`**. If you set it to **`false`**, the generator stops emitting detours and registrations for this feature’s symbols; you should also **rename `ctf_spawn.cpp`** (e.g. to `ctf_spawn.cpp.off`) so the project does not compile code that expects those generated hooks and `o*` pointers.
+`ctf_spawn` is declared with **`tier: experimental`** in
+**`src/features/features.yaml`**, so it is compiled only for the
+`experimental` profile. Use `./scripts/build.sh --profile experimental` (or
+`SOF_BUDDY_PROFILE=experimental`) to include it; no source-file renaming is
+needed. CMake and `generate_hooks.py` use the same profile, so a disabled
+feature is neither compiled nor asked to reference generated detours.
 
 ## Debug logging (temporary)
 

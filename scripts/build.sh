@@ -11,13 +11,17 @@ TOOLCHAIN="$ROOT/cmake/toolchain-mingw32.cmake"
 # type gets its own directory so switching types never forces a full rebuild.
 BUILD_DIR_EXPLICIT="${BUILD_DIR:-}"
 BUILD_DIR="$BUILD_DIR_EXPLICIT"
+PROFILE="${SOF_BUDDY_PROFILE:-}"
 
 usage() {
-  echo "Usage: $0 [--debug] [--make] [--dir DIR]"
+  echo "Usage: $0 [--debug] [--make] [--dir DIR] [--profile PROFILE]"
   echo "  --debug   CMAKE_BUILD_TYPE=Debug in build/debug (default: Release in build)"
   echo "  --make    use 'Unix Makefiles' instead of Ninja"
   echo "  --dir D   build directory (default: build or build/debug)."
   echo "            Env BUILD_DIR overrides the default before flags."
+  echo "  --profile P  feature profile: stable, unstable, experimental."
+  echo "               Default: current git branch (master -> stable), or"
+  echo "               env SOF_BUDDY_PROFILE."
   exit 1
 }
 
@@ -29,6 +33,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || usage
       BUILD_DIR="$2"
       BUILD_DIR_EXPLICIT="$2"
+      shift 2
+      ;;
+    --profile)
+      [[ $# -ge 2 ]] || usage
+      PROFILE="$2"
       shift 2
       ;;
     -h|--help) usage ;;
@@ -43,6 +52,18 @@ if [[ -z "$BUILD_DIR_EXPLICIT" ]]; then
     BUILD_DIR="build"
   fi
 fi
+
+# Resolve the feature profile once and pass the same value to CMake and the
+# generator. deploy-branches.sh builds detached worktrees, where git cannot
+# infer the branch, so an explicit SOF_BUDDY_PROFILE / --profile wins there.
+PYTHON_BIN="${PYTHON3:-/usr/bin/python3}"
+profile_args=()
+if [[ -n "$PROFILE" ]]; then
+  profile_args+=(--profile "$PROFILE")
+fi
+PROFILE="$("$PYTHON_BIN" "$ROOT/tools/generate_hooks.py" --print-profile "${profile_args[@]}")"
+export SOF_BUDDY_PROFILE="$PROFILE"
+echo "Feature profile: $PROFILE"
 
 # generate_hooks.py writes its headers/sources wherever SOF_BUDDY_SERVER_GEN_DIR
 # points (default: legacy build/). Point it at this build dir for both the
@@ -68,9 +89,10 @@ fi
 CMAKE_ARGS=(
   -S "$ROOT" -B "$BUILD_DIR" -G "$GENERATOR"
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+  -DSOF_BUDDY_PROFILE="$PROFILE"
   # generate_hooks.py needs PyYAML; default to an interpreter that has it.
   # Env PYTHON3 overrides (e.g. a venv python).
-  -DPython3_EXECUTABLE="${PYTHON3:-/usr/bin/python3}"
+  -DPython3_EXECUTABLE="$PYTHON_BIN"
 )
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
   CMAKE_ARGS+=(-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN")

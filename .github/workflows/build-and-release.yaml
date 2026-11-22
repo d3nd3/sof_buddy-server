@@ -4,11 +4,36 @@ on:
   push:
     branches:
       - master
+      - unstable
+      - experimental
     paths-ignore:
       - "**.md"
       - "docs/**"
 
 jobs:
+  # master is the stable release branch; unstable and experimental use their
+  # own names. The same code and features.yaml are shared by all three
+  # branches, so the profile is the only thing that changes the feature set.
+  profile:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.map.outputs.name }}
+    steps:
+      - name: Map branch to feature profile
+        id: map
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            master) name=stable ;;
+            unstable) name=unstable ;;
+            experimental) name=experimental ;;
+            *)
+              echo "::error::No feature profile for branch ${GITHUB_REF_NAME}"
+              exit 1
+              ;;
+          esac
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Branch ${GITHUB_REF_NAME} -> feature profile ${name}"
+
   version_gate:
     runs-on: ubuntu-latest
     outputs:
@@ -34,7 +59,7 @@ jobs:
           fi
 
   build:
-    needs: version_gate
+    needs: [version_gate, profile]
     if: needs.version_gate.outputs.version_changed == 'true'
     runs-on: ubuntu-latest
     container:
@@ -47,6 +72,7 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
       SOFPLUS_CURSOR_RULES: ${{ github.workspace }}/sofplus-cursor-rules
+      SOF_BUDDY_PROFILE: ${{ needs.profile.outputs.name }}
 
     steps:
       - name: Install dependencies
@@ -79,14 +105,16 @@ jobs:
             tools/generate_hooks.py cmake/toolchain-mingw32.cmake \
             | sha256sum | awk '{print substr($1,1,16)}')
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          echo "profile=$SOF_BUDDY_PROFILE"
 
       - name: Restore compiler cache
         uses: actions/cache@v4
         with:
           path: sof_buddy-server/.ccache
-          key: ccache-mingw-i686-${{ steps.ccache_inputs.outputs.hash }}-${{ github.sha }}
+          key: ccache-mingw-i686-${{ needs.profile.outputs.name }}-${{ steps.ccache_inputs.outputs.hash }}-${{ github.sha }}
           restore-keys: |
-            ccache-mingw-i686-${{ steps.ccache_inputs.outputs.hash }}-
+            ccache-mingw-i686-${{ needs.profile.outputs.name }}-${{ steps.ccache_inputs.outputs.hash }}-
+            ccache-mingw-i686-${{ needs.profile.outputs.name }}-
             ccache-mingw-i686-
 
       - name: Build gamex86.dll
@@ -94,19 +122,22 @@ jobs:
         run: |
           ccache -z || true
           ./scripts/build.sh
+          echo "--- enabled features ($SOF_BUDDY_PROFILE) ---"
+          python3 tools/generate_hooks.py --list-enabled --profile "$SOF_BUDDY_PROFILE"
           mkdir -p dist
           cp build/gamex86.dll dist/
-          (cd dist && zip -r ../release_gamex86.zip gamex86.dll)
+          python3 tools/generate_hooks.py --list-enabled --profile "$SOF_BUDDY_PROFILE" > dist/features.txt
+          (cd dist && zip -r ../release_gamex86.zip gamex86.dll features.txt)
           echo "--- ccache statistics ---"
           ccache -s || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-gamex86
+          name: release-gamex86-${{ needs.profile.outputs.name }}
           path: sof_buddy-server/release_gamex86.zip
 
   release:
-    needs: [build, version_gate]
+    needs: [build, version_gate, profile]
     if: needs.version_gate.outputs.version_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -114,12 +145,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release-gamex86
+          name: release-gamex86-${{ needs.profile.outputs.name }}
           path: dist
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.version_gate.outputs.version }}-build${{ github.run_number }}
-          name: v${{ needs.version_gate.outputs.version }} (build ${{ github.run_number }})
+          tag_name: v${{ needs.version_gate.outputs.version }}-${{ needs.profile.outputs.name }}-build${{ github.run_number }}
+          name: v${{ needs.version_gate.outputs.version }} ${{ needs.profile.outputs.name }} (build ${{ github.run_number }})
           files: dist/release_gamex86.zip
           generate_release_notes: true
+          prerelease: ${{ needs.profile.outputs.name != 'stable' }}

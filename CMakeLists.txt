@@ -6,7 +6,45 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# Branch profile: master -> stable, unstable -> unstable,
+# experimental -> experimental. build.sh and CI pass this explicitly; a
+# manual cmake run falls back to the current git branch (or stable).
+set(SOF_BUDDY_PROFILE "" CACHE STRING
+    "Feature profile: stable, unstable, or experimental (default: current git branch)")
+if(SOF_BUDDY_PROFILE STREQUAL "")
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py" --print-profile
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE SOF_BUDDY_DETECTED_PROFILE
+        RESULT_VARIABLE SOF_BUDDY_PROFILE_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT SOF_BUDDY_PROFILE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not determine the feature profile")
+    endif()
+    set(SOF_BUDDY_PROFILE "${SOF_BUDDY_DETECTED_PROFILE}" CACHE STRING
+        "Feature profile: stable, unstable, or experimental (default: current git branch)"
+        FORCE)
+endif()
+message(STATUS "Feature profile: ${SOF_BUDDY_PROFILE}")
+
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+
+# The generated headers depend on the profile, not just on detours.yaml and the
+# JSON files. Persist the profile so switching branches in one build directory
+# reruns the generator instead of linking experimental sources against stale
+# stable headers.
+set(SOF_BUDDY_PROFILE_STAMP "${GENERATED_DIR}/feature_profile.txt")
+if(EXISTS "${SOF_BUDDY_PROFILE_STAMP}")
+    file(READ "${SOF_BUDDY_PROFILE_STAMP}" SOF_BUDDY_PROFILE_STAMP_VALUE)
+    string(STRIP "${SOF_BUDDY_PROFILE_STAMP_VALUE}" SOF_BUDDY_PROFILE_STAMP_VALUE)
+else()
+    set(SOF_BUDDY_PROFILE_STAMP_VALUE "")
+endif()
+if(NOT SOF_BUDDY_PROFILE_STAMP_VALUE STREQUAL SOF_BUDDY_PROFILE)
+    file(WRITE "${SOF_BUDDY_PROFILE_STAMP}" "${SOF_BUDDY_PROFILE}\n")
+endif()
 
 set(GENERATED_SOURCES
     ${GENERATED_DIR}/generated_detours.cpp
@@ -29,11 +67,13 @@ file(GLOB_RECURSE HOOK_JSON_FILES CONFIGURE_DEPENDS
 add_custom_command(
     OUTPUT ${GENERATED_SOURCES} ${GENERATED_HEADERS}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py
+            --profile "${SOF_BUDDY_PROFILE}"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/detours.yaml
         ${HOOK_JSON_FILES}
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py
+        ${SOF_BUDDY_PROFILE_STAMP}
     COMMENT "Generate detours from detours.yaml and feature hooks/callbacks JSON"
 )
 
@@ -53,10 +93,12 @@ add_custom_command(
 )
 list(APPEND GENERATED_HEADERS ${GENERATED_DIR}/generated_cmd_catalog.h)
 
-# Compile only the features src/features/features.yaml turns on.
+# Compile only the features the selected profile turns on.
 #
-# The generator honours that file when deciding which detour namespaces to
-# emit, so CMake has to honour it too. Globbing every feature .cpp regardless
+# features.yaml assigns each feature a tier; the profile (stable/unstable/
+# experimental) selects the tiers. The generator honours the same selection
+# when deciding which detour namespaces to emit, so CMake has to honour it too.
+# Globbing every feature .cpp regardless
 # meant a disabled feature was still compiled while the symbols it references
 # were deliberately not generated - which surfaces as a wall of
 # "detour_X has not been declared" errors on a clean build, and only on a
@@ -67,7 +109,8 @@ set(FEATURES_YAML "${CMAKE_CURRENT_SOURCE_DIR}/src/features/features.yaml")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${FEATURES_YAML}")
 
 execute_process(
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py" --list-enabled
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hooks.py"
+            --list-enabled --profile "${SOF_BUDDY_PROFILE}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE ENABLED_FEATURES_RAW
     RESULT_VARIABLE ENABLED_FEATURES_RESULT

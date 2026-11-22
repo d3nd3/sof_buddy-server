@@ -5,8 +5,23 @@ import yaml
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+# Branch profiles select features by tier. `master` maps to `stable`; the
+# other two branch names map to themselves. A feature's tier is the only
+# classification needed to move it between release sets.
+DEFAULT_PROFILES = {
+    'stable': ('stable',),
+    'unstable': ('stable', 'unstable'),
+    'experimental': ('stable', 'unstable', 'experimental'),
+}
+PROFILE_ALIASES = {
+    'master': 'stable',
+    'main': 'stable',
+}
+PROFILE_ORDER = ('stable', 'unstable', 'experimental')
 
 def format_params_decl(params, variadic=False):
     """Build C++ parameter list for typedefs; append ', ...' when variadic (e.g. Com_Printf)."""
@@ -73,39 +88,136 @@ def parse_features_txt(features_txt_path):
     return enabled_features
 
 
-def parse_features_yaml(yaml_path):
-    """Load enabled feature names from features/features.yaml."""
-    enabled = set()
+def normalize_profile(name):
+    profile = str(name).strip().lower()
+    profile = PROFILE_ALIASES.get(profile, profile)
+    if profile not in PROFILE_ORDER:
+        raise ValueError(
+            f"unknown feature profile '{name}' "
+            f"(choose from: {', '.join(PROFILE_ORDER)})")
+    return profile
+
+
+def git_branch(project_root):
+    """Return the current branch, or None for detached HEAD / no git."""
+    try:
+        result = subprocess.run(
+            ['git', '-C', str(project_root), 'rev-parse', '--abbrev-ref', 'HEAD'],
+            check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    branch = result.stdout.strip()
+    return None if not branch or branch == 'HEAD' else branch
+
+
+def resolve_profile(project_root, explicit=None):
+    """Resolve --profile, then $SOF_BUDDY_PROFILE, then the git branch."""
+    requested = explicit or os.environ.get('SOF_BUDDY_PROFILE')
+    if requested:
+        return normalize_profile(requested)
+    branch = git_branch(project_root)
+    if branch:
+        try:
+            return normalize_profile(branch)
+        except ValueError:
+            pass
+    return 'stable'
+
+
+def parse_profiles(data):
+    """Return profile -> set(tiers) from features.yaml, with defaults."""
+    profiles = {name: set(tiers) for name, tiers in DEFAULT_PROFILES.items()}
+    raw = data.get('profiles') if isinstance(data, dict) else None
+    if raw is None:
+        return profiles
+    if not isinstance(raw, dict):
+        raise ValueError('features.yaml: `profiles:` must be a mapping')
+    for name, tiers in raw.items():
+        if not isinstance(tiers, list):
+            raise ValueError(f'features.yaml: profile `{name}` must be a list of tiers')
+        profiles[str(name)] = {
+            str(t).strip().lower() for t in tiers if str(t).strip()
+        }
+    missing = [name for name in PROFILE_ORDER if name not in profiles]
+    if missing:
+        raise ValueError(
+            'features.yaml: missing profile(s): ' + ', '.join(missing))
+    return profiles
+
+
+def parse_features_yaml(yaml_path, profile):
+    """Load the enabled feature names for one branch profile."""
     with open(yaml_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f)
     if not data or not isinstance(data, dict):
-        return enabled
+        return set()
+
+    profiles = parse_profiles(data)
+    tiers = profiles.get(normalize_profile(profile), set())
+    enabled = set()
+    forced_off = set()
+
     feat = data.get('features')
-    if isinstance(feat, dict):
-        for name, on in feat.items():
-            if on is True:
-                enabled.add(str(name))
+    if feat is not None and not isinstance(feat, dict):
+        raise ValueError('features.yaml: `features:` must be a mapping')
+    for name, cfg in (feat or {}).items():
+        name = str(name)
+        if isinstance(cfg, bool):
+            # Legacy `name: true|false` syntax.
+            if cfg:
+                enabled.add(name)
+            else:
+                forced_off.add(name)
+            continue
+        if not isinstance(cfg, dict):
+            raise ValueError(
+                f'features.yaml: `{name}` must be true/false or a mapping with `tier:`')
+        if 'tier' not in cfg:
+            raise ValueError(
+                f'features.yaml: `{name}` needs a `tier:` '
+                f'(stable, unstable, experimental, or dev)')
+        tier = str(cfg['tier']).strip().lower()
+        override = cfg.get('enabled')
+        if override is not None:
+            if not isinstance(override, bool):
+                raise ValueError(
+                    f'features.yaml: `{name}.enabled` must be true or false')
+            if override:
+                enabled.add(name)
+            else:
+                forced_off.add(name)
+        elif tier in tiers:
+            enabled.add(name)
+
+    # Legacy escape hatches, useful for a one-off local build.
     lst = data.get('enabled')
-    if isinstance(lst, list):
-        for item in lst:
-            if item is None:
-                continue
-            s = str(item).strip()
-            if s:
-                enabled.add(s)
-    return enabled
+    if lst is not None and not isinstance(lst, list):
+        raise ValueError('features.yaml: `enabled:` must be a list')
+    for item in lst or []:
+        if item is not None:
+            name = str(item).strip()
+            if name:
+                enabled.add(name)
+
+    for item in data.get('disabled') or []:
+        if item is not None:
+            forced_off.add(str(item).strip())
+
+    return {name for name in enabled if name and name not in forced_off}
 
 
-def parse_feature_toggles(features_dir):
+def parse_feature_toggles(features_dir, profile=None, project_root=None):
     """
-    Prefer features/features.yaml (explicit booleans, comments, optional `enabled:` list).
-    Fall back to legacy features/FEATURES.txt if the YAML file is missing.
+    Select enabled features for a branch profile.
+    Prefer features/features.yaml; fall back to legacy FEATURES.txt.
     """
     features_dir = Path(features_dir)
+    project_root = Path(project_root) if project_root else features_dir.parent.parent
+    profile = resolve_profile(project_root, profile)
     yaml_path = features_dir / 'features.yaml'
     txt_path = features_dir / 'FEATURES.txt'
     if yaml_path.is_file():
-        return parse_features_yaml(yaml_path)
+        return parse_features_yaml(yaml_path, profile)
     if txt_path.is_file():
         return parse_features_txt(str(txt_path))
     return set()
@@ -811,21 +923,52 @@ def generate_engine_pointers(pointer_only_set, detours, header_path, cpp_path):
         f.write('}\n')
 
 
+def cli_option(argv, name):
+    """Return the value for `--name VALUE` or `--name=VALUE`."""
+    for i, arg in enumerate(argv):
+        if arg == name:
+            if i + 1 >= len(argv):
+                print(f'FATAL: {name} needs a value', file=sys.stderr)
+                sys.exit(2)
+            return argv[i + 1]
+        if arg.startswith(name + '='):
+            return arg.split('=', 1)[1]
+    return None
+
+
 def main():
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
+    try:
+        profile = resolve_profile(
+            project_root, cli_option(sys.argv[1:], '--profile'))
+    except ValueError as e:
+        print(f'FATAL: {e}', file=sys.stderr)
+        sys.exit(2)
+
+    # --print-profile: print the resolved profile and exit. Build scripts use
+    # this so CMake and the generator can never disagree about the branch.
+    if '--print-profile' in sys.argv:
+        print(profile)
+        return
 
     # --list-enabled: print the enabled feature names, one per line, and exit.
     # CMake calls this at configure time so it compiles exactly the features
-    # this file turns on. Sharing the parser is the point - a second
+    # this profile turns on. Sharing the parser is the point - a second
     # implementation of features.yaml in CMake would drift, and the failure
     # mode of that drift is a disabled feature still being compiled against
     # detour namespaces that were deliberately not generated.
     if '--list-enabled' in sys.argv:
-        for name in sorted(parse_feature_toggles(project_root / 'src' / 'features')):
+        try:
+            enabled = parse_feature_toggles(
+                project_root / 'src' / 'features', profile)
+        except ValueError as e:
+            print(f'FATAL: {e}', file=sys.stderr)
+            sys.exit(2)
+        for name in sorted(enabled):
             print(name)
         return
-    
+
     yaml_path = project_root / 'detours.yaml'
     feature_toggles_dir = project_root / 'src' / 'features'
     features_dir = project_root / 'src' / 'features'
@@ -834,6 +977,7 @@ def main():
     gen_env = os.environ.get("SOF_BUDDY_SERVER_GEN_DIR")
     build_dir = Path(gen_env) if gen_env else (project_root / "build")
     build_dir.mkdir(parents=True, exist_ok=True)
+    print(f'Info: feature profile: {profile}', file=sys.stderr)
     
     detours_output = build_dir / 'generated_detours.h'
     detours_cpp_output = build_dir / 'generated_detours.cpp'
@@ -841,7 +985,11 @@ def main():
     engine_ptr_h = build_dir / 'generated_engine_pointers.h'
     engine_ptr_cpp = build_dir / 'generated_engine_pointers.cpp'
     
-    enabled_features = parse_feature_toggles(feature_toggles_dir)
+    try:
+        enabled_features = parse_feature_toggles(feature_toggles_dir, profile)
+    except ValueError as e:
+        print(f'FATAL: {e}', file=sys.stderr)
+        sys.exit(2)
     
     all_detours = parse_detours_yaml(yaml_path)
     all_feature_hooks = find_hooks_json_files(features_dir, core_dir)

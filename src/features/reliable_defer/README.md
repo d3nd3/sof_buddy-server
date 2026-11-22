@@ -1,5 +1,11 @@
 # reliable_defer
 
+**Tier: experimental.** It replaces the reliable network-channel writers
+(`Netchan_Transmit`, `SZ_Write`, `MSG_Write*`), so packet burst/ordering
+behaviour is deliberately different from stock. Enabled only on the
+`experimental` branch; keep it off stable and unstable servers until it has
+had a long movement/network soak.
+
 **The one-sentence version:** the server talks to each player through two
 channels — a *reliable mailbox* (chat, commands, setup data: everything that
 must arrive) and a *snapshot* (positions, sounds, effects: the per-tick game

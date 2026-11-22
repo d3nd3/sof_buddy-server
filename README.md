@@ -46,12 +46,34 @@ Two properties in the tables below matter:
 - **`NOSET`** — the engine refuses `set` from the console. Every output cvar is
   `NOSET`: they are readouts, not settings, and writing to them is meaningless.
 
-> **A cvar only exists if its feature is compiled in.** Features are toggled at
-> **build** time in `src/features/features.yaml`, not at runtime. If a cvar
-> below does not exist on your server, its feature was built out. The default
-> build ships **`cpu_optimizations`**, **`stufftext`**, **`reliable_defer`**, and
-> **`print_guard`**. Plan:
-> [`src/features/cpu_optimizations/README.md`](src/features/cpu_optimizations/README.md)
+> **A cvar only exists if its feature is compiled in.** Features are selected at
+> **build** time from `src/features/features.yaml`, not at runtime. If a cvar
+> below does not exist on your server, its feature was built out.
+
+### Stability tiers and branches
+
+Every feature has a `tier` in `src/features/features.yaml`. The branch selects
+which tiers are compiled:
+
+| Branch | Profile | Feature set |
+|---|---|---|
+| `master` | `stable` | stable only |
+| `unstable` | `unstable` | stable + unstable |
+| `experimental` | `experimental` | stable + unstable + experimental |
+
+The code is shared; only the profile changes. `SOF_BUDDY_PROFILE=...` or
+`./scripts/build.sh --profile ...` overrides the branch default.
+
+| Tier | Meaning | Features |
+|---|---|---|
+| stable | Production-safe, well-scoped | `stufftext`, `print_guard`, `sv_tracktime` |
+| unstable | Behaviour-changing, still moving | `clsv_pipe`, `minigames`, `profiles`, `skinteam_quiet` |
+| experimental | Deep engine/gameplay changes with unpredictable side effects | `cpu_optimizations`, `reliable_defer`, `ctf_spawn` |
+
+`experimental` is deliberately **disabled on master and unstable**. The
+`cpu_optimizations` bundle overrides the tick loop, command drain, allocator and
+socket paths; it is the usual suspect for movement glitches. Plan:
+[`src/features/cpu_optimizations/README.md`](src/features/cpu_optimizations/README.md)
 
 ---
 
@@ -73,6 +95,11 @@ Two properties in the tables below matter:
 | `_sofbuddy_stufftext` | `1` | live | `ARCHIVE` | Server console command `stufftext`: send `svc_stufftext` to clients |
 | `_sofbuddy_reldef` | `1` | live | `ARCHIVE` | Queue server→client reliable staging so bursty prints/stufftext do not coalesce into one blob. Bypassed during connect (`state < cs_spawned`) |
 | `_sofbuddy_example_enabled` | `1` | live | — | Template feature, for developers. Not built by default |
+
+The `cpu_optimizations` rows (`_sofbuddy_cpuopt`, `_sofbuddy_cmdpark*`,
+`_sofbuddy_tickpace`, `_sofbuddy_hashmap`, `_sofbuddy_cbuf_insert`,
+`_sofbuddy_zpool`), `_sofbuddy_custom_respawn`, and `_sofbuddy_reldef` only
+exist in **experimental** builds. `_sofbuddy_example_enabled` never ships.
 
 `clamp_monitor` has no on/off switch — it is pure measurement and always
 active when built in. `_sofbuddy_cmdcost` defaults on; handlers are only patched
@@ -431,11 +458,32 @@ Both modes share one build directory (`build/`, or `$BUILD_DIR`); switching
 mode reconfigures it. CMake presets `mingw32-cross` (Debug) and
 `mingw32-cross-release` (Release) do the same thing.
 
-**Enabling and disabling features** is a one-line edit in
-`src/features/features.yaml` — set the feature `true` or `false` and rebuild.
-CMake reads that file to decide which feature directories to compile, and the
-generator emits detours only for enabled features, so nothing else needs
-touching.
+**Enabling and disabling features** is a tier edit in
+`src/features/features.yaml` — set `tier: stable|unstable|experimental` and
+rebuild. The selected branch/profile decides which tiers are compiled; CMake
+globs only those feature directories, and the generator emits detours only for
+their hooks, so nothing else needs touching. Use `enabled: false` only for a
+feature that must stay off in every profile (the `example` template does this).
+
+Release workflow: a `VERSION` bump pushed to `master`, `unstable`, or
+`experimental` builds that branch with its profile and publishes a release
+tagged `v<VERSION>-<profile>-build<N>`. The zip contains `features.txt` so the
+compiled feature set is auditable. The `VERSION` gate still applies per branch.
+
+The three release branches share one history. After changing and committing
+master, fast-forward the other refs instead of maintaining separate feature
+lists:
+
+```bash
+git branch -f unstable master
+git branch -f experimental master
+git push origin master unstable experimental
+```
+
+`scripts/deploy-branches.sh` builds each branch in its own worktree, passes the
+matching profile, and installs the result on the three servers. It refuses a
+branch that predates the tier/profile system, because such a branch would
+silently ignore `SOF_BUDDY_PROFILE` and deploy the old default feature set.
 
 ### Tests
 

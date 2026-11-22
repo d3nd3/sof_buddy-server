@@ -227,8 +227,10 @@ shared by several profiles needs the full guid to disambiguate.
 
 ## Migration from `.func`
 
-1. Enable the feature (`src/features/features.yaml`: `profiles: true`),
-   rebuild, deploy `gamex86.dll` as usual.
+1. Build with the `unstable` or `experimental` profile (or set
+   `profiles.enabled: true` in `src/features/features.yaml`), rebuild, deploy
+   `gamex86.dll` as usual. `profiles` is tier `unstable`, so it is not in the
+   stable build.
 2. Copy the old registry if you have one:
    `<user>/sofplus/data/profiles/registry.cfg` is read as-is (legacy
    `~reg_` lines import cleanly), then re-saved in native form on the

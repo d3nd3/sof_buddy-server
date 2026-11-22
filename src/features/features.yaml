@@ -1,23 +1,101 @@
-# Optional features: each key is a directory under src/features/<name>/.
-# Core (src/core/) is always included — not listed here.
-# Use true / false so every feature can be toggled explicitly in one place.
+# Feature tiers and branch profiles.
+#
+# The branch you build decides the default feature set. The code is shared;
+# only the selection profile changes:
+#
+#   master       -> stable        (stable features only)
+#   unstable     -> unstable      (stable + unstable)
+#   experimental -> experimental  (stable + unstable + experimental)
+#
+# Any other branch, detached HEAD, or an exported source tree defaults to
+# stable. Override with `SOF_BUDDY_PROFILE=...` or
+# `./scripts/build.sh --profile experimental`.
+#
+# Tiers:
+#   stable       Well-scoped, production-safe. Enabled on every branch.
+#   unstable     Behaviour-changing and still moving. Enabled on unstable and
+#                experimental; not on master.
+#   experimental Deep engine/gameplay changes whose side effects are not fully
+#                predictable (movement glitches, tick/network timing, hard-coded
+#                game offsets). Enabled only on the experimental branch.
+#   dev          Never enabled by a profile. Templates and manual testing only.
+#
+# A feature entry is a mapping with a required `tier:`. Optional `enabled:
+# true|false` is a hard override for local testing: true forces the feature
+# into every profile, false keeps it out of every profile. Legacy
+# `name: true|false` entries and the top-level `enabled:`/`disabled:` lists
+# are still accepted for compatibility.
+#
+# Add or move a feature by editing its tier here, not by editing per-branch
+# copies of this file.
+
+profiles:
+  stable: [stable]
+  unstable: [stable, unstable]
+  experimental: [stable, unstable, experimental]
 
 features:
-  example: false
-  ctf_spawn: false
-  # Tick/CPU modules under src/features/cpu_optimizations/ (includes
-  # cmd_cost; zpool compiled, cvar 0). See that folder's README.
-  cpu_optimizations: true
-  stufftext: true
-  reliable_defer: true
-  print_guard: true
-  minigames: true
-  clsv_pipe: true
-  profiles: true
-  skinteam_quiet: true
-  sv_tracktime: true
-  # my_feature: false
+  # ---------------------------------------------------------------------------
+  # stable
+  # ---------------------------------------------------------------------------
+  # Server-console `stufftext` command. Uses the stock svc_stufftext sequence.
+  stufftext:
+    tier: stable
 
-# Alternative: list only enabled names (merged with `features:` above if both present).
-# enabled:
-#   - example
+  # Bounds engine print/command buffers. Prevents stack corruption; no
+  # movement or tick-scheduling changes.
+  print_guard:
+    tier: stable
+
+  # Measurement only: reports claimed vs real client frametime. Changes no
+  # state.
+  sv_tracktime:
+    tier: stable
+
+  # ---------------------------------------------------------------------------
+  # unstable
+  # ---------------------------------------------------------------------------
+  # Stufftext content pipeline and one-time client download bootstrap.
+  clsv_pipe:
+    tier: unstable
+
+  # Client UI/menu platform (tictactoe, lagometer, cvar/command viewers).
+  minigames:
+    tier: unstable
+
+  # Persistent identity, roster privileges, stats and gamepark transfer.
+  profiles:
+    tier: unstable
+
+  # Overrides PB_InitBody/player_die/configstring to stop spurious team
+  # messages. Touches team respawn state.
+  skinteam_quiet:
+    tier: unstable
+
+  # ---------------------------------------------------------------------------
+  # experimental
+  # ---------------------------------------------------------------------------
+  # Replaces the tick loop, command drain, allocator and socket-buffer paths.
+  # This is the feature most likely to cause movement glitches or timing
+  # regressions. Keep it off stable and unstable servers.
+  cpu_optimizations:
+    tier: experimental
+
+  # Rewrites the reliable network channel (Netchan_Transmit, SZ_Write,
+  # MSG_Write*). Changes packet burst behaviour; treat as unsafe until proven
+  # on the experimental server.
+  reliable_defer:
+    tier: experimental
+
+  # Replaces CTF team-spawn selection using retail game offsets. Can desync on
+  # a different oldgamex86.dll build.
+  ctf_spawn:
+    tier: experimental
+
+  # ---------------------------------------------------------------------------
+  # dev
+  # ---------------------------------------------------------------------------
+  # Template feature, never shipped automatically.
+  example:
+    tier: dev
+    enabled: false

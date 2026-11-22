@@ -1,6 +1,7 @@
 /build/
 /build-release/
 /cmake-build-*/
+/.worktrees/
 .cache/
 compile_commands.json
 /export/

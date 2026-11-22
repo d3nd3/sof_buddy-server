@@ -1,5 +1,12 @@
 # cpu_optimizations
 
+**Tier: experimental.** This bundle replaces the tick loop, command drain,
+allocator and socket-buffer paths. Those are deep engine changes with
+side effects that are not fully predictable — movement/timing glitches are the
+known failure mode — so it is **disabled on `master` and `unstable`** and only
+compiled by the `experimental` profile. Do not promote individual modules to a
+stable build without a dedicated stability pass.
+
 Keep a sofplus dedicated server on its **100 ms tick** without growing the
 engine's 8 KB `cmd_text` or splitting a drain with `cmd_wait`.
 

@@ -1,13 +1,13 @@
 # Detour system (sof_buddy-server)
 
-This repo mirrors the **data-driven detour workflow** from the **sof_buddy** client project: declare symbols in **`detours.yaml`**, wire behaviour in **`src/features/<name>/hooks/hooks.json`** and **`callbacks/callbacks.json`**, and enable optional features in **`src/features/features.yaml`** (same family as **`detours.yaml`**: comments, clear `true` / `false` toggles). The Python tool **`tools/generate_hooks.py`** (adapted from sof_buddy) emits generated headers under **`${CMAKE_BINARY_DIR}/generated`** when CMake runs (including **`generated_engine_pointers.h`** / **`generated_engine_pointers.cpp`** for pointer-only call helpers). If **`features.yaml`** is absent, the generator falls back to legacy **`src/features/FEATURES.txt`** (one name per line).
+This repo mirrors the **data-driven detour workflow** from the **sof_buddy** client project: declare symbols in **`detours.yaml`**, wire behaviour in **`src/features/<name>/hooks/hooks.json`** and **`callbacks/callbacks.json`**, and classify optional features in **`src/features/features.yaml`** by stability tier. The branch/profile selects which tiers compile. The Python tool **`tools/generate_hooks.py`** (adapted from sof_buddy) emits generated headers under **`${CMAKE_BINARY_DIR}/generated`** when CMake runs (including **`generated_engine_pointers.h`** / **`generated_engine_pointers.cpp`** for pointer-only call helpers). If **`features.yaml`** is absent, the generator falls back to legacy **`src/features/FEATURES.txt`** (one name per line).
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `detours.yaml` | Registry of hookable functions (name, module, RVA or absolute address, signature). |
-| `src/features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with **`name: true|false`**, and/or an **`enabled:`** list of names. **`core`** is not configured here (always on). |
+| `src/features/features.yaml` | Optional features under `src/features/<name>/`: map **`features:`** with per-feature **`tier: stable|unstable|experimental|dev`**, plus the branch **`profiles:`**. Optional **`enabled:`/`disabled:`** lists are legacy escape hatches. **`core`** is not configured here (always on). |
 | `src/core/hooks.json` | Optional core function hooks. |
 | `src/core/callbacks.json` | Optional core lifecycle callbacks. |
 | `src/core/pointers.json` | Core pointer-only symbols (resolved to **`detour_Name::oName`**, no detour). Always processed. E.g. **`Com_DPrintf`** for developer print. |
@@ -17,6 +17,24 @@ This repo mirrors the **data-driven detour workflow** from the **sof_buddy** cli
 | `src/features/<feature>/callbacks/callbacks.json` | Register for shared hooks (e.g. `GameDllLoaded`). |
 
 Only detours **referenced** by enabled features (hooks, pointers, or **`oName` / `SOF_EP_Name`** in source) are generated. **`core`** hooks/callbacks/pointers are always in scope (not gated by `features.yaml`).
+
+## Feature profiles
+
+`features.yaml` assigns each feature a tier. The build profile selects tiers:
+
+| Profile | Tier set | Branch |
+|---|---|---|
+| `stable` | stable | `master` |
+| `unstable` | stable + unstable | `unstable` |
+| `experimental` | stable + unstable + experimental | `experimental` |
+
+`generate_hooks.py` resolves the profile from `--profile`, then
+`$SOF_BUDDY_PROFILE`, then the current git branch (`master` maps to `stable`);
+it defaults to `stable` for detached HEAD or an exported source tree. CMake
+passes the same resolved profile to both `--list-enabled` and the generation
+step, so the compiled sources and emitted detour namespaces cannot diverge.
+`master` and the other release branches share the same code and YAML; only the
+profile changes the feature set.
 
 **Variadic** functions (e.g. `Com_DPrintf`) must be **pointer-only** (listed in `pointers.json`); full typed detours are not generated for them.
 

@@ -33,7 +33,8 @@ tricky pieces:
    (stop timers / per-frame work). Session ends when that game has no slots left.
 4. Slots are 1-based. `MgSlotSpawned` / `MgEdictForSlot` validate;
    `MgMaxClients` bounds loops. Admin commands: `MgRegisterConsoleCommand`.
-5. Add `<game>: true` to `src/features/features.yaml`.
+5. Nested games are compiled with the parent `minigames` feature (tier:
+   `unstable`), so they do not get their own `features.yaml` entry.
 
 ## Offsets (verified, no magic)
 
