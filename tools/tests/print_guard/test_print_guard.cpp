@@ -30,8 +30,14 @@ static void test_truncates() {
     CHECK(buf[kPgClientBuf - 1] == '\0', "nul-terminated");
 }
 
+static void test_sofplus_limits() {
+    CHECK(kPgSofplusBroadcastChars == 999, "broadcast default is 999");
+    CHECK(kPgSofplusClientChars == 999, "client default is 999 for two-digit slots");
+}
+
 int main() {
     test_truncates();
+    test_sofplus_limits();
     if (fails) {
         std::printf("%d test(s) failed\n", fails);
         return 1;

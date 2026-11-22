@@ -5,7 +5,7 @@ void Pg_InitCvars();
 
 /** SoFPlus: max printable chars in sp_sv_print_broadcast text (#~cvar path). */
 int Pg_BroadcastMax();
-/** SoFPlus: max printable chars in sp_sv_print_client text (slot 0-9, #~cvar). */
+/** SoFPlus: max printable chars in sp_sv_print_client text (slot 0-99, #~cvar). */
 int Pg_ClientMax();
 
 /** Engine: whole macro-expanded command line (not a scripter cvar). */

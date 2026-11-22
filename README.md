@@ -343,7 +343,7 @@ can smash the stack.
 | cvar | default | SoFPlus command |
 |---|:---:|---|
 | `_sofbuddy_printguard_broadcast_max` | `999` | `sp_sv_print_broadcast #~cvar` |
-| `_sofbuddy_printguard_client_max` | `1000` | `sp_sv_print_client <slot> #~cvar` |
+| `_sofbuddy_printguard_client_max` | `999` | `sp_sv_print_client <slot> #~cvar` (slot 0-99) |
 
 Details: [`src/features/print_guard/README.md`](src/features/print_guard/README.md)
 

@@ -30,7 +30,7 @@ void Pg_InitCvars() {
         g_cvBroadcast = Buddy_GetEngineCvar("_sofbuddy_printguard_broadcast_max", "999",
                                             kCvarFlagArchive, nullptr);
     if (!g_cvClient)
-        g_cvClient = Buddy_GetEngineCvar("_sofbuddy_printguard_client_max", "1000",
+        g_cvClient = Buddy_GetEngineCvar("_sofbuddy_printguard_client_max", "999",
                                          kCvarFlagArchive, nullptr);
 }
 

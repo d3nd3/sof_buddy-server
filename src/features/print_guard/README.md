@@ -15,7 +15,7 @@ Two cvars for scripters — **how many characters you can print** with the usual
 ```sofplus
 // Max chars in the *printed text* (after #~cvar expand onto the command line).
 //set _sofbuddy_printguard_broadcast_max "999"   // sp_sv_print_broadcast #~out
-//set _sofbuddy_printguard_client_max "1000"    // sp_sv_print_client 0 #~out (slot 0-9)
+//set _sofbuddy_printguard_client_max "999"     // sp_sv_print_client 0 #~out (slot 0-99)
 
 sp_sc_cvar_len ~stored ~out
 sp_sc_cvar_len ~limit _sofbuddy_printguard_broadcast_max
@@ -28,12 +28,18 @@ sp_sv_print_broadcast #~out    // prints 999 'a', not a crash
 | Cvar | Default | SoFPlus command |
 |------|---------|-----------------|
 | `_sofbuddy_printguard_broadcast_max` | **999** | `sp_sv_print_broadcast #~cvar` |
-| `_sofbuddy_printguard_client_max` | **1000** | `sp_sv_print_client <slot> #~cvar` (slot 0-9) |
+| `_sofbuddy_printguard_client_max` | **999** | `sp_sv_print_client <slot> #~cvar` (slot 0-99) |
 
 Defaults match the **1023-char macro-expanded command line** minus the fixed
-command prefix (`sp_sv_print_broadcast "` = 24 chars → 999; `sp_sv_print_client 0 "`
-= 23 chars → 1000). Lower a cvar to truncate sooner; cannot raise past the
-engine ceiling (broadcast 2047 / client 1023).
+command and quoting overhead (`sp_sv_print_broadcast "<text>"` = 24 chars;
+`sp_sv_print_client <slot> "<text>"` = 24 chars with a two-digit slot).
+Both therefore default to **999**. Lower a cvar to truncate sooner. The engine
+print buffer itself is larger (broadcast 2047 / client 1023), but values above
+999 can exceed the SoFPlus command line.
+
+`ARCHIVE` means an existing config may still contain the old
+`_sofbuddy_printguard_client_max 1000`; set it to `999` (or remove the line) to
+pick up the two-digit-slot-safe default.
 
 To print more than the limit, chunk (`sp_sc_cvar_substr`, loop, multiple calls).
 
