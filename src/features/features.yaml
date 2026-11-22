@@ -96,6 +96,11 @@ features:
   ctf_spawn:
     tier: experimental
 
+  # Records each client's finished player_state_t (and player entity state)
+  # into a versioned .sbd file. No gameplay changes; disk writes are buffered.
+  server_demo:
+    tier: experimental
+
   # ---------------------------------------------------------------------------
   # dev
   # ---------------------------------------------------------------------------

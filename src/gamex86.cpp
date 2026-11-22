@@ -62,6 +62,9 @@ extern "C" void RelDef_Shutdown(void);
 #ifdef SOF_FEATURE_SV_TRACKTIME
 extern "C" void SvTracktime_Shutdown(void);
 #endif
+#ifdef SOF_FEATURE_SERVER_DEMO
+extern "C" void ServerDemo_Shutdown(void);
+#endif
 
 static HMODULE g_hShim = nullptr;
 static HMODULE g_hGameDll = nullptr;
@@ -402,6 +405,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #endif
 #ifdef SOF_FEATURE_SV_TRACKTIME
 		SvTracktime_Shutdown();
+#endif
+#ifdef SOF_FEATURE_SERVER_DEMO
+		ServerDemo_Shutdown();
 #endif
 		g_hGameDll = nullptr;
 		g_pfnGetGameAPI = nullptr;

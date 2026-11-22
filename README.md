@@ -70,7 +70,7 @@ The code is shared; only the profile changes. `SOF_BUDDY_PROFILE=...` or
 |---|---|---|
 | stable | Production-safe, well-scoped | `stufftext`, `print_guard`, `sv_tracktime` |
 | unstable | Behaviour-changing, still moving | `clsv_pipe`, `minigames`, `profiles`, `skinteam_quiet` |
-| experimental | Deep engine/gameplay changes with unpredictable side effects | `cpu_optimizations`, `reliable_defer`, `ctf_spawn` |
+| experimental | Deep engine/gameplay changes with unpredictable side effects | `cpu_optimizations`, `reliable_defer`, `ctf_spawn`, `server_demo` |
 
 `experimental` is deliberately **disabled on master and unstable**. The
 `cpu_optimizations` bundle overrides the tick loop, command drain, allocator and
@@ -103,12 +103,19 @@ every build with its full feature list and descriptions:
 | `_sofbuddy_custom_respawn` | `1` | live | — | CTF spawn selection: pick the team spawn farthest from the nearest living enemy, avoiding teammates |
 | `_sofbuddy_stufftext` | `1` | live | `ARCHIVE` | Server console command `stufftext`: send `svc_stufftext` to clients |
 | `_sofbuddy_reldef` | `1` | live | `ARCHIVE` | Queue server→client reliable staging so bursty prints/stufftext do not coalesce into one blob. Bypassed during connect (`state < cs_spawned`) |
+| `_sofbuddy_svdemo` | `1` | live | `ARCHIVE` | Master switch for the server-side state-demo recorder |
+| `_sofbuddy_svdemo_auto` | `0` | live | `ARCHIVE` | Start a new `.sbd` on the first client frame of each map |
+| `_sofbuddy_svdemo_entities` | `1` | live | `ARCHIVE` | Include player `entity_state_t` (body/model/effects) |
+| `_sofbuddy_svdemo_interval` | `1` | live | `ARCHIVE` | Record every Nth server frame (1 = every tick) |
+| `_sofbuddy_svdemo_max_mb` | `64` | live | `ARCHIVE` | Per-file size cap; `0` = unlimited |
+| `_sofbuddy_svdemo_dir` | `demos` | live | `ARCHIVE` | Directory under the engine userdir |
 | `_sofbuddy_example_enabled` | `1` | live | — | Template feature, for developers. Not built by default |
 
 The `cpu_optimizations` rows (`_sofbuddy_cpuopt`, `_sofbuddy_cmdpark*`,
 `_sofbuddy_tickpace`, `_sofbuddy_hashmap`, `_sofbuddy_cbuf_insert`,
-`_sofbuddy_zpool`), `_sofbuddy_custom_respawn`, and `_sofbuddy_reldef` only
-exist in **experimental** builds. `_sofbuddy_example_enabled` never ships.
+`_sofbuddy_zpool`), `_sofbuddy_custom_respawn`, `_sofbuddy_reldef`, and
+`_sofbuddy_svdemo*` only exist in **experimental** builds.
+`_sofbuddy_example_enabled` never ships.
 
 `clamp_monitor` has no on/off switch — it is pure measurement and always
 active when built in. `_sofbuddy_cmdcost` defaults on; handlers are only patched
@@ -395,6 +402,44 @@ Details: [`src/features/sv_tracktime/README.md`](src/features/sv_tracktime/READM
 
 ---
 
+### Server-side state demos — `server_demo`
+
+Records each client's finished `player_state_t` (200 bytes) and, optionally,
+the player edict's `entity_state_t` (116 bytes) after `ClientEndServerFrame`
+has run `G_SetStats`. This is a **state** demo, not a `.dm2`: no network
+packets, no protocol dependency. It is the capture half of the replay system
+and is intended for a web renderer, analysis, and a future hosted replay
+server. See [`docs/REPLAY_SYSTEM.md`](docs/REPLAY_SYSTEM.md) for the playback
+plan and why Q2's `attractloop` is a playback primitive rather than a replay
+service.
+
+```
+svdemo_start [name]     start (default: <map>_YYYYMMDD_HHMMSS.sbd)
+svdemo_stop             write END, flush, close
+svdemo_status           file, map, frame range, bytes, client-frames
+svdemo_mark <text...>   insert a highlight at the current frame
+svdemo_flush            flush the 64 KiB buffer now
+svdemo_roster           re-emit every slot's roster entry next tick
+```
+
+Files are written to `<userdir>/<dir>/<name>.sbd`. A client-frame is 328 bytes
+with entity state (≈26 KB/s at 8 clients, 10 Hz); the default 64 MiB cap is
+about 40 minutes at that rate.
+
+There is a dependency-free viewer for these files:
+[`tools/svdemo_viewer/`](tools/svdemo_viewer/) — top-down trajectories,
+first-person camera, and flat-shaded SoF BSP v46 map geometry. Drag a `.sbd`
+and a `.bsp` in, or open `?sample=1` to see the synthetic demo.
+
+| Top-down | Flat-shaded BSP v46 |
+|---|---|
+| ![server-side state demo viewer](tools/svdemo_viewer/screenshot.png) | ![BSP map preview](tools/svdemo_viewer/screenshot-bsp.png) |
+
+Details and the versioned chunk layout:
+[`src/features/server_demo/README.md`](src/features/server_demo/README.md)
+
+---
+
 ## Recipes
 
 **Is my server actually keeping up?**
@@ -513,6 +558,8 @@ tools/tests/reliable_defer/run.sh
 tools/tests/print_guard/run.sh
 tools/tests/tictactoe/run.sh
 tools/tests/sv_tracktime/run.sh
+tools/tests/server_demo/run.sh
+tools/tests/svdemo_viewer/run.sh
 
 SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 ```

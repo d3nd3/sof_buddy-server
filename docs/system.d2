@@ -46,6 +46,7 @@ core: Core · one shim, many patched call sites {
 
   reldef: `reliable_defer` · experimental — queue reliable blobs, drip one per client per tick
   ctf: `ctf_spawn` · experimental — pick the team spawn farthest from living enemies
+  svdemo: `server_demo` · experimental — per-client `player_state_t` + entity state to `.sbd`
 }
 
 state: State {
@@ -69,6 +70,7 @@ state: State {
   disk: on-disk state {
     registry: `sofplus/data/profiles/registry.cfg` — guid → nick + privilege
     stats: `sofplus/data/stats/*.cfg` — per-guid match totals
+    svdemo: `User/demos/*.sbd` — server-side state demos
     clamplog: `sof_buddy-highclamps.txt` — opt-in clamp log
     log: `User/sof.log` — `gi.dprintf` output with `logfile 1`
   }
