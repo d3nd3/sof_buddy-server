@@ -9,9 +9,10 @@ Native JSONL event stream for `sof-db-backend`.
 | `session_start` / `session_end` | Game DLL load/unload |
 | `map_start` | First non-spectator client on a map |
 | `map_end` | Intermission, map change, or server shutdown |
-| `player_connect` | `ClientBegin` |
+| `player_connect` | First spawn of a map occupancy |
 | `player_disconnect` | Before `ClientDisconnect` clears the slot |
-| `team_change` | `ClientUserinfoChanged` changes `resp.team` |
+| `spectator_enter` / `spectator_leave` | `resp.spectator` changes in `PutClientInServer` |
+| `team_change` | `ClientUserinfoChanged` changes `resp.team` while active |
 | `player_match_stats` | Map end, one per connected slot |
 | `player_death` | `player_die` Post (optional, `events` bit 1) |
 | `flag_capture` | `ctf_base_touch` succeeds (optional, bit 2) |
@@ -53,7 +54,7 @@ complete. Rotation uses `session-<uuid>-1.jsonl`, `-2`, ... when
 | `_sofbuddy_telemetry_dir` | `telemetry/spool` | Directory under the engine userdir. Read at DLL load. |
 | `_sofbuddy_telemetry_max_mb` | `64` | Per-file cap; `0` = unlimited. |
 | `_sofbuddy_telemetry_queue_kb` | `256` | Bounded in-memory queue. |
-| `_sofbuddy_telemetry_events` | `3` | Bitmask: `1` combat/death, `2` flags, `4` player samples. |
+| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` combat/death, `2` flags, `4` player samples. |
 | `_sofbuddy_telemetry_sample_sec` | `30` | Sample cadence; `0` = off. |
 
 Enable it in `dedicated.cfg`:
@@ -61,7 +62,7 @@ Enable it in `dedicated.cfg`:
 ```text
 set _sofbuddy_telemetry "1"
 set _sofbuddy_telemetry_dir "telemetry/spool"
-set _sofbuddy_telemetry_events "3"
+set _sofbuddy_telemetry_events "2"
 ```
 
 ## Hook composition
@@ -70,11 +71,24 @@ Telemetry deliberately observes existing ownership instead of replacing it:
 
 - `ClientBegin`, `ClientUserinfoChanged`, `ClientDisconnect` are body detours;
   profiles/lagometer keep their `game_export_t` wrappers.
+- `PutClientInServer` is a Post callback shared with lagometer. It starts the
+  per-map occupancy on the first spawn and emits spectator transitions.
 - `player_die` is a Post callback; `skinteam_quiet`'s override dispatches it.
 - `SV_Frame` is a Post callback alongside clamp_monitor/minigames.
 - `ctf_base_touch` is a telemetry override because no other feature owns it.
   SoFPlus replaces the spawned base's touch pointer but calls the original
   body, so this still sees every capture, including the deciding cap.
+
+## Score, spectator and labelling
+
+- `active_playtime_sec` / `playtime_sec` exclude spectator time.
+- `score_total` sums score segments because SoF resets `resp.score` in
+  `spectator_respawn`; frags, deaths and flags remain cumulative.
+- One connect is one label occupancy. Spectator enter/leave updates it rather
+  than creating a new identity; a spec-only occupancy has zero active time
+  and is excluded from match stats.
+- Snapshots include GUID, IP and ping so the backend labelling heuristics can
+  attach a player without relying on `games.log`.
 
 ## Delivering the spool
 

@@ -43,17 +43,27 @@ constexpr unsigned kEdictClientOfs = 0x74;
 constexpr unsigned kEdictCtfFlagsOfs = 0x3CC;
 constexpr unsigned kClientStateOfs = 0x0;
 constexpr unsigned kClientUserinfoOfs = 0xCC;
+constexpr unsigned kClientPingOfs = 200;       // gclient_t.ping
 constexpr unsigned kClientNetnameOfs = 0x2CC;
-constexpr unsigned kClientSpectatorOfs = 0x2DC;
-constexpr unsigned kClientTeamOfs = 0x324;
-constexpr unsigned kClientScoreOfs = 200;
-constexpr unsigned kClientEnterFrameOfs = 776;
+constexpr unsigned kClientPersSpectatorOfs = 0x2DC;
+constexpr unsigned kClientEnterFrameOfs = 772;  // gclient_t.resp.enterframe
+constexpr unsigned kClientScoreOfs = 776;       // gclient_t.resp.score
+constexpr unsigned kClientRespSpectatorOfs = 800;
+constexpr unsigned kClientTeamOfs = 0x324;      // gclient_t.resp.team
 constexpr unsigned kClientStatsOfs = 164;
 constexpr int kStatFrags = 10;
 constexpr unsigned kClientNeedBytes = 0x340;
 constexpr int kDefaultEdictStride = 0x464;
 constexpr int kMaxClients = 64;
 constexpr int kClientStateConnected = 3;
+
+// Engine server slot (not the game DLL gclient_t). The gamepark feature uses
+// the same offsets to read the address SoFPlus reports as client_ip.
+constexpr unsigned kRvaSvsClients = 0x396EEC;
+constexpr unsigned kEngineClientStride = 0xD2AC;
+constexpr unsigned kEngineClientStateOfs = 0x00;
+constexpr unsigned kEngineClientNetaddrOfs = 21124;
+constexpr int kEngineClientStateSpawned = 3;
 
 constexpr int kEventCombat = 1;
 constexpr int kEventFlags = 2;
@@ -104,6 +114,37 @@ HMODULE ExeMod() {
     if (HMODULE h = GetModuleHandleA("SoF.exe"))
         return h;
     return GetModuleHandleA("SoF-spsv.exe");
+}
+
+// Engine-side client address for a zero-based slot. The game DLL has no
+// netadr field of its own; SoFPlus reads this same svs.clients entry.
+bool SlotIp(int slot0, char* out, std::size_t cap) {
+    if (!out || cap == 0)
+        return false;
+    out[0] = '\0';
+    if (slot0 < 0 || slot0 >= kMaxClients)
+        return false;
+    HMODULE h = ExeMod();
+    if (!IsValidModuleRva(h, kRvaSvsClients, sizeof(void*)))
+        return false;
+    char* clients = *reinterpret_cast<char**>(
+        reinterpret_cast<char*>(h) + kRvaSvsClients);
+    if (!IsSafeMemoryBlock(clients, 1))
+        return false;
+    char* client = clients + static_cast<unsigned>(slot0) * kEngineClientStride;
+    if (!IsSafeMemoryBlock(client + kEngineClientStateOfs, sizeof(int)))
+        return false;
+    if (*reinterpret_cast<const int*>(client + kEngineClientStateOfs) !=
+        kEngineClientStateSpawned)
+        return false;
+    const unsigned char* ip = reinterpret_cast<const unsigned char*>(
+        client + kEngineClientNetaddrOfs);
+    if (!IsSafeMemoryBlock(ip, 4))
+        return false;
+    if (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0)
+        return false;
+    std::snprintf(out, cap, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    return true;
 }
 
 constexpr unsigned kRvaCmdFunctions = 0x241840;
@@ -464,6 +505,7 @@ MapState g_map;
 
 struct SlotState {
     bool active = false;
+    bool spectator = false;
     std::uint64_t mapSerial = 0;
     int lastTeam = -1;
     int deaths = 0;
@@ -471,6 +513,13 @@ struct SlotState {
     int teamkills = 0;
     int flagsCaptured = 0;
     int flagsRecovered = 0;
+    float activeStart = 0.0f;
+    int activeSeconds = 0;
+    int lastScore = 0;
+    int scoreTotal = 0;
+    int ping = 0;
+    int pingMax = 0;
+    std::string ip;
 };
 
 SlotState g_slots[kMaxClients];
@@ -683,15 +732,20 @@ struct PlayerSnapshot {
     int slot = -1;
     std::string name;
     std::string guid;
+    std::string ip;
     int team = 0;
     bool spectator = false;
     int frags = 0;
     int score = 0;
+    int scoreTotal = 0;
+    int ping = 0;
+    int pingMax = 0;
     int deaths = 0;
     int suicides = 0;
     int teamkills = 0;
     int flagsCaptured = 0;
     int flagsRecovered = 0;
+    int activePlaytimeSec = 0;
     int playtimeSec = 0;
     int ctfFlags = 0;
     std::uint32_t levelFrame = 0;
@@ -743,6 +797,39 @@ std::string GuidFromUserinfo(const char* userinfo) {
     return parsed.valid ? parsed.identity : std::string();
 }
 
+void AddActiveTime(int slot, float now) {
+    SlotState& s = g_slots[slot];
+    if (!s.active)
+        return;
+    if (now > s.activeStart) {
+        const int delta = static_cast<int>(now - s.activeStart);
+        if (delta > 0)
+            s.activeSeconds += delta;
+    }
+    s.activeStart = now;
+}
+
+void AccumulateScore(int slot, int score) {
+    SlotState& s = g_slots[slot];
+    // resp.score is reset by spectator_respawn, while frags/deaths/flags are
+    // cumulative. Treat a drop as a new scoring segment and add the post-reset
+    // score, so the map total is the sum of active-play segments.
+    if (score >= s.lastScore)
+        s.scoreTotal += score - s.lastScore;
+    else
+        s.scoreTotal += score;
+    s.lastScore = score;
+}
+
+void AccumulatePing(int slot, int ping) {
+    if (ping <= 0)
+        return;
+    SlotState& s = g_slots[slot];
+    s.ping = ping;
+    if (ping > s.pingMax)
+        s.pingMax = ping;
+}
+
 bool SnapshotSlot(int slot, bool requireConnected, PlayerSnapshot* out) {
     if (!out || slot < 0 || slot >= MaxClients())
         return false;
@@ -767,17 +854,30 @@ bool SnapshotSlot(int slot, bool requireConnected, PlayerSnapshot* out) {
     p.team = ReadIntOr(static_cast<char*>(client) + kClientTeamOfs, 0);
     if (p.team != 1 && p.team != 2)
         p.team = 0;
-    p.spectator =
-        ReadByteOr(static_cast<char*>(client) + kClientSpectatorOfs, 0) != 0;
+    // resp.spectator is the actual state set by PutClientInServer; pers is the
+    // userinfo request. Prefer the actual one when both are present.
+    unsigned char respSpectator = 0;
+    const bool haveRespSpectator =
+        ReadByte(static_cast<char*>(client) + kClientRespSpectatorOfs,
+                 &respSpectator);
+    p.spectator = haveRespSpectator
+                      ? respSpectator != 0
+                      : ReadByteOr(static_cast<char*>(client) +
+                                       kClientPersSpectatorOfs,
+                                   0) != 0;
     p.frags = static_cast<int>(
         ReadShortOr(static_cast<char*>(client) + kClientStatsOfs +
                         kStatFrags * static_cast<int>(sizeof(short)),
                     0));
+    p.ping = ReadIntOr(static_cast<char*>(client) + kClientPingOfs, 0);
     p.score = ReadIntOr(static_cast<char*>(client) + kClientScoreOfs, 0);
+    char ipBuf[32] = {};
+    if (SlotIp(slot, ipBuf, sizeof(ipBuf)))
+        p.ip = ipBuf;
     p.playtimeSec = 0;
+    p.levelFrame = LevelFrame();
     const int enterFrame = ReadIntOr(
         static_cast<char*>(client) + kClientEnterFrameOfs, 0);
-    p.levelFrame = LevelFrame();
     if (enterFrame > 0 && p.levelFrame >= static_cast<std::uint32_t>(enterFrame)) {
         p.playtimeSec = static_cast<int>(
             (p.levelFrame - static_cast<std::uint32_t>(enterFrame)) / 10u);
@@ -785,11 +885,22 @@ bool SnapshotSlot(int slot, bool requireConnected, PlayerSnapshot* out) {
     p.ctfFlags = ReadIntOr(static_cast<char*>(ent) + kEdictCtfFlagsOfs, 0);
 
     if (g_slots[slot].mapSerial == g_mapSerial) {
-        p.deaths = g_slots[slot].deaths;
-        p.suicides = g_slots[slot].suicides;
-        p.teamkills = g_slots[slot].teamkills;
-        p.flagsCaptured = g_slots[slot].flagsCaptured;
-        p.flagsRecovered = g_slots[slot].flagsRecovered;
+        SlotState& s = g_slots[slot];
+        p.deaths = s.deaths;
+        p.suicides = s.suicides;
+        p.teamkills = s.teamkills;
+        p.flagsCaptured = s.flagsCaptured;
+        p.flagsRecovered = s.flagsRecovered;
+        AccumulateScore(slot, p.score);
+        AccumulatePing(slot, p.ping);
+        p.scoreTotal = s.scoreTotal;
+        p.pingMax = s.pingMax;
+        AddActiveTime(slot, LevelTime());
+        p.activePlaytimeSec = s.activeSeconds;
+        p.playtimeSec = s.activeSeconds;
+    } else {
+        p.scoreTotal = p.score;
+        p.activePlaytimeSec = p.playtimeSec;
     }
     *out = p;
     return true;
@@ -890,25 +1001,40 @@ void EnsureMapStarted() {
     g_map.lastSampleTime = LevelTime();
 }
 
+void AddPlayerSnapshotFields(JsonObj& d, const PlayerSnapshot& p,
+                             bool includeCounters) {
+    d.AddStr("name", p.name);
+    d.AddStr("team", SideName(p.team));
+    d.AddInt("team_number", p.team);
+    d.AddBool("spectator", p.spectator);
+    if (!p.ip.empty())
+        d.AddStr("ip", p.ip);
+    if (p.ping > 0)
+        d.AddInt("ping", p.ping);
+    if (p.pingMax > 0)
+        d.AddInt("ping_max", p.pingMax);
+    d.AddInt("score", p.score);
+    d.AddInt("score_total", p.scoreTotal);
+    d.AddInt("active_playtime_sec", p.activePlaytimeSec);
+    d.AddInt("playtime_sec", p.activePlaytimeSec);
+    if (includeCounters) {
+        d.AddInt("frags", p.frags);
+        d.AddInt("deaths", p.deaths);
+        d.AddInt("suicides", p.suicides);
+        d.AddInt("teamkills", p.teamkills);
+        d.AddInt("flags_captured", p.flagsCaptured);
+        d.AddInt("flags_recovered", p.flagsRecovered);
+        d.AddStr("source", "native_telemetry");
+    }
+}
+
 void EmitPlayerStats(const std::string& matchUuid) {
     for (int slot = 0; slot < MaxClients(); ++slot) {
         PlayerSnapshot p;
         if (!SnapshotSlot(slot, true, &p))
             continue;
         JsonObj d;
-        d.AddStr("name", p.name);
-        d.AddStr("team", SideName(p.team));
-        d.AddInt("team_number", p.team);
-        d.AddBool("spectator", p.spectator);
-        d.AddInt("frags", p.frags);
-        d.AddInt("deaths", p.deaths);
-        d.AddInt("suicides", p.suicides);
-        d.AddInt("teamkills", p.teamkills);
-        d.AddInt("score", p.score);
-        d.AddInt("flags_captured", p.flagsCaptured);
-        d.AddInt("flags_recovered", p.flagsRecovered);
-        d.AddInt("playtime_sec", p.playtimeSec);
-        d.AddStr("source", "native_telemetry");
+        AddPlayerSnapshotFields(d, p, true);
         Emit("player_match_stats", d.Done(), matchUuid, p.guid, slot);
     }
 }
@@ -978,29 +1104,16 @@ void EmitMapEnd(const char* hint) {
 
 void EmitPlayerConnect(const PlayerSnapshot& p) {
     JsonObj d;
-    d.AddStr("name", p.name);
-    d.AddStr("team", SideName(p.team));
-    d.AddInt("team_number", p.team);
-    d.AddBool("spectator", p.spectator);
+    AddPlayerSnapshotFields(d, p, false);
     d.AddStr("guid", p.guid);
+    d.AddStr("source", "native_telemetry");
     Emit("player_connect", d.Done(), CurrentMatchUuid(), p.guid, p.slot);
 }
 
 void EmitPlayerDisconnect(const PlayerSnapshot& p) {
     JsonObj d;
-    d.AddStr("name", p.name);
-    d.AddStr("team", SideName(p.team));
-    d.AddInt("team_number", p.team);
-    d.AddBool("spectator", p.spectator);
+    AddPlayerSnapshotFields(d, p, true);
     d.AddStr("guid", p.guid);
-    d.AddInt("frags", p.frags);
-    d.AddInt("deaths", p.deaths);
-    d.AddInt("suicides", p.suicides);
-    d.AddInt("teamkills", p.teamkills);
-    d.AddInt("score", p.score);
-    d.AddInt("flags_captured", p.flagsCaptured);
-    d.AddInt("flags_recovered", p.flagsRecovered);
-    d.AddInt("playtime_sec", p.playtimeSec);
     Emit("player_disconnect", d.Done(), CurrentMatchUuid(), p.guid, p.slot);
 }
 
@@ -1011,7 +1124,19 @@ void EmitTeamChange(const PlayerSnapshot& p, int fromTeam) {
     d.AddInt("to_team", p.team);
     d.AddStr("from_side", SideName(fromTeam));
     d.AddStr("to_side", SideName(p.team));
+    if (!p.ip.empty())
+        d.AddStr("ip", p.ip);
+    if (p.ping > 0)
+        d.AddInt("ping", p.ping);
+    d.AddStr("source", "native_telemetry");
     Emit("team_change", d.Done(), CurrentMatchUuid(), p.guid, p.slot);
+}
+
+void EmitSpectatorChange(const char* type, const PlayerSnapshot& p) {
+    JsonObj d;
+    AddPlayerSnapshotFields(d, p, true);
+    d.AddStr("guid", p.guid);
+    Emit(type, d.Done(), CurrentMatchUuid(), p.guid, p.slot);
 }
 
 void EmitFlagCapture(const PlayerSnapshot& p, int flagTeam) {
@@ -1043,19 +1168,8 @@ void EmitPlayerDeath(const PlayerSnapshot& victim, const PlayerSnapshot* killer,
 
 void EmitPlayerSample(const PlayerSnapshot& p) {
     JsonObj d;
-    d.AddStr("name", p.name);
-    d.AddStr("team", SideName(p.team));
-    d.AddInt("team_number", p.team);
-    d.AddBool("spectator", p.spectator);
-    d.AddInt("frags", p.frags);
-    d.AddInt("deaths", p.deaths);
-    d.AddInt("suicides", p.suicides);
-    d.AddInt("teamkills", p.teamkills);
-    d.AddInt("score", p.score);
-    d.AddInt("flags_captured", p.flagsCaptured);
-    d.AddInt("flags_recovered", p.flagsRecovered);
-    d.AddInt("playtime_sec", p.playtimeSec);
-    d.AddStr("source", "native_telemetry");
+    AddPlayerSnapshotFields(d, p, true);
+    d.AddStr("guid", p.guid);
     Emit("player_sample", d.Done(), CurrentMatchUuid(), p.guid, p.slot);
 }
 
@@ -1086,6 +1200,11 @@ void EmitSelfTest() {
     pc.AddStr("team", "blue");
     pc.AddInt("team_number", 1);
     pc.AddBool("spectator", false);
+    pc.AddStr("ip", "203.0.113.7");
+    pc.AddInt("ping", 42);
+    pc.AddInt("score", 0);
+    pc.AddInt("score_total", 0);
+    pc.AddInt("active_playtime_sec", 0);
     Emit("player_connect", pc.Done(), match, "", 0);
 
     JsonObj fc;
@@ -1120,9 +1239,14 @@ void EmitSelfTest() {
     pms.AddInt("suicides", 1);
     pms.AddInt("teamkills", 0);
     pms.AddInt("score", 1);
+    pms.AddInt("score_total", 1);
     pms.AddInt("flags_captured", 1);
     pms.AddInt("flags_recovered", 0);
     pms.AddInt("playtime_sec", 60);
+    pms.AddInt("active_playtime_sec", 60);
+    pms.AddStr("ip", "203.0.113.7");
+    pms.AddInt("ping", 42);
+    pms.AddInt("ping_max", 47);
     pms.AddStr("source", "native_telemetry");
     Emit("player_match_stats", pms.Done(), match, "", 0);
 
@@ -1273,9 +1397,31 @@ void OnSpawnEntitiesImpl(const char* mapname) {
     }
 }
 
+void StartOccupancy(int slot, const PlayerSnapshot& p) {
+    SlotState& s = g_slots[slot];
+    s = SlotState();
+    s.mapSerial = g_mapSerial;
+    s.spectator = p.spectator;
+    s.active = !p.spectator;
+    s.activeStart = LevelTime();
+    s.lastTeam = p.team;
+    s.lastScore = p.score;
+    s.scoreTotal = p.score;
+    s.ping = p.ping;
+    s.pingMax = p.ping;
+    s.ip = p.ip;
+
+    PlayerSnapshot connect = p;
+    connect.scoreTotal = p.score;
+    connect.activePlaytimeSec = 0;
+    connect.playtimeSec = 0;
+    connect.pingMax = p.ping;
+    EmitPlayerConnect(connect);
+}
+
 void ClientBeginPostImpl(void* ent) {
     const int slot = EntitySlot(ent);
-    if (slot < 0)
+    if (slot < 0 || g_slots[slot].mapSerial == g_mapSerial)
         return;
     PlayerSnapshot p;
     if (!SnapshotSlot(slot, true, &p))
@@ -1283,37 +1429,74 @@ void ClientBeginPostImpl(void* ent) {
 
     if (!p.spectator)
         EnsureMapStarted();
-
-    g_slots[slot].active = true;
-    g_slots[slot].mapSerial = g_mapSerial;
-    g_slots[slot].lastTeam = p.team;
-    g_slots[slot].deaths = 0;
-    g_slots[slot].suicides = 0;
-    g_slots[slot].teamkills = 0;
-    g_slots[slot].flagsCaptured = 0;
-    g_slots[slot].flagsRecovered = 0;
-    EmitPlayerConnect(p);
+    if (!g_map.started)
+        return;
+    StartOccupancy(slot, p);
 }
 
 void ClientUserinfoPostImpl(void* ent, char*, int) {
     const int slot = EntitySlot(ent);
-    if (slot < 0 || !g_slots[slot].active ||
-        g_slots[slot].mapSerial != g_mapSerial)
+    if (slot < 0 || g_slots[slot].mapSerial != g_mapSerial)
         return;
     PlayerSnapshot p;
     if (!SnapshotSlot(slot, true, &p))
         return;
-    if (p.team != 0 && p.team != g_slots[slot].lastTeam) {
+    if (!g_slots[slot].spectator && p.team != 0 &&
+        p.team != g_slots[slot].lastTeam) {
         const int from = g_slots[slot].lastTeam;
         g_slots[slot].lastTeam = p.team;
         EmitTeamChange(p, from);
     }
 }
 
+void PutClientInServerPostImpl(void* ent) {
+    const int slot = EntitySlot(ent);
+    if (slot < 0 || g_map.ended)
+        return;
+    PlayerSnapshot p;
+    if (!SnapshotSlot(slot, true, &p))
+        return;
+
+    if (g_slots[slot].mapSerial != g_mapSerial) {
+        if (!p.spectator)
+            EnsureMapStarted();
+        if (!g_map.started)
+            return;
+        StartOccupancy(slot, p);
+        return;
+    }
+
+    if (!g_map.started)
+        return;
+    SlotState& s = g_slots[slot];
+    s.ip = p.ip;
+    AccumulatePing(slot, p.ping);
+    if (p.spectator == s.spectator)
+        return;
+
+    const float now = LevelTime();
+    AddActiveTime(slot, now);
+    AccumulateScore(slot, p.score);
+    if (p.spectator) {
+        s.active = false;
+        s.spectator = true;
+        EmitSpectatorChange("spectator_enter", p);
+    } else {
+        s.active = true;
+        s.spectator = false;
+        s.activeStart = now;
+        s.lastScore = p.score;
+        if (p.team != 0)
+            s.lastTeam = p.team;
+        EmitSpectatorChange("spectator_leave", p);
+    }
+}
+
 void ClientDisconnectPreImpl(void*& ent) {
     const int slot = EntitySlot(ent);
-    if (slot < 0 || !g_slots[slot].active)
+    if (slot < 0 || g_slots[slot].mapSerial != g_mapSerial)
         return;
+    AddActiveTime(slot, LevelTime());
     PlayerSnapshot p;
     if (SnapshotSlot(slot, false, &p))
         EmitPlayerDisconnect(p);
@@ -1386,6 +1569,26 @@ void CtfBaseTouchImpl(void* self, void* other, void* plane, void* surf,
         EmitFlagCapture(p, before);
 }
 
+void PollSlotCounters() {
+    for (int slot = 0; slot < MaxClients(); ++slot) {
+        if (g_slots[slot].mapSerial != g_mapSerial)
+            continue;
+        char* ent = EntityForSlot(slot);
+        void* client = ClientForEnt(ent);
+        if (!client)
+            continue;
+        if (ReadIntOr(static_cast<char*>(client) + kClientStateOfs, -1) !=
+            kClientStateConnected)
+            continue;
+        const int score = ReadIntOr(
+            static_cast<char*>(client) + kClientScoreOfs, 0);
+        if (score != g_slots[slot].lastScore)
+            AccumulateScore(slot, score);
+        AccumulatePing(slot,
+                       ReadIntOr(static_cast<char*>(client) + kClientPingOfs, 0));
+    }
+}
+
 void SvFramePostImpl(int) {
     if (!g_initialized)
         return;
@@ -1399,6 +1602,8 @@ void SvFramePostImpl(int) {
         EnsureMapStarted();
     if (!g_map.started)
         return;
+
+    PollSlotCounters();
 
     if (LevelIntermission()) {
         EmitMapEnd("intermission");
@@ -1446,6 +1651,10 @@ void Telemetry_ClientBeginPost(void* ent) {
 
 void Telemetry_ClientUserinfoPost(void* ent, char* userinfo, int notFirst) {
     ClientUserinfoPostImpl(ent, userinfo, notFirst);
+}
+
+void Telemetry_PutClientInServerPost(void* ent) {
+    PutClientInServerPostImpl(ent);
 }
 
 void Telemetry_ClientDisconnectPre(void*& ent) {

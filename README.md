@@ -444,14 +444,15 @@ Details and the versioned chunk layout:
 ### Native telemetry — `telemetry`
 
 Writes structured match data for `sof-db-backend` as JSONL. The lean profile
-covers session and map lifecycle, connect/disconnect, team changes and the
-map-end player stats; deaths, flag captures and periodic player samples are
-opt-in via `_sofbuddy_telemetry_events`.
+covers session and map lifecycle, connect/disconnect, spectator enter/leave,
+team changes and map-end player stats. Deaths and periodic samples are opt-in
+via `_sofbuddy_telemetry_events`; flag captures are on by default because the
+deciding cap must be counted natively.
 
 ```
 set _sofbuddy_telemetry "1"
 set _sofbuddy_telemetry_dir "telemetry/spool"
-set _sofbuddy_telemetry_events "3"
+set _sofbuddy_telemetry_events "2"
 ```
 
 The game thread only serializes an event and appends it to a bounded queue. A
@@ -459,6 +460,11 @@ background writer owns the spool file, so a stalled disk or unreachable
 collector never blocks a tick. Flag captures come from `ctf_base_touch`, not
 from SoFPlus' `_sp_sv_info_num_flags_*`, so the deciding cap is counted even
 when the SoFPlus counter misses it.
+
+Player snapshots carry GUID, IP, ping and both current and total score. Active
+playtime excludes spectator time, and a spectate round-trip does not erase the
+score accumulated before it, so later player labelling and career averages see
+only actual play.
 
 ```
 telemetry_selftest     queue one synthetic session/map/player/flag sequence

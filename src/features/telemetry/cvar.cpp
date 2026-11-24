@@ -71,7 +71,7 @@ void Telemetry_InitCvars() {
                                kCvarFlagArchive);
     g_cvQueueKb = Telemetry_Cvar("_sofbuddy_telemetry_queue_kb", "256",
                                  kCvarFlagArchive);
-    g_cvEvents = Telemetry_Cvar("_sofbuddy_telemetry_events", "3",
+    g_cvEvents = Telemetry_Cvar("_sofbuddy_telemetry_events", "2",
                                 kCvarFlagArchive);
     g_cvSampleSec = Telemetry_Cvar("_sofbuddy_telemetry_sample_sec", "30",
                                    kCvarFlagArchive);
@@ -105,7 +105,7 @@ std::size_t Telemetry_QueueLimitBytes() {
 }
 
 int Telemetry_EventsMask() {
-    return Telemetry_CvarInt(g_cvEvents, 3);
+    return Telemetry_CvarInt(g_cvEvents, 2);
 }
 
 int Telemetry_SampleSeconds() {

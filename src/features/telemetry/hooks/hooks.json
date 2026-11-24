@@ -12,6 +12,12 @@
     "priority": 10
   },
   {
+    "function": "PutClientInServer",
+    "callback": "Telemetry_PutClientInServerPost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
     "function": "ClientDisconnect",
     "callback": "Telemetry_ClientDisconnectPre",
     "phase": "Pre",

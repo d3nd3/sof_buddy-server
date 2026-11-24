@@ -42,9 +42,10 @@ counter can miss the final cap.
 | `session_start`, `session_end` | `GetGameAPI` / `Telemetry_Shutdown` | no |
 | `map_start` | `SpawnEntities` post, deferred to the first non-spectator client | no |
 | `map_end` | `SV_Frame` post + `level.intermissiontime`, map change, shutdown | no |
-| `player_connect` | `ClientBegin` post | no |
+| `player_connect` | `ClientBegin` / `PutClientInServer` post, one per map occupancy | no |
 | `player_disconnect` | `ClientDisconnect` pre (snapshot before the slot clears) | no |
-| `team_change` | `ClientUserinfoChanged` post | no |
+| `spectator_enter`, `spectator_leave` | `PutClientInServer` post when `resp.spectator` changes | no |
+| `team_change` | `ClientUserinfoChanged` post, active players only | no |
 | `player_match_stats` | map-end snapshot beside `map_end` | no |
 | `player_death` | `player_die` post | bit `1` |
 | `flag_capture` | `ctf_base_touch` override, counts the deciding cap | bit `2` |
@@ -58,6 +59,40 @@ backend.
 `telemetry_selftest` queues one synthetic session/map/player/flag/death/stats
 sequence for schema and writer validation. It is for an empty test server, not
 a populated production map.
+
+## Stats, spectator time, and labelling invariants
+
+The database exists to answer two questions: **per-player stats** and
+**red/blue winrates per map**. That means transition snapshots, not a
+per-tick/per-shot firehose:
+
+- Persist at connect, disconnect, spectator enter/leave, team change, map
+  start/end, and map-end or disconnect stats. Samples stay off by default.
+- Sum and average in the backend. Per-kill detail remains optional; a flag
+  capture stays event-level because it is the only evidence for the deciding
+  CTF cap.
+- Every native player event carries `guid`, `ip`, `ping`, team, and the current
+  cumulative counters. The labelling heuristics need these at the occupancy
+  boundary, not a reconstructed log.
+
+The spectator rules are deliberate:
+
+- `playtime_sec` / `active_playtime_sec` count only time spent **not** in
+  spectator. Spectating never inflates practice time or per-match averages.
+- `player_match_stats` includes the final `spectator` flag and the active
+  playtime, so a player who ends the map in spec still contributes the stats
+  from the time they actually played.
+- SoF resets `gclient_t.resp.score` in `spectator_respawn`, while frags,
+  deaths and flags are cumulative. The producer keeps `score_total` by summing
+  scoring segments; it must not treat the post-spectate score as the map total.
+- A spectate enter/leave does **not** create a new identity or a new label
+  occupancy. One connect stays one label instance, updated with active time
+  and the cumulative counters; spectate-only instances are excluded by the
+  backend.
+
+The backend projection writes native connect/state/stats events into
+`match_slot_instances`, so manual labels and the IP/country/ping heuristics work
+on native-only matches without waiting for `games.log`.
 
 ## What SoFPlus actually hooks
 
@@ -115,6 +150,10 @@ function another feature already owns. Current composition:
   detours the **stock function body**, not the `game_export_t` slot. Profiles
   and lagometer keep their export wrappers, and their wrappers still reach the
   body, so both observe every transition.
+- `PutClientInServer` — lagometer already uses a Post callback; telemetry adds
+  a second Post callback with priority 10. It initializes the per-map occupancy
+  on the first spawn and emits spectator transitions when `resp.spectator`
+  changes.
 - `player_die` — `skinteam_quiet` owns the override. Its override now
   dispatches the shared manager's Post callbacks after the real death, so the
   telemetry (and lagometer) Post callback runs. Do not call the original
@@ -164,7 +203,7 @@ the Post subscriber silently stops running.
 | `_sofbuddy_telemetry_max_mb` | `64` | Per-file cap; `0` = unlimited. Read at DLL load. |
 | `_sofbuddy_telemetry_queue_kb` | `256` | Bounded in-memory queue (16–4096). Read at DLL load. |
 | `_sofbuddy_telemetry_sample_sec` | `30` | Player sample cadence; `0` = off. Live. |
-| `_sofbuddy_telemetry_events` | `3` | Bitmask: `1` deaths, `2` flag captures, `4` samples. Live. |
+| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` deaths, `2` flag captures, `4` samples. Live. |
 
 ## Delivery phases
 
