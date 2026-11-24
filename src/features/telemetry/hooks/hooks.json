@@ -1,0 +1,37 @@
+[
+  {
+    "function": "ClientBegin",
+    "callback": "Telemetry_ClientBeginPost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
+    "function": "ClientUserinfoChanged",
+    "callback": "Telemetry_ClientUserinfoPost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
+    "function": "ClientDisconnect",
+    "callback": "Telemetry_ClientDisconnectPre",
+    "phase": "Pre",
+    "priority": 10
+  },
+  {
+    "function": "player_die",
+    "callback": "Telemetry_PlayerDiePost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
+    "function": "ctf_base_touch",
+    "callback": "Telemetry_CtfBaseTouch",
+    "override": true
+  },
+  {
+    "function": "SV_Frame",
+    "callback": "Telemetry_SvFramePost",
+    "phase": "Post",
+    "priority": 5
+  }
+]

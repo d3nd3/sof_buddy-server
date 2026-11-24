@@ -70,7 +70,7 @@ The code is shared; only the profile changes. `SOF_BUDDY_PROFILE=...` or
 |---|---|---|
 | stable | Production-safe, well-scoped | `stufftext`, `print_guard`, `sv_tracktime` |
 | unstable | Behaviour-changing, still moving | `clsv_pipe`, `minigames`, `profiles`, `skinteam_quiet` |
-| experimental | Deep engine/gameplay changes with unpredictable side effects | `cpu_optimizations`, `reliable_defer`, `ctf_spawn`, `server_demo` |
+| experimental | Deep engine/gameplay changes with unpredictable side effects | `cpu_optimizations`, `reliable_defer`, `ctf_spawn`, `server_demo`, `telemetry` |
 
 `experimental` is deliberately **disabled on master and unstable**. The
 `cpu_optimizations` bundle overrides the tick loop, command drain, allocator and
@@ -441,6 +441,39 @@ Details and the versioned chunk layout:
 
 ---
 
+### Native telemetry — `telemetry`
+
+Writes structured match data for `sof-db-backend` as JSONL. The lean profile
+covers session and map lifecycle, connect/disconnect, team changes and the
+map-end player stats; deaths, flag captures and periodic player samples are
+opt-in via `_sofbuddy_telemetry_events`.
+
+```
+set _sofbuddy_telemetry "1"
+set _sofbuddy_telemetry_dir "telemetry/spool"
+set _sofbuddy_telemetry_events "3"
+```
+
+The game thread only serializes an event and appends it to a bounded queue. A
+background writer owns the spool file, so a stalled disk or unreachable
+collector never blocks a tick. Flag captures come from `ctf_base_touch`, not
+from SoFPlus' `_sp_sv_info_num_flags_*`, so the deciding cap is counted even
+when the SoFPlus counter misses it.
+
+```
+telemetry_selftest     queue one synthetic session/map/player/flag sequence
+```
+
+Use `telemetry_selftest` only on an empty test server: it invents a match
+rather than recording the live one. Files live under
+`<userdir>/<dir>/session-<uuid>.jsonl` and are pulled by `sof-db-push` or an
+SSH spool puller.
+
+Details: [`src/features/telemetry/README.md`](src/features/telemetry/README.md)
+and [`docs/TELEMETRY.md`](docs/TELEMETRY.md)
+
+---
+
 ## Recipes
 
 **Is my server actually keeping up?**
@@ -572,7 +605,7 @@ SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 - **[`docs/DETOUR_SYSTEM.md`](docs/DETOUR_SYSTEM.md)** — how `detours.yaml`,
   `hooks.json`, `pointers.json` and `callbacks.json` fit together, including
   override semantics.
-- **[`docs/TELEMETRY.md`](docs/TELEMETRY.md)** — planned native telemetry
+- **[`docs/TELEMETRY.md`](docs/TELEMETRY.md)** — implemented native telemetry
   hook/data map and the decision to use native hooks over SoFPlus cvar polling.
 - **SoF1 game SDK** (if you legally have it) — optional local reference only;
   place under `reference/engine/`. Not shipped in this repo and not compiled.

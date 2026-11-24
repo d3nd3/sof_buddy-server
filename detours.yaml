@@ -375,6 +375,63 @@ functions:
         name: out
 
   # gamex86.dll @ image base 0x50000000 (retail disassembly gamex86.dll)
+  #
+  # Client lifecycle bodies. Profiles/lagometer also wrap the same slots in
+  # game_export_t; those wrappers call the stock body, so a body detour here
+  # still observes every transition without replacing their slot hooks.
+  - name: ClientBegin
+    module: GameDll
+    identifier: "0xF4070"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  - name: ClientUserinfoChanged
+    module: GameDll
+    identifier: "0xF4730"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+      - type: char*
+        name: userinfo
+      - type: int
+        name: not_first_time
+
+  - name: ClientDisconnect
+    module: GameDll
+    identifier: "0xF50A0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: ent
+
+  # ctf_base_touch is the base trigger for a capture. SoFPlus replaces the
+  # spawned base's touch pointer with its own wrapper and then calls this body,
+  # so a body detour still sees the deciding cap.
+  - name: ctf_base_touch
+    module: GameDll
+    identifier: "0x725D0"
+    return_type: void
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: self
+      - type: void*
+        name: other
+      - type: void*
+        name: plane
+      - type: void*
+        name: surf
+
   - name: PutClientInServer
     module: GameDll
     identifier: "0xF38A0"

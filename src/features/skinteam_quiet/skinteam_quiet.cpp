@@ -293,8 +293,14 @@ void skinteam_PlayerDie(void* self, void* inflictor, void* attacker, int damage,
         Buddy_DebugPrintf("[skinteam_quiet] blocked userinfo skin/team suicide\n");
         return;
     }
-    if (original)
+    if (original) {
         original(self, inflictor, attacker, damage, point);
+        // The override replaces the generated stub, so it must dispatch the
+        // shared Post callbacks itself; otherwise lagometer/telemetry Post
+        // hooks never see a real death.
+        detour_player_die::GetManager().DispatchPost(self, inflictor, attacker,
+                                                     damage, point);
+    }
 }
 
 void skinteam_OnGameDllLoaded(void* gameExport) {

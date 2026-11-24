@@ -101,6 +101,12 @@ features:
   server_demo:
     tier: experimental
 
+  # Streams native lifecycle, map outcome, player match stats and optional
+  # combat/flag/sample events to a bounded JSONL spool. No database or network
+  # I/O runs on the game thread.
+  telemetry:
+    tier: experimental
+
   # ---------------------------------------------------------------------------
   # dev
   # ---------------------------------------------------------------------------
