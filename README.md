@@ -426,14 +426,12 @@ Files are written to `<userdir>/<dir>/<name>.sbd`. A client-frame is 328 bytes
 with entity state (≈26 KB/s at 8 clients, 10 Hz); the default 64 MiB cap is
 about 40 minutes at that rate.
 
-There is a dependency-free viewer for these files:
-[`tools/svdemo_viewer/`](tools/svdemo_viewer/) — top-down trajectories,
-first-person camera, and flat-shaded SoF BSP v46 map geometry. Drag a `.sbd`
-and a `.bsp` in, or open `?sample=1` to see the synthetic demo.
-
-| Top-down | Flat-shaded BSP v46 |
-|---|---|
-| ![server-side state demo viewer](tools/svdemo_viewer/screenshot.png) | ![BSP map preview](tools/svdemo_viewer/screenshot-bsp.png) |
+The `.sbd` replay viewer lives in the separate
+[**sofbuddy-tools**](https://github.com/d3nd3/sofbuddy-tools/tree/master/public/replay)
+project: top-down trajectories, a flat first-person camera, and a WebGL2 3D
+mode with real `.m32` textures, lightmaps and skyboxes from a dropped
+`pak0.pak`. Drag a `.sbd`, `.bsp` and `.pak` in, or open `?sample=1` to see the
+synthetic demo.
 
 Details and the versioned chunk layout:
 [`src/features/server_demo/README.md`](src/features/server_demo/README.md)
@@ -559,7 +557,6 @@ tools/tests/print_guard/run.sh
 tools/tests/tictactoe/run.sh
 tools/tests/sv_tracktime/run.sh
 tools/tests/server_demo/run.sh
-tools/tests/svdemo_viewer/run.sh
 
 SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 ```

@@ -1,10 +1,10 @@
 # SoF1 replay system — design notes
 
 Status: working notes for the first recorder (`server_demo`) and its browser
-viewer. The file format, configstring capture, 2D viewer, first-person camera
-and a flat-shaded SoF BSP v46 world renderer are implemented and tested.
-Textures/models, in-game packet replay and the hosted replay server are not
-implemented yet.
+viewer. The file format, configstring capture, 2D viewer, flat first-person
+mode and a WebGL2 3D renderer with `.m32` textures, per-face lightmaps and
+skyboxes are implemented and tested. Player/world meshes, in-game packet
+replay and the hosted replay server are not implemented yet.
 
 ## Goal
 
@@ -154,23 +154,56 @@ Current controls:
 - sampling: `_sofbuddy_svdemo_interval`;
 - body/entity capture: `_sofbuddy_svdemo_entities`.
 
-The first consumer is implemented in `tools/svdemo_viewer/`: a dependency-free
-browser parser plus a top-down viewer, a first-person camera
-(`ps.eye` + `viewangles` + `fov`), and a SoF BSP v46 world renderer. The map
-pass is flat-shaded (texture-name colour heuristics + a lightmap sample); real
-textures and player/world meshes are still missing.
+The first consumer is implemented in the separate
+[`sofbuddy-tools`](https://github.com/d3nd3/sofbuddy-tools/tree/master/public/replay)
+project (`public/replay/`): a dependency-free browser parser plus a top-down
+viewer, a flat first-person camera (`ps.eye` + `viewangles` + `fov`), and a
+WebGL2 3D renderer. Load a BSP v46 map and a game `.pak` and the 3D view draws
+the world with real `.m32` textures, per-face lightmaps, skyboxes and a depth
+buffer; players are depth-tested colour figures. Player/world meshes and brush
+submodels are still missing.
 
-Next capture additions, in order:
+Captured so far, in order:
 
-1. **Configstring snapshot** (models/player skins/sky) at file start. The
-   roster already carries each player's userinfo model/skin, but world entity
-   model indexes still need `CS_MODELS`.
-2. **Chat/command events** (`EVENT` kinds 1–3 are reserved) so the web UI can
-   show chat and the replay server can keep live chat separate.
+1. **Configstring snapshot** (models/player skins/sky) at file start — done.
+   The viewer resolves skins/model paths and textures from it.
+2. **Chat/command events** (`EVENT` kinds 1–3 are reserved) — next, so the web
+   UI can show chat and the replay server can keep live chat separate.
 3. **Packet side channel** (`PACKET_FRAME` chunks) when in-game playback
    starts.
 4. **Ring buffer / retention** — keep the last N matches, evict by size/age,
    write an index file for the replay server.
+
+---
+
+## OpenMerc and renderer reuse
+
+OpenMerc (`/home/dinda/storage/Hobbies/reverse-engineering/soldier-of-fortune/decompilation/openmerc`)
+already plays `.dm2` client demos (`demomap`) through a complete GL3 renderer:
+BSP geometry, `.m32` textures, lightmaps, Ghoul player/world models, effects,
+sky and AVI capture. That is the highest-fidelity playback target available.
+
+Its licence is **GPL-2.0-or-later**; this repository is **MIT**. OpenMerc code
+is therefore not copied into this tree. The current renderer is an independent
+implementation that uses:
+
+- OpenMerc's clean-room format documentation (`SPEC-100` for `.m32`,
+  `SPEC-101` for BSP v46) as the format reference;
+- its Python readers (`tools/formats/bsp.py`, `m32.py`, `mapview.py`) as a
+  visual oracle for texture orientation, lightmap coordinates and winding;
+- its demo/playback design (`SPEC-311`, `cl_demo.c`, `cl_view.c`) as the
+  reference for a future native path.
+
+For full model/effect fidelity the options are:
+
+1. record the real server→client stream (or synthesize `.dm2` messages from
+   `player_state_t`/`entity_state_t`) and play it with OpenMerc's `demomap`;
+2. keep the MIT WebGL renderer and add Ghoul/MD2 meshes and brush submodels
+   as a separate loader.
+
+Option 1 needs the exact `svc_playerinfo`/`svc_packetentities` bit layouts from
+SPEC-201/202; option 2 is incremental. The `.sbd` format is the stable source
+either way.
 
 ---
 
@@ -205,11 +238,13 @@ physics, scoring, or persisting player stats from the replayed match.
 
 1. **Now:** state recorder + format tests (done).
 2. **Now:** `.sbd` reader/dumper tooling and a dependency-free browser viewer
-   with a top-down mode (trails, POV, timeline, HUD, marks), a first-person
-   camera, and a flat-shaded SoF BSP v46 world renderer — done. Next: real
-   textures, player/world meshes, brush submodels, better occlusion.
+   with a top-down mode (trails, POV, timeline, HUD, marks), a flat
+   first-person mode, and a WebGL2 3D renderer with real `.m32` textures,
+   per-face lightmaps, skyboxes and a depth buffer — done. Next: player/world
+   meshes, brush submodels, PVS, fog.
 3. **Now:** configstring snapshots are in the file; the viewer resolves player
-   skins/model paths. Next: chat/join/leave events; file index/retention.
+   skins/model paths and map textures. Next: chat/join/leave events; file
+   index/retention.
 4. Build the packet side channel and a checkpoint format; prototype in-game
    playback on a private server.
 5. Patch/avoid the attractloop remote-connect restriction and add per-viewer
@@ -222,9 +257,10 @@ physics, scoring, or persisting player stats from the replayed match.
 
 ## Open questions
 
-- **Map assets for the web renderer:** BSP v46 geometry now loads, but textures
-  (M8/M32), texture coordinates, per-pixel lightmaps and brush submodels still
-  need loaders. Decide whether to ship assets to the browser or pre-bake them.
+- **Map assets for the web renderer:** BSP v46 geometry, `.m32` textures,
+  per-face lightmaps and `.m32` skyboxes are loaded by the `sofbuddy-tools`
+  viewer; brush submodels, `.tga` fallback and world/player models still need
+  loaders. Decide whether to ship assets to the browser or pre-bake them.
 - **Checkpoint granularity:** every 1–2 s is probably enough for join-in-
   progress, but reliable entity deltas may need more.
 - **POV policy:** can viewers choose a POV independently while the session clock

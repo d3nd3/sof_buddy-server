@@ -187,11 +187,12 @@ The format is the stable part. Three consumers can be built on it:
 1. **Web renderer.** Parse the header and `CLIENT_FRAME` chunks; render the
    selected slot's camera from `ps.pmove.origin + ps.viewoffset`, `viewangles`,
    `fov`; draw other clients from their `entity_state_t` and roster model/skin.
-   A dependency-free viewer already ships in
-   [`tools/svdemo_viewer/`](../../../tools/svdemo_viewer/README.md): top-down
-   trajectories plus a first-person camera and a flat-shaded SoF BSP v46 world
-   renderer. Textures, MD2/Ghoul models and brush submodels are the next
-   renderer layer.
+   A dependency-free viewer already ships in the separate
+   [`sofbuddy-tools`](https://github.com/d3nd3/sofbuddy-tools/tree/master/public/replay)
+   project: top-down trajectories, a flat first-person canvas mode, and a
+   WebGL2 3D mode with real `.m32` world textures, per-face lightmaps,
+   skyboxes and depth-tested players loaded from a game `.pak`. Player/world
+   meshes and brush submodels are the next renderer layer.
 2. **Replay server, state-driven.** A separate process tails `.sbd` (or a ring
    of recent files) and serves a web/observer UI. This gives “recent games on a
    loop” without touching the live server.
@@ -239,30 +240,31 @@ python3 tools/svdemo_dump.py match.sbd --slot 2 --samples 20
 
 ## Viewer
 
-`tools/svdemo_viewer/` is a dependency-free browser viewer: drag a `.sbd` file
-onto it and get a top-down map with trails, POV switching, view cones, a
-timeline, HUD stats and marks, plus a first-person camera built from
-`ps.eye`, `ps.viewangles` and `ps.fov`. Load a SoF BSP v46 map (or a matching
-`.bsp` dropped alongside the recording) and first-person mode draws the actual
-map geometry, flat-shaded from texture-name heuristics plus a lightmap sample.
-Configstrings from the recording resolve player skins and model paths in the
-HUD. It also has a synthetic sample (`?sample=1`), so the format can be
-exercised without a server.
+The browser viewer is maintained in
+[`sofbuddy-tools`](https://github.com/d3nd3/sofbuddy-tools/tree/master/public/replay).
+It serves at `/replay/` from the Vite app:
 
 ```bash
-tools/svdemo_viewer/serve.sh
-# open http://127.0.0.1:8000/  (or open index.html directly)
+git clone git@github.com:d3nd3/sofbuddy-tools.git
+cd sofbuddy-tools
+npm install
+npm run dev
+# open http://localhost:5173/replay/
 ```
 
-This is deliberately a 2D trajectory view for now; BSP geometry and a
-first-person camera are the next renderer layer. See
-[`tools/svdemo_viewer/README.md`](../../../tools/svdemo_viewer/README.md).
+Drag a `.sbd` recording, the matching `.bsp`, and a game `pak0.pak` in. It has
+top-down, flat first-person and WebGL2 3D modes, with real `.m32` textures,
+per-face lightmaps, `.m32` skyboxes and depth-tested player figures. The pak is
+read lazily, so the 700 MB stock archive is never copied into memory.
+Configstrings from the recording resolve player skins and model paths in the
+HUD; the synthetic sample (`?sample=1`) exercises the format without a server.
+See the [replay viewer README](https://github.com/d3nd3/sofbuddy-tools/blob/master/public/replay/README.md)
+for controls and the `.pak` stacking rules.
 
 ## Tests
 
 ```bash
 tools/tests/server_demo/run.sh
-tools/tests/svdemo_viewer/run.sh
 ```
 
 Host-side only: header roundtrip, frame/roster/event/end payloads, pointer
