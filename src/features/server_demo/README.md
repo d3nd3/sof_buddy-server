@@ -228,6 +228,34 @@ The console should show `recording: <userdir>/demos/test.sbd`, then a summary
 with the client-frame count. A successful stop writes an `END` chunk; the
 dumper below shows `end: stopped ...`.
 
+## Production recording and database sync
+
+`server_demo` is in the **experimental** tier. A stable/unstable game DLL does
+not contain it until the feature is promoted. For a production server, build
+the experimental profile and enable automatic per-map recording in the server
+config:
+
+```text
+set _sofbuddy_svdemo "1"
+set _sofbuddy_svdemo_auto "1"
+set _sofbuddy_svdemo_entities "1"
+set _sofbuddy_svdemo_interval "1"
+set _sofbuddy_svdemo_max_mb "64"
+set _sofbuddy_svdemo_dir "demos"
+```
+
+Files land in `<FS_Userdir()>/<dir>/`. With `+set user ./user-server`, that is
+`<server-dir>/user-server/demos/`.
+
+The current production pipeline is pull-based because the backend is private.
+`sof-db-demosync` runs on the collector host (`pi4`), reads the remote
+`demos/` directory over SSH, validates each `.sbd`, and uploads it to
+`sof-db-backend`. It records per-file size/mtime state and retries failed
+uploads. The backend then exposes the recording through `/demos`.
+
+See `sof-db-backend`'s [`docs/DEMOS.md`](https://github.com/d3nd3/sof-db-backend/blob/main/docs/DEMOS.md)
+for the sync config, visibility controls, match linking, and retention.
+
 ## Inspect a recording
 
 `tools/svdemo_dump.py` is the reference parser (Python, no dependencies). It

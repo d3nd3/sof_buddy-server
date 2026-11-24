@@ -424,7 +424,10 @@ svdemo_roster           re-emit every slot's roster entry next tick
 
 Files are written to `<userdir>/<dir>/<name>.sbd`. A client-frame is 328 bytes
 with entity state (≈26 KB/s at 8 clients, 10 Hz); the default 64 MiB cap is
-about 40 minutes at that rate.
+about 40 minutes at that rate. In production, `sof-db-demosync` on the
+collector host pulls finished files over SSH and stores them in
+`sof-db-backend` for the `/demos` viewer; no database or network I/O runs in
+the game process.
 
 The `.sbd` replay viewer lives in the separate
 [**sofbuddy-tools**](https://github.com/d3nd3/sofbuddy-tools/tree/master/public/replay)
