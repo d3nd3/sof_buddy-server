@@ -572,6 +572,8 @@ SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
 - **[`docs/DETOUR_SYSTEM.md`](docs/DETOUR_SYSTEM.md)** — how `detours.yaml`,
   `hooks.json`, `pointers.json` and `callbacks.json` fit together, including
   override semantics.
+- **[`docs/TELEMETRY.md`](docs/TELEMETRY.md)** — planned native telemetry
+  hook/data map and the decision to use native hooks over SoFPlus cvar polling.
 - **SoF1 game SDK** (if you legally have it) — optional local reference only;
   place under `reference/engine/`. Not shipped in this repo and not compiled.
 
