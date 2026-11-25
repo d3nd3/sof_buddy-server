@@ -621,6 +621,9 @@ SWEEP=1 tools/tests/tick_pacing/run.sh   # 6048-config clamp sweep
   override semantics.
 - **[`docs/TELEMETRY.md`](docs/TELEMETRY.md)** — implemented native telemetry
   hook/data map and the decision to use native hooks over SoFPlus cvar polling.
+- **[`docs/HITBOXES_AND_DECAPITATION.md`](docs/HITBOXES_AND_DECAPITATION.md)** —
+  gore-zone damage scales, when a head is severed, and the Widowmaker
+  hair-bolt-on hitbox quirk.
 - **SoF1 game SDK** (if you legally have it) — optional local reference only;
   place under `reference/engine/`. Not shipped in this repo and not compiled.
 
