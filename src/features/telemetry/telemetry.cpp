@@ -42,7 +42,6 @@ constexpr unsigned kRvaLevelIntermissiontime = 0x15D1C8;
 
 constexpr unsigned kEdictClientOfs = 0x74;
 constexpr unsigned kEdictCtfFlagsOfs = 0x3CC;
-constexpr unsigned kClientStateOfs = 0x0;
 constexpr unsigned kClientUserinfoOfs = 0xCC;
 constexpr unsigned kClientPingOfs = 200;       // gclient_t.ping
 constexpr unsigned kClientNetnameOfs = 0x2CC;
@@ -56,7 +55,6 @@ constexpr int kStatFrags = 10;
 constexpr unsigned kClientNeedBytes = 0x340;
 constexpr int kDefaultEdictStride = 0x464;
 constexpr int kMaxClients = 64;
-constexpr int kClientStateConnected = 3;
 
 // Engine server slot (not the game DLL gclient_t). The gamepark feature uses
 // the same offsets to read the address SoFPlus reports as client_ip.
@@ -192,12 +190,10 @@ HMODULE ExeMod() {
     return GetModuleHandleA("SoF-spsv.exe");
 }
 
-// Engine-side client address for a zero-based slot. The game DLL has no
-// netadr field of its own; SoFPlus reads this same svs.clients entry.
-bool SlotIp(int slot0, char* out, std::size_t cap) {
-    if (!out || cap == 0)
-        return false;
-    out[0] = '\0';
+// Engine-side client state for a zero-based slot. Do not use gclient_t's
+// first field: that is player_state_t.pmove.pm_type (PM_NORMAL=0, PM_DEAD=3),
+// not a connection state.
+bool EngineClientSpawned(int slot0) {
     if (slot0 < 0 || slot0 >= kMaxClients)
         return false;
     HMODULE h = ExeMod();
@@ -210,9 +206,26 @@ bool SlotIp(int slot0, char* out, std::size_t cap) {
     char* client = clients + static_cast<unsigned>(slot0) * kEngineClientStride;
     if (!IsSafeMemoryBlock(client + kEngineClientStateOfs, sizeof(int)))
         return false;
-    if (*reinterpret_cast<const int*>(client + kEngineClientStateOfs) !=
-        kEngineClientStateSpawned)
+    return *reinterpret_cast<const int*>(
+               client + kEngineClientStateOfs) == kEngineClientStateSpawned;
+}
+
+// Engine-side client address for a zero-based slot. The game DLL has no
+// netadr field of its own; SoFPlus reads this same svs.clients entry.
+bool SlotIp(int slot0, char* out, std::size_t cap) {
+    if (!out || cap == 0)
         return false;
+    out[0] = '\0';
+    if (!EngineClientSpawned(slot0))
+        return false;
+    HMODULE h = ExeMod();
+    if (!IsValidModuleRva(h, kRvaSvsClients, sizeof(void*)))
+        return false;
+    char* clients = *reinterpret_cast<char**>(
+        reinterpret_cast<char*>(h) + kRvaSvsClients);
+    if (!IsSafeMemoryBlock(clients, 1))
+        return false;
+    char* client = clients + static_cast<unsigned>(slot0) * kEngineClientStride;
     const unsigned char* ip = reinterpret_cast<const unsigned char*>(
         client + kEngineClientNetaddrOfs);
     if (!IsSafeMemoryBlock(ip, 4))
@@ -991,9 +1004,7 @@ bool SnapshotSlot(int slot, bool requireConnected, PlayerSnapshot* out) {
     void* client = ClientForEnt(ent);
     if (!client)
         return false;
-    if (requireConnected &&
-        ReadIntOr(static_cast<char*>(client) + kClientStateOfs, -1) !=
-            kClientStateConnected)
+    if (requireConnected && !EngineClientSpawned(slot))
         return false;
 
     PlayerSnapshot p;
@@ -1915,10 +1926,7 @@ void PollSlotCounters() {
             continue;
         char* ent = EntityForSlot(slot);
         void* client = ClientForEnt(ent);
-        if (!client)
-            continue;
-        if (ReadIntOr(static_cast<char*>(client) + kClientStateOfs, -1) !=
-            kClientStateConnected)
+        if (!client || !EngineClientSpawned(slot))
             continue;
         const int score = ReadIntOr(
             static_cast<char*>(client) + kClientScoreOfs, 0);
