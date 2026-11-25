@@ -16,12 +16,13 @@ counters are always collected when `_sofbuddy_telemetry` is `1`. The
 | `1` | `player_death` per death, with victim, killer, MOD, teamkill/suicide | implemented | off |
 | `2` | `flag_capture` per capture, including the deciding CTF cap | implemented | on |
 | `4` | `player_sample` snapshot at `_sofbuddy_telemetry_sample_sec` | implemented | off |
-| `8` | `damage` per damage application | **not implemented** | — |
-| `16` | `weapon_fire` per shot | **not implemented** | — |
-| `32` | aggregate accuracy/hit stats | **not implemented** | — |
+| `8` | raw `damage` per damage application | **not implemented** | — |
+| `16` | raw `weapon_fire` per shot | **not implemented** | — |
+| `32` | aggregate `player_weapon_accuracy_stats` | implemented | off |
 
-The numbers `8`, `16` and `32` are a proposed allocation, not current
-behavior. Do not set them expecting data until the producer code exists.
+Bits `8` and `16` are reserved for raw per-damage and per-shot events. They are
+**not implemented**; setting them does nothing today. Bit `32` is implemented
+as one aggregate event per occupancy, not as a firehose.
 
 ### Profiles
 
@@ -35,7 +36,18 @@ set _sofbuddy_telemetry_sample_sec "0"
 
 Collects lifecycle, map start/end, connect/disconnect, spectator transitions,
 team changes, map-end player stats, per-weapon frags/deaths, and flag captures.
-This is the intended production profile.
+This is the intended base profile.
+
+**Accuracy (`events = 34`, or `35` with per-death events)**
+
+```text
+set _sofbuddy_telemetry_events "34"
+```
+
+Adds one `player_weapon_accuracy_stats` event per occupancy at map end or
+disconnect, with per-weapon shots, hits, damage events and damage. It does
+**not** store every shot or every damage application. Add `1` (`35`) to also
+emit per-death events.
 
 **Combat detail (`events = 3`)**
 
@@ -44,10 +56,10 @@ set _sofbuddy_telemetry_events "3"
 ```
 
 Adds one `player_death` event per death, including MOD, killer, teamkill and
-suicide. It does **not** add shots, hits, damage or accuracy. Use it when you
-want a kill timeline or later per-kill analysis.
+suicide. It does **not** add raw shots, hits or damage. Use it when you want a
+kill timeline or later per-kill analysis.
 
-**Samples (`events = 7` plus a cadence)**
+**Samples (`events = 7` plus a cadence, or `39` with accuracy)**
 
 ```text
 set _sofbuddy_telemetry_events "7"
@@ -80,37 +92,87 @@ occupancy at map end or disconnect. It is not a per-death record.
 
 ## What is not collected today
 
-- per-shot `weapon_fire` events;
-- per-hit `damage` events;
-- shots-fired, hits, damage dealt, accuracy, headshot/hit-location data;
+- raw per-shot `weapon_fire` events;
+- raw per-hit `damage` events;
+- headshot/hit-location data;
+- per-victim damage attribution or hit timelines;
 - per-tick positions, velocity or view angles (the `.sbd` demo recorder covers
   that separately);
 - chat, admin commands and votes;
 - weapon pickups, ammo, reloads or movement events.
 
-The existing `player_death` event gives you **who killed whom with which MOD**,
-and `player_weapon_stats` gives **frags/deaths per weapon**. Neither can produce
-accuracy: accuracy needs both shots fired and hits.
+Accuracy itself **is** collected as an aggregate when bit `32` is set. The
+existing `player_death` event gives you **who killed whom with which MOD**,
+`player_weapon_stats` gives **frags/deaths per weapon**, and
+`player_weapon_accuracy_stats` gives **shots/hits/damage per weapon**. Raw
+events are only needed for hit timelines or per-victim analysis.
 
-## Adding damage / weapon-fire detail later
+## Accuracy aggregate (implemented)
 
-The recommended design is still transition/summary-first:
+The producer installs two native hooks when the feature is enabled:
 
-1. Hook the weapon fire path and the damage path. Add the hook entries to
-   `detours.yaml` and the feature's `hooks/hooks.json`, following the existing
-   telemetry hooks. Keep all I/O off the game thread.
-2. Map each shot/damage to the same weapon key table used by
-   `player_weapon_stats` (`knife`, `pistol`, `shotgun`, ...). Avoid storing raw
-   engine weapon indexes without a documented mapping.
-3. Decide whether to emit raw events, aggregate counters, or both:
-   - raw `weapon_fire` / `damage` is useful for a test map, hit timelines and
-     debugging;
-   - an aggregate `player_weapon_accuracy_stats` event at map end is better for
-     long-term storage and public stats.
-4. Add new opt-in bits to `_sofbuddy_telemetry_events` and document them here
-   before shipping.
-5. Add backend projection only when the event shape is stable. Until then the
-   raw `events` table preserves the payload.
+| Hook | RVA | Role |
+|---|---:|---|
+| `CWorldWeapons::attack` | `0x659C0` | one call = one shot |
+| `t_damage` | `0x8BB10` | valid enemy-player damage = hit/damage |
+
+`CWorldWeapons::attack` receives an `attacks_e` value (`ATK_SHOTGUN`,
+`ATK_ROCKET`, ...), which is mapped to the same weapon keys as
+`player_weapon_stats`. `t_damage` receives a MOD value, which is mapped with
+`WeaponIndexForMod`.
+
+Rules:
+
+- one `attack` call increments `shots` (one trigger pull for a shotgun, one
+  bullet for a machine gun, one flame tick for the flamethrower);
+- the first valid damage event after a shot claims one `hits` entry, so shotgun
+  pellets and rocket splash cannot push accuracy above 100%;
+- all valid damage events increment `damage_events` and add to `damage`, so
+  splash weapons can have more damage events than hits;
+- self-damage, team damage, world/monster damage and spectator damage are
+  excluded;
+- the aggregate is emitted once per occupancy at map end or disconnect.
+
+Accuracy is `hits / shots`. This is trigger-pull accuracy for shotguns, not
+pellet accuracy; document that when comparing weapons.
+
+### Existing aggregate payload
+
+```json
+{
+  "type": "player_weapon_accuracy_stats",
+  "match_uuid": "...",
+  "slot": 3,
+  "player_guid": "...",
+  "data": {
+    "name": "PlayerOne",
+    "team": "blue",
+    "weapons": [
+      {"weapon": "shotgun", "label": "Shotgun", "shots": 40, "hits": 22,
+       "damage_events": 22, "damage": 810},
+      {"weapon": "rocketlauncher", "label": "Rocket launcher", "shots": 7,
+       "hits": 6, "damage_events": 11, "damage": 540}
+    ],
+    "source": "native_telemetry"
+  }
+}
+```
+
+## Adding raw damage / weapon-fire detail later
+
+The aggregate path above already answers accuracy. Add raw events only for hit
+timelines and debugging:
+
+1. Reuse the existing `attack` and `t_damage` hooks; do not add a second
+   parallel fire path.
+2. Decide whether raw events are emitted per shot/damage or sampled. Keep all
+   I/O off the game thread and reuse the bounded queue.
+3. Map engine attack IDs/MODs to documented weapon keys; never store a raw
+   engine index without a mapping.
+4. Add bits `8` and `16` to `_sofbuddy_telemetry_events` and document them
+   here before shipping.
+5. Add a backend projection only when the event shape is stable. Until then
+   raw `events` preserves the payload.
 
 ### Proposed `weapon_fire` event
 
@@ -158,33 +220,12 @@ One event per shot, or per shotgun pellet burst if the engine exposes it as one:
 }
 ```
 
-### Proposed aggregate event (recommended for long-term)
+### Why the aggregate is the default
 
-```json
-{
-  "type": "player_weapon_accuracy_stats",
-  "match_uuid": "...",
-  "slot": 3,
-  "player_guid": "...",
-  "data": {
-    "name": "PlayerOne",
-    "team": "blue",
-    "weapons": [
-      {"weapon": "shotgun", "shots": 40, "hits": 22, "damage": 810},
-      {"weapon": "rocketlauncher", "shots": 7, "hits": 6, "damage": 540}
-    ],
-    "active_playtime_sec": 900,
-    "source": "native_telemetry"
-  }
-}
-```
-
-Accuracy is `hits / shots`. Shotguns need a documented convention: count each
-pellet as a shot and each pellet hit as a hit, or count a trigger pull as one
-shot and a hit if at least one pellet connects. Do not mix the two. Splash
-damage can produce multiple damage events per shot; decide whether `hits`
-means damage events or distinct victims. Document the choice before comparing
-weapons.
+The aggregate is already wired end to end: producer, migration, ingest
+projection, match/career views, public player page and admin player profile.
+There is no need to enable raw events just to answer accuracy. Raw events are
+only worth adding when you need the individual hit timeline.
 
 ## Volume and retention
 
@@ -200,10 +241,11 @@ For general curiosity, prefer the aggregate event or enable raw events on a
 test server for one map. If raw events are enabled in production, monitor spool
 rotation, DB growth and ingest latency first.
 
-## Backend behavior until a projection exists
+## Backend behavior for raw events
 
-Unknown event types are stored verbatim in `events.payload`. You can query a
-test session immediately:
+The accuracy aggregate has a normalized projection. Raw `weapon_fire` and
+`damage` events do not; unknown event types are stored verbatim in
+`events.payload`. You can query a test session immediately:
 
 ```sql
 SELECT occurred_at, event_type, slot, payload
@@ -219,9 +261,11 @@ branch; the historical raw events can be replayed, so do not delete them.
 ## Safe test recipe
 
 1. Use an empty test server and the experimental DLL.
-2. Enable the desired mask and, for raw events, a small map.
+2. Enable the desired mask. For accuracy use `events = 34` (`2 + 32`); for raw
+   events use a small map and watch the spool size.
 3. Join with a real client, fire a known number of shots and take damage.
-4. Inspect the spool:
+4. Inspect the spool and look for `player_weapon_accuracy_stats` at map end or
+   disconnect:
 
    ```bash
    tail -n 50 <userdir>/telemetry/spool/session-*.jsonl | python3 -m json.tool
@@ -235,14 +279,26 @@ weapon or damage hooks. A real client is required for that.
 
 ## Implementation checklist
 
-- [ ] Add the hook(s) to `detours.yaml` and `src/features/telemetry/hooks/`.
-- [ ] Confirm the hook runs on the retail `oldgamex86.dll` used by the server.
-- [ ] Map engine weapon IDs/MODs to the stable weapon keys.
-- [ ] Add the event mask bits and document them in this file and the README.
-- [ ] Keep the game thread limited to serialization and the bounded queue.
-- [ ] Emit a summary event at map end/disconnect where possible.
-- [ ] Add a backend migration and projection when the shape is stable.
-- [ ] Add public/admin UI only after the raw/aggregate data is validated.
-- [ ] Test on an empty server, then one populated map, before enabling broadly.
+Accuracy aggregate — done:
 
-Historical maps cannot be backfilled for data that was never collected.
+- [x] Hook `CWorldWeapons::attack` and `t_damage` in `detours.yaml` and
+  `src/features/telemetry/hooks/hooks.json`.
+- [x] Map engine attack IDs/MODs to the stable weapon keys.
+- [x] Add bit `32` and document it.
+- [x] Keep the game thread limited to counters and the bounded queue.
+- [x] Emit one summary event at map end/disconnect.
+- [x] Add backend migration `010_weapon_accuracy.sql`, ingest projection,
+  match/career views, public/admin columns.
+- [x] Validate the event through `telemetry_selftest` and the backend tests.
+
+Raw events — still open:
+
+- [ ] Add bits `8`/`16` for raw `damage` / `weapon_fire`.
+- [ ] Confirm the raw hook volume on a populated map before enabling broadly.
+- [ ] Add a backend migration and projection when the raw shape is stable.
+- [ ] Test on an empty server, then one populated map.
+- [ ] Use a real client: `telemetry_selftest` does not fire weapons or damage.
+
+Historical maps cannot be backfilled for data that was never collected. In
+particular, accuracy is unavailable for matches played before the accuracy DLL
+and bit `32` were enabled.

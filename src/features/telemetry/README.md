@@ -15,6 +15,7 @@ Native JSONL event stream for `sof-db-backend`.
 | `team_change` | `ClientUserinfoChanged` changes `resp.team` while active |
 | `player_match_stats` | Map end, one per connected slot |
 | `player_weapon_stats` | Map end or disconnect, per-weapon MOD frags/deaths |
+| `player_weapon_accuracy_stats` | Map end or disconnect, per-weapon shots/hits/damage (optional, bit 32) |
 | `player_death` | `player_die` Post (optional, `events` bit 1) |
 | `flag_capture` | `ctf_base_touch` succeeds (optional, bit 2) |
 | `player_sample` | Configured cadence (optional, bit 4) |
@@ -55,7 +56,7 @@ complete. Rotation uses `session-<uuid>-1.jsonl`, `-2`, ... when
 | `_sofbuddy_telemetry_dir` | `telemetry/spool` | Directory under the engine userdir. Read at DLL load. |
 | `_sofbuddy_telemetry_max_mb` | `64` | Per-file cap; `0` = unlimited. |
 | `_sofbuddy_telemetry_queue_kb` | `256` | Bounded in-memory queue. |
-| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` combat/death, `2` flags, `4` player samples. |
+| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` combat/death, `2` flags, `4` player samples, `32` accuracy aggregates. |
 | `_sofbuddy_telemetry_sample_sec` | `30` | Sample cadence; `0` = off. |
 
 Enable it in `dedicated.cfg`:
@@ -75,6 +76,8 @@ Telemetry deliberately observes existing ownership instead of replacing it:
 - `PutClientInServer` is a Post callback shared with lagometer. It starts the
   per-map occupancy on the first spawn and emits spectator transitions.
 - `player_die` is a Post callback; `skinteam_quiet`'s override dispatches it.
+- `CWorldWeapons_attack` and `t_damage` are Pre callbacks used only by the
+  optional accuracy aggregate. They count in RAM and emit nothing per shot.
 - `SV_Frame` is a Post callback alongside clamp_monitor/minigames.
 - `ctf_base_touch` is a telemetry override because no other feature owns it.
   SoFPlus replaces the spawned base's touch pointer but calls the original
@@ -83,8 +86,8 @@ Telemetry deliberately observes existing ownership instead of replacing it:
 ## Detailed collection later
 
 The default profile is intentionally lean. For the current optional families,
-what is not implemented yet, and how to add damage/weapon-fire/accuracy detail
-without storing a per-shot firehose, see
+what is not implemented yet, and how accuracy is aggregated without storing a
+per-shot firehose, see
 [`docs/TELEMETRY_DETAIL.md`](../../../docs/TELEMETRY_DETAIL.md).
 
 Current mask summary:
@@ -94,8 +97,9 @@ Current mask summary:
 | `1` | per-death `player_death` | implemented |
 | `2` | `flag_capture` | implemented |
 | `4` | `player_sample` cadence | implemented |
-| `8` | `damage` | planned, no-op today |
-| `16` | `weapon_fire` | planned, no-op today |
+| `8` | raw `damage` | planned, no-op today |
+| `16` | raw `weapon_fire` | planned, no-op today |
+| `32` | `player_weapon_accuracy_stats` aggregate | implemented |
 
 ## Score, spectator and labelling
 

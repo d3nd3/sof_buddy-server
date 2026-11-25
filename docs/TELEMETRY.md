@@ -2,9 +2,11 @@
 
 > **Status:** implemented as the experimental `telemetry` feature
 > (`src/features/telemetry/`). The lean profile is live: session/map
-> lifecycle, connect/disconnect, team change, map-end player stats, and
-> optional death, flag-capture and player-sample events. Chat, admin/vote,
-> damage and weapon-fire events are still unimplemented.
+> lifecycle, connect/disconnect, team change, map-end player stats,
+> per-weapon frags/deaths, and optional death, flag-capture, player-sample and
+> aggregate accuracy events. Raw per-shot `weapon_fire`, per-hit `damage`,
+> chat and admin/vote events are still unimplemented; accuracy is aggregated,
+> not stored per event.
 >
 > This document decides where each field/event comes from so the feature does
 > not grow two competing data paths. `src/features/telemetry/README.md` is the
@@ -50,6 +52,7 @@ counter can miss the final cap.
 | `team_change` | `ClientUserinfoChanged` post, active players only | no |
 | `player_match_stats` | map-end snapshot beside `map_end` | no |
 | `player_weapon_stats` | map end or disconnect, from native MOD counters | no |
+| `player_weapon_accuracy_stats` | map end or disconnect, from `attack`/`t_damage` counters | bit `32` |
 | `player_death` | `player_die` post | bit `1` |
 | `flag_capture` | `ctf_base_touch` override, counts the deciding cap | bit `2` |
 | `player_sample` | `SV_Frame` post at `_sofbuddy_telemetry_sample_sec` | bit `4` |
@@ -137,11 +140,12 @@ for chat, team change, damage, or weapon fire.
 | `player_disconnect` | `ClientDisconnect`; snapshot before clearing | `_sp_sv_on_client_disconnect`, `disconnect\...` log | **Native.** Emit final player stats. |
 | `team_change` | `ClientUserinfoChanged` / `PutClientInServer`; `gclient->resp.team`, userinfo | `_sp_sv_on_client_userinfo_change`, `_sp_sv_info_client_team` | **Native.** SoFPlus has no dedicated event. |
 | `player_match_stats` | Map-end snapshot of `gclient` fields | `sp_sv_info_client <slot>` | **Native reads.** Cross-check with SoFPlus only if a field is hard to read. |
+| `player_weapon_accuracy_stats` | `CWorldWeapons::attack` Pre + `t_damage` Pre; aggregate in RAM | none | **Native.** Optional bit `32`; one event per occupancy, no raw shot/damage stream. |
 | `player_death` | `player_die` Post; victim/killer, MOD, teamkill/suicide flags | `_sp_sv_on_client_die`, `die\...` log, `sp_sv_info_client_mod` | **Native.** Implemented as one per-death event (optional bit `1`). Separate `player_kill`/`player_suicide`/`player_teamkill` events are not emitted. |
 | `flag_capture` | `ctf_base_touch` override; `ent->ctf_flags`, teams | `_sp_sv_on_ctf_flag_capture`, `flag\...` log, `_sp_sv_info_flag_*` | **Native.** This is also the reliable source for the final cap. Recover/drop are not emitted yet. |
 | `chat`, `chat_team` | `ClientCommand` (`say`, `say_team`) | none | **Not implemented.** Planned native observer. |
 | `admin_command`, `map_vote` | `ClientCommand` / console command path | SoFPlus vote commands | **Not implemented.** Planned native observer. |
-| `damage`, `weapon_fire` | Combat functions (optional) | none | **Not implemented.** Planned native hooks; see [`TELEMETRY_DETAIL.md`](TELEMETRY_DETAIL.md). |
+| `damage`, `weapon_fire` (raw) | Combat functions (optional) | none | **Not implemented.** Accuracy aggregates already use the `attack`/`t_damage` hooks; raw per-shot/per-hit events are planned. See [`TELEMETRY_DETAIL.md`](TELEMETRY_DETAIL.md). |
 | `player_sample` | `SV_Frame` Post; `gclient` fields | `sp_sv_info_client` | **Native reads** at the `_sofbuddy_telemetry_sample_sec` cadence. Optional bit `4`. |
 | `server_metrics` | `G_RunFrame`; server/level counters | `sp_sv_info_frames` | **Other collectors**, not the native telemetry producer. |
 | GUID / name | Profiles registry + userinfo | `_sp_sv_info_client_guid`, `_sp_sv_info_client_name` | **Native profiles.** Already solved by the profiles feature. |
@@ -210,18 +214,21 @@ the Post subscriber silently stops running.
 | `_sofbuddy_telemetry_max_mb` | `64` | Per-file cap; `0` = unlimited. Read at DLL load. |
 | `_sofbuddy_telemetry_queue_kb` | `256` | Bounded in-memory queue (16–4096). Read at DLL load. |
 | `_sofbuddy_telemetry_sample_sec` | `30` | Player sample cadence; `0` = off. Live. |
-| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` deaths, `2` flag captures, `4` samples. Live. |
+| `_sofbuddy_telemetry_events` | `2` | Bitmask: `1` deaths, `2` flag captures, `4` samples, `32` accuracy aggregates. Live. |
 
 ## Delivery phases
 
 1. **Lean lifecycle:** implemented in the experimental feature.
 2. **CTF:** implemented for captures, including the deciding cap. Recover/drop
    events are not emitted yet.
-3. **Combat:** implemented for `player_die` (death/suicide/teamkill).
-4. **Chat/admin:** not implemented.
-5. **Samples/metrics:** player samples implemented; server metrics are not.
-6. **Optional detail:** damage, weapon fire and per-respawn events are not
-   implemented.
+3. **Combat:** implemented for `player_die` (death/suicide/teamkill) and
+   per-weapon frag/death totals.
+4. **Accuracy:** implemented as an optional aggregate (bit `32`) from the
+   `attack` and `t_damage` hooks.
+5. **Chat/admin:** not implemented.
+6. **Samples/metrics:** player samples implemented; server metrics are not.
+7. **Raw detail:** per-shot `weapon_fire`, per-hit `damage` and per-respawn
+   events are not implemented.
 
 ## Transport
 

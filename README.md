@@ -445,14 +445,16 @@ Details and the versioned chunk layout:
 
 Writes structured match data for `sof-db-backend` as JSONL. The lean profile
 covers session and map lifecycle, connect/disconnect, spectator enter/leave,
-team changes and map-end player stats. Deaths and periodic samples are opt-in
-via `_sofbuddy_telemetry_events`; flag captures are on by default because the
-deciding cap must be counted natively.
+team changes, map-end player stats and per-weapon frags/deaths. Deaths,
+periodic samples and per-weapon accuracy aggregates are opt-in via
+`_sofbuddy_telemetry_events`; flag captures are on by default because the
+deciding cap must be counted natively. Accuracy (`32`) is an aggregate emitted
+once per occupancy, not a per-shot stream.
 
 ```
 set _sofbuddy_telemetry "1"
 set _sofbuddy_telemetry_dir "telemetry/spool"
-set _sofbuddy_telemetry_events "2"
+set _sofbuddy_telemetry_events "34"   # flags (2) + accuracy (32)
 ```
 
 The game thread only serializes an event and appends it to a bounded queue. A
@@ -466,7 +468,9 @@ playtime excludes spectator time, and a spectate round-trip does not erase the
 score accumulated before it, so later player labelling and career averages see
 only actual play. Per-weapon frags and deaths are aggregated from `player_die`
 MODs and emitted once per occupancy, using the same grouping as SoFPlus
-`.stats`/`.statsall`.
+`.stats`/`.statsall`. Accuracy is aggregated from `CWorldWeapons::attack` shots
+and `t_damage` hits; the first valid enemy-player damage after a shot claims
+the hit, so shotgun pellets and splash cannot exceed 100%.
 
 ```
 telemetry_selftest     queue one synthetic session/map/player/flag sequence
@@ -479,8 +483,8 @@ SSH spool puller.
 
 Details: [`src/features/telemetry/README.md`](src/features/telemetry/README.md),
 [`docs/TELEMETRY.md`](docs/TELEMETRY.md), and the
-[detailed-collection guide](docs/TELEMETRY_DETAIL.md) for optional combat
-detail, damage/weapon-fire plans, accuracy caveats, and safe testing.
+[detailed-collection guide](docs/TELEMETRY_DETAIL.md) for the accuracy
+aggregate, raw damage/weapon-fire plans, and safe testing.
 
 ---
 

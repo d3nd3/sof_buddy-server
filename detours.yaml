@@ -470,6 +470,67 @@ functions:
       - type: float*
         name: point
 
+  # CWorldWeapons::attack(attacks_e, edict_t*, vec3_t, vec3_t, ...). The first
+  # argument is an attacks_e value (ATK_SHOTGUN, ATK_ROCKET, ...), not an SFW_*
+  # inventory index. Telemetry maps it to the SoFPlus .stats weapon bucket.
+  - name: CWorldWeapons_attack
+    module: GameDll
+    identifier: "0x659C0"
+    return_type: int
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: int
+        name: attack
+      - type: void*
+        name: attacker
+      - type: void*
+        name: a4
+      - type: void*
+        name: a5
+      - type: int
+        name: a6
+      - type: int
+        name: a7
+
+  # Universal damage entry point. Damage and knockback are ints; penetrate and
+  # absorb are floats. Keep the argument count/order identical to the 12
+  # pushes at every call site (targ, inflictor, attacker, dir, point, normal,
+  # damage, knockback, dflags, mod, penetrate, absorb).
+  - name: t_damage
+    module: GameDll
+    identifier: "0x8BB10"
+    return_type: char
+    calling_convention: __cdecl
+    detour_len: 0
+    params:
+      - type: void*
+        name: targ
+      - type: void*
+        name: inflictor
+      - type: void*
+        name: attacker
+      - type: float*
+        name: dir
+      - type: float*
+        name: point
+      - type: float*
+        name: normal
+      - type: int
+        name: damage
+      - type: int
+        name: knockback
+      - type: int
+        name: dflags
+      - type: int
+        name: mod
+      - type: float
+        name: penetrate
+      - type: float
+        name: absorb
+
   # SV_Configstring. CS_PLAYERSKINS (0x587) is name\team\skin\bit. A leading
   # * on team is the client "doesn't recognise teamname" line.
   - name: configstring

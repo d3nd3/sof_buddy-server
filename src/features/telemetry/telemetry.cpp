@@ -69,6 +69,7 @@ constexpr int kEngineClientStateSpawned = 3;
 constexpr int kEventCombat = 1;
 constexpr int kEventFlags = 2;
 constexpr int kEventSamples = 4;
+constexpr int kEventAccuracy = 32;
 
 // MOD groups used by SoFPlus' sp_sv_info_client_mod and its .stats/.statsall
 // scripts. The producer aggregates the same frag/death counters natively so
@@ -109,6 +110,38 @@ int WeaponIndexForMod(int mod) {
         case 18: return 14;
         case 23: return 15;
         default: return 16;  // world/environment/unknown/other MODs
+    }
+}
+
+// `attacks_e` values from w_public.h, used by CWorldWeapons::attack. This is
+// a different enum from both SFW_* and MOD_*; keep the mappings separate.
+int WeaponIndexForAttack(int attack) {
+    switch (attack) {
+        case 1:
+        case 2: return 0;   // ATK_KNIFE / ATK_KNIFE_ALT
+        case 3: return 1;   // ATK_PISTOL1
+        case 4: return 2;   // ATK_PISTOL2 / magnum
+        case 5: return 5;   // ATK_MACHINEPISTOL
+        case 6: return 6;   // ATK_ASSAULTRIFLE
+        case 7:
+        case 8: return 4;   // ATK_SNIPER / ALT
+        case 9:
+        case 10: return 8;  // ATK_AUTOSHOTGUN / ALT (slugthrower)
+        case 11: return 3;  // ATK_SHOTGUN
+        case 12:
+        case 13: return 7;  // ATK_MACHINEGUN / ALT
+        case 14:
+        case 15: return 9;  // ATK_ROCKET / ALT
+        case 16:
+        case 17: return 11; // ATK_MICROWAVE / ALT (MPG)
+        case 18:
+        case 19: return 10; // ATK_FLAMEGUN / ALT
+        case 22:            // ATK_GRENADE
+        case 23:            // ATK_MOLITOV
+        case 24:            // ATK_GASGREN
+        case 26: return 12; // ATK_FLASHGREN
+        case 27: return 0;  // ATK_MACHETE (knife bucket)
+        default: return -1; // monsters, turrets, vehicles, debug attacks
     }
 }
 
@@ -565,6 +598,13 @@ struct SlotState {
     std::string ip;
     std::array<int, kWeaponCount> weaponFrags{};
     std::array<int, kWeaponCount> weaponDeaths{};
+    std::array<int, kWeaponCount> weaponShots{};
+    std::array<int, kWeaponCount> weaponHits{};
+    std::array<int, kWeaponCount> weaponDamageEvents{};
+    std::array<int, kWeaponCount> weaponDamage{};
+    // Unclaimed shots per weapon. The first damage event after a shot claims
+    // one; later pellets/splash from the same shot cannot push hits > shots.
+    std::array<int, kWeaponCount> weaponPendingHit{};
 };
 
 SlotState g_slots[kMaxClients];
@@ -596,6 +636,42 @@ std::string BuildWeaponArray(int slot) {
         item.AddStr("label", kWeaponLabels[i]);
         item.AddInt("frags", frags);
         item.AddInt("deaths", deaths);
+        out += item.Done();
+    }
+    out += "]";
+    return out;
+}
+
+bool HasAccuracyStats(int slot) {
+    if (slot < 0 || slot >= kMaxClients)
+        return false;
+    for (int i = 0; i < kWeaponCount; ++i) {
+        if (g_slots[slot].weaponShots[i] > 0 ||
+            g_slots[slot].weaponDamageEvents[i] > 0 ||
+            g_slots[slot].weaponDamage[i] > 0)
+            return true;
+    }
+    return false;
+}
+
+std::string BuildAccuracyArray(int slot) {
+    std::string out = "[";
+    bool first = true;
+    for (int i = 0; i < kWeaponCount; ++i) {
+        const SlotState& s = g_slots[slot];
+        if (s.weaponShots[i] <= 0 && s.weaponDamageEvents[i] <= 0 &&
+            s.weaponDamage[i] <= 0)
+            continue;
+        if (!first)
+            out += ",";
+        first = false;
+        JsonObj item;
+        item.AddStr("weapon", kWeaponKeys[i]);
+        item.AddStr("label", kWeaponLabels[i]);
+        item.AddInt("shots", s.weaponShots[i]);
+        item.AddInt("hits", s.weaponHits[i]);
+        item.AddInt("damage_events", s.weaponDamageEvents[i]);
+        item.AddInt("damage", s.weaponDamage[i]);
         out += item.Done();
     }
     out += "]";
@@ -1136,6 +1212,25 @@ void EmitWeaponStatsForAll(const std::string& matchUuid) {
         EmitWeaponStats(matchUuid, slot);
 }
 
+void EmitAccuracyStats(const std::string& matchUuid, int slot) {
+    if (matchUuid.empty() || !HasAccuracyStats(slot))
+        return;
+    PlayerSnapshot p;
+    if (!SnapshotSlot(slot, true, &p))
+        return;
+    JsonObj d;
+    AddPlayerSnapshotFields(d, p, false);
+    d.AddStr("guid", p.guid);
+    d.AddRaw("weapons", BuildAccuracyArray(slot));
+    d.AddStr("source", "native_telemetry");
+    Emit("player_weapon_accuracy_stats", d.Done(), matchUuid, p.guid, slot);
+}
+
+void EmitAccuracyStatsForAll(const std::string& matchUuid) {
+    for (int slot = 0; slot < MaxClients(); ++slot)
+        EmitAccuracyStats(matchUuid, slot);
+}
+
 void EmitMapEnd(const char* hint) {
     if (!g_map.loaded || !g_map.started || g_map.ended)
         return;
@@ -1198,6 +1293,7 @@ void EmitMapEnd(const char* hint) {
     Emit("map_end", d.Done(), matchUuid);
     EmitPlayerStats(matchUuid);
     EmitWeaponStatsForAll(matchUuid);
+    EmitAccuracyStatsForAll(matchUuid);
 }
 
 void EmitPlayerConnect(const PlayerSnapshot& p) {
@@ -1363,6 +1459,23 @@ void EmitSelfTest() {
         "\"deaths\":0}]");
     ws.AddStr("source", "native_telemetry");
     Emit("player_weapon_stats", ws.Done(), match, "", 0);
+
+    JsonObj wa;
+    wa.AddStr("name", "TelemetrySelfTest");
+    wa.AddStr("team", "blue");
+    wa.AddInt("team_number", 1);
+    wa.AddBool("spectator", false);
+    wa.AddStr("ip", "203.0.113.7");
+    wa.AddInt("ping", 42);
+    wa.AddInt("active_playtime_sec", 60);
+    wa.AddRaw(
+        "weapons",
+        "[{\"weapon\":\"shotgun\",\"label\":\"Shotgun\",\"shots\":20,"
+        "\"hits\":11,\"damage_events\":11,\"damage\":405},"
+        "{\"weapon\":\"knife\",\"label\":\"Knife\",\"shots\":3,"
+        "\"hits\":2,\"damage_events\":2,\"damage\":80}]");
+    wa.AddStr("source", "native_telemetry");
+    Emit("player_weapon_accuracy_stats", wa.Done(), match, "", 0);
 
     JsonObj me;
     me.AddStr("map", "test/selftest");
@@ -1615,6 +1728,7 @@ void ClientDisconnectPreImpl(void*& ent) {
     if (SnapshotSlot(slot, false, &p))
         EmitPlayerDisconnect(p);
     EmitWeaponStats(CurrentMatchUuid(), slot);
+    EmitAccuracyStats(CurrentMatchUuid(), slot);
     g_slots[slot] = SlotState();
 }
 
@@ -1655,6 +1769,87 @@ void PlayerDiePostImpl(void* self, void*, void* attacker, int mod, float*) {
     if (EventEnabled(kEventCombat))
         EmitPlayerDeath(victim, hasKiller ? &killer : nullptr, mod, teamkill,
                         suicide);
+}
+
+// True only for the edict that currently owns a connected player slot. This
+// filters monsters, turrets, world triggers and stale edicts before they can
+// be mistaken for a low-numbered player edict.
+bool PlayerSlotForEdict(void* ent, int* slot) {
+    if (!ent || !slot)
+        return false;
+    const int n = EntitySlot(ent);
+    if (n < 0 || n >= MaxClients())
+        return false;
+    if (EntityForSlot(n) != ent || !ClientForEnt(ent))
+        return false;
+    *slot = n;
+    return true;
+}
+
+void WeaponAttackPreImpl(void* thisp, int attack, void* attacker, void*,
+                         void*, int, int) {
+    (void)thisp;
+    if (!g_initialized || !EventEnabled(kEventAccuracy))
+        return;
+    if (!g_map.started || g_map.ended)
+        return;
+
+    int slot = -1;
+    if (!PlayerSlotForEdict(attacker, &slot))
+        return;
+    SlotState& s = g_slots[slot];
+    if (s.mapSerial != g_mapSerial || !s.active || s.spectator)
+        return;
+
+    const int weapon = WeaponIndexForAttack(attack);
+    if (weapon < 0)
+        return;
+    ++s.weaponShots[weapon];
+    if (s.weaponPendingHit[weapon] < 100000)
+        ++s.weaponPendingHit[weapon];
+}
+
+void DamagePreImpl(void* targ, void*, void* attacker, float*, float*, float*,
+                   int damage, int, int, int mod, float, float) {
+    if (!g_initialized || !EventEnabled(kEventAccuracy))
+        return;
+    if (!g_map.started || g_map.ended || damage <= 0 || !targ ||
+        !attacker || targ == attacker)
+        return;
+
+    int attackerSlot = -1;
+    int victimSlot = -1;
+    if (!PlayerSlotForEdict(attacker, &attackerSlot) ||
+        !PlayerSlotForEdict(targ, &victimSlot))
+        return;
+
+    SlotState& as = g_slots[attackerSlot];
+    SlotState& vs = g_slots[victimSlot];
+    if (as.mapSerial != g_mapSerial || vs.mapSerial != g_mapSerial)
+        return;
+    if (!as.active || as.spectator || !vs.active || vs.spectator)
+        return;
+
+    // Team damage never counts toward accuracy. Team 0 is used by non-team
+    // modes, so only reject a known same-team pair.
+    void* attackerClient = ClientForEnt(attacker);
+    void* victimClient = ClientForEnt(targ);
+    if (!attackerClient || !victimClient)
+        return;
+    const int attackerTeam =
+        ReadIntOr(static_cast<char*>(attackerClient) + kClientTeamOfs, 0);
+    const int victimTeam =
+        ReadIntOr(static_cast<char*>(victimClient) + kClientTeamOfs, 0);
+    if (attackerTeam != 0 && victimTeam != 0 && attackerTeam == victimTeam)
+        return;
+
+    const int weapon = WeaponIndexForMod(mod);
+    ++as.weaponDamageEvents[weapon];
+    as.weaponDamage[weapon] += damage;
+    if (as.weaponPendingHit[weapon] > 0) {
+        --as.weaponPendingHit[weapon];
+        ++as.weaponHits[weapon];
+    }
 }
 
 void CtfBaseTouchImpl(void* self, void* other, void* plane, void* surf,
@@ -1787,6 +1982,19 @@ void Telemetry_ClientDisconnectPre(void*& ent) {
 void Telemetry_PlayerDiePost(void* self, void* inflictor, void* attacker,
                              int damage, float* point) {
     PlayerDiePostImpl(self, inflictor, attacker, damage, point);
+}
+
+void Telemetry_WeaponAttackPre(void*& thisp, int& attack, void*& attacker,
+                               void*& a4, void*& a5, int& a6, int& a7) {
+    WeaponAttackPreImpl(thisp, attack, attacker, a4, a5, a6, a7);
+}
+
+void Telemetry_DamagePre(void*& targ, void*& inflictor, void*& attacker,
+                         float*& dir, float*& point, float*& normal,
+                         int& damage, int& knockback, int& dflags, int& mod,
+                         float& penetrate, float& absorb) {
+    DamagePreImpl(targ, inflictor, attacker, dir, point, normal, damage,
+                  knockback, dflags, mod, penetrate, absorb);
 }
 
 void Telemetry_CtfBaseTouch(void* self, void* other, void* plane, void* surf,
