@@ -104,13 +104,13 @@ difference are the reliable parts.
 
 ## Telemetry caveat
 
-The native `player_weapon_accuracy_stats` hit-zone counters only accept a zone
-when `bodyhuman_damage` returned a real hit and the damage came through the
-traced/projectile resolver. Hair/ear/accessory-only hits are ignored, and
-spread/explosive/torso-blast damage is skipped because it does not refresh the
-zone global. This avoids attributing a miss on hair to the previous shot's
-zone. Exact zone rows therefore cover bullets/projectiles; shotgun spread and
-explosions are not represented in the zone counters yet.
+The native `player_weapon_accuracy_stats` hit-zone counters accept a zone from
+the traced/projectile resolver or from the spread estimator at `0x2A070`.
+Hair/ear/accessory-only hits are ignored, and explosive/torso-blast damage is
+skipped because it does not refresh either zone source. This avoids attributing
+a miss on hair to the previous shot's zone. Shotgun rows are the game's spread
+estimate; bullets/projectiles use exact geometry. A spread hit can list several
+zones, so zone hits can exceed trigger-pull hits.
 
 ## Evidence
 

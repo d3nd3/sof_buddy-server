@@ -43,7 +43,19 @@
   },
   {
     "function": "bodyhuman_damage",
+    "callback": "Telemetry_BodyDamagePre",
+    "phase": "Pre",
+    "priority": 10
+  },
+  {
+    "function": "bodyhuman_damage",
     "callback": "Telemetry_BodyDamagePost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
+    "function": "spread_zones",
+    "callback": "Telemetry_SpreadZonesPost",
     "phase": "Post",
     "priority": 10
   },

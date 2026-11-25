@@ -108,13 +108,14 @@ events are only needed for hit timelines or per-victim analysis.
 
 ## Accuracy aggregate (implemented)
 
-The producer installs three native hooks when the feature is enabled:
+The producer installs four native hooks when the feature is enabled:
 
 | Hook | RVA | Role |
 |---|---:|---|
 | `CWorldWeapons::attack` | `0x659C0` | one call = one shot |
 | `t_damage` | `0x8BB10` | valid enemy-player damage = hit/damage |
-| human body damage | `0x2B8E0` | exact gore zone of each human hit |
+| human body damage | `0x2B8E0` | exact gore zone of each traced/projectile human hit |
+| spread-zone estimator | `0x2A070` | gore zones used by shotgun-style spread damage |
 
 `CWorldWeapons::attack` receives an `attacks_e` value (`ATK_SHOTGUN`,
 `ATK_ROCKET`, ...), which is mapped to the same weapon keys as
@@ -136,30 +137,33 @@ Rules:
 Accuracy is `hits / shots`. This is trigger-pull accuracy for shotguns, not
 pellet accuracy; document that when comparing weapons.
 
-### Exact hit zones and headshot kills
+### Hit zones and headshot kills
 
-The retail human body damage routine (`0x2B8E0`) resolves the hit against the
-posed gore bolts and stores the selected front-zone index in the game DLL
-global at RVA `0x130650`. The 26 human zone names are at RVA `0x132F78`. The
-producer reads both after the body damage call:
+The retail human body damage routine (`0x2B8E0`) resolves traced/projectile
+hits against the posed gore bolts and stores the selected front-zone index in
+the game DLL global at RVA `0x130650`. The 26 human zone names are at RVA
+`0x132F78`. For shotgun-style spread damage the game uses a different path:
+the spread estimator at RVA `0x2A070` fills the same zone array and does not
+touch the exact front-zone global. The producer reads both forms:
 
-- only a traced/projectile hit with a resolved zone increments the exact zone
+- traced/projectile hits use the exact global and increment the resolved zone
   for that weapon, e.g. `GZ_HEAD_FRONT`, `GZ_CHEST_FRONT`, `GZ_GROIN`;
+- spread hits read the estimator's zone array and increment every zone the
+  game applied, so one shotgun hit can contribute several zones;
 - a hit whose only record is hair, an ear or an accessory returns no zone and
   is ignored, not attributed to the previous shot;
-- spread/explosive/torso-blast damage does not refresh the front-zone global,
-  so those hits are skipped rather than assigned a stale zone;
+- explosive/torso-blast damage is skipped because it does not refresh either
+  resolved-zone source;
 - `headshot_hits` is the sum of `GZ_HEAD_FRONT` + `GZ_HEAD_BACK`;
-- a kill is counted as a `headshot_kill` only when the victim's most recent
-  exact zone was a head zone in the same server frame as `player_die`;
-- head/neck/torso/groin/limb buckets are derived from the exact zone names.
+- a kill is counted as a `headshot_kill` when the victim's most recent zone
+  (exact or spread) was a head zone in the same server frame as `player_die`;
+- head/neck/torso/groin/limb buckets are derived from the zone names.
 
-The zone is resolved by the engine's posed model, not by a raw height guess, so
-crouching, leaning and model differences are handled by the gore code. Exact
-zone stats currently cover traced/projectile hits (bullets, sniper, pistol,
-thrown knife, projectiles). Shotgun spread and explosions have no exact zone
-global and are intentionally absent until a separate spread-zone collector is
-added.
+The exact zone is resolved by the engine's posed model, not a raw height
+guess. Shotgun zone rows are the game's spread estimate, not per-pellet
+geometry. Because a spread hit can list several zones, zone hits and
+`headshot_hits` can exceed trigger-pull `hits`; percentage views should use
+the zone total, not the shot-hit total.
 
 ### Existing aggregate payload
 

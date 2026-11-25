@@ -568,6 +568,31 @@ functions:
       - type: float
         name: absorb
 
+  # Spread-zone estimator used by bodyhuman_damage for shotgun-style hits.
+  # It fills the same zone array that the wound/severing code consumes but
+  # does not update the exact front-zone global.
+  - name: spread_zones
+    module: GameDll
+    identifier: "0x2A070"
+    return_type: char
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: void*
+        name: target
+      - type: float*
+        name: point
+      - type: int
+        name: a4
+      - type: int*
+        name: hint
+      - type: int*
+        name: zones
+      - type: int*
+        name: count
+
   # SV_Configstring. CS_PLAYERSKINS (0x587) is name\team\skin\bit. A leading
   # * on team is the client "doesn't recognise teamname" line.
   - name: configstring

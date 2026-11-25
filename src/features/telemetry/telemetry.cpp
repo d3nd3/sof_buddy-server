@@ -686,6 +686,20 @@ struct SlotState {
 
 SlotState g_slots[kMaxClients];
 
+// The body damage routine calls the spread-zone estimator for shotgun-style
+// hits. The estimator only receives the target body, so the current attacker
+// and means of death are carried from bodyhuman_damage Pre to its Post hook.
+struct BodyDamageContext {
+    bool active = false;
+    void* victim = nullptr;
+    void* attacker = nullptr;
+    int damage = 0;
+    int dflags = 0;
+    int mod = 0;
+};
+
+BodyDamageContext g_bodyDamageContext;
+
 bool HasWeaponStats(int slot) {
     if (slot < 0 || slot >= kMaxClients)
         return false;
@@ -2015,6 +2029,70 @@ void DamagePreImpl(void* targ, void*, void* attacker, float*, float*, float*,
     }
 }
 
+void BodyDamagePreImpl(void* victim, void*, void* attacker, float*, float*,
+                       float*, int damage, int, int dflags, int mod, float,
+                       float) {
+    g_bodyDamageContext.active = false;
+    if (!g_initialized || !EventEnabled(kEventAccuracy))
+        return;
+    if (!g_map.started || g_map.ended || damage <= 0 || !victim || !attacker)
+        return;
+    g_bodyDamageContext.active = true;
+    g_bodyDamageContext.victim = victim;
+    g_bodyDamageContext.attacker = attacker;
+    g_bodyDamageContext.damage = damage;
+    g_bodyDamageContext.dflags = dflags;
+    g_bodyDamageContext.mod = mod;
+}
+
+// The retail spread estimator (0x2A070) fills the same zone array that the
+// body damage routine passes to its wound/severing code. Unlike the traced
+// resolver it does not leave a zone index in the game global, so read the
+// output array here while the body-damage context is still active.
+void SpreadZonesPostImpl(int, void* thisp, void* target, float*, int,
+                         int*, int* zones, int* count) {
+    (void)thisp;
+    (void)target;
+    if (!g_bodyDamageContext.active || !zones || !count)
+        return;
+    if (!(g_bodyDamageContext.dflags & 0x20000))  // SPREAD
+        return;
+    int n = *count;
+    if (n <= 0)
+        return;
+    if (n > 8)
+        n = 8;
+
+    int attackerSlot = -1;
+    int victimSlot = -1;
+    if (!PlayerPairForDamage(g_bodyDamageContext.attacker,
+                             g_bodyDamageContext.victim, &attackerSlot,
+                             &victimSlot))
+        return;
+
+    SlotState& as = g_slots[attackerSlot];
+    SlotState& vs = g_slots[victimSlot];
+    const int weapon = WeaponIndexForMod(g_bodyDamageContext.mod);
+    int firstZone = -1;
+    int headZone = -1;
+    for (int i = 0; i < n; ++i) {
+        const int zone = zones[i];
+        if (zone < 0 || zone >= kHumanZoneCount)
+            continue;
+        if (firstZone < 0)
+            firstZone = zone;
+        if (headZone < 0 && IsHeadZone(zone))
+            headZone = zone;
+        ++as.weaponZoneHits[weapon][zone];
+    }
+    if (firstZone >= 0) {
+        // A kill is a headshot kill when any zone in the spread is a head
+        // zone; otherwise keep the first zone for the last-hit bookkeeping.
+        vs.lastHitZone = headZone >= 0 ? headZone : firstZone;
+        vs.lastHitFrame = LevelFrame();
+    }
+}
+
 void BodyDamagePostImpl(int result, void* thisp, void* victim, void*,
                         void* attacker, float*, float* point, float*, int damage,
                         int, int dflags, int mod, float, float) {
@@ -2216,6 +2294,23 @@ void Telemetry_DamagePre(void*& targ, void*& inflictor, void*& attacker,
                   knockback, dflags, mod, penetrate, absorb);
 }
 
+void Telemetry_BodyDamagePre(void*& thisp, void*& victim, void*& inflictor,
+                             void*& attacker, float*& dir, float*& point,
+                             float*& origin, int& damage, int& knockback,
+                             int& dflags, int& mod, float& penetrate,
+                             float& absorb) {
+    (void)thisp;
+    (void)inflictor;
+    (void)dir;
+    (void)point;
+    (void)origin;
+    (void)knockback;
+    (void)penetrate;
+    (void)absorb;
+    BodyDamagePreImpl(victim, nullptr, attacker, nullptr, nullptr, nullptr,
+                      damage, 0, dflags, mod, 0.0f, 0.0f);
+}
+
 int Telemetry_BodyDamagePost(int result, void* thisp, void* victim,
                              void* inflictor, void* attacker, float* dir,
                              float* point, float* origin, int damage,
@@ -2224,6 +2319,14 @@ int Telemetry_BodyDamagePost(int result, void* thisp, void* victim,
     BodyDamagePostImpl(result, thisp, victim, inflictor, attacker, dir, point,
                        origin, damage, knockback, dflags, mod, penetrate,
                        absorb);
+    g_bodyDamageContext.active = false;
+    return result;
+}
+
+char Telemetry_SpreadZonesPost(char result, void* thisp, void* target,
+                               float* point, int a4, int* hint, int* zones,
+                               int* count) {
+    SpreadZonesPostImpl(result, thisp, target, point, a4, hint, zones, count);
     return result;
 }
 
