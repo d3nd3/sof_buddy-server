@@ -1617,6 +1617,11 @@ void OnSpawnEntitiesImpl(const char* mapname) {
     g_map.lastCappingSlot = -1;
     g_map.lastSampleTime = g_map.loadTime;
 
+    // The edict array can be reallocated on a map change. Do not keep a
+    // pointer from the previous generation.
+    g_edicts = nullptr;
+    g_edictStride = 0;
+
     ++g_mapSerial;
     for (auto& s : g_slots) {
         s = SlotState();
@@ -1644,6 +1649,23 @@ void StartOccupancy(int slot, const PlayerSnapshot& p) {
     connect.playtimeSec = 0;
     connect.pingMax = p.ping;
     EmitPlayerConnect(connect);
+}
+
+// Recovery path for a client that was already connected when the map state was
+// reset (for example a map change where the SpawnEntities detour was missed).
+// Normal connects still go through ClientBegin/PutClientInServer; this only
+// fills slots with no occupancy for the current map.
+void ReconcileOccupancies() {
+    for (int slot = 0; slot < MaxClients(); ++slot) {
+        if (g_slots[slot].mapSerial == g_mapSerial)
+            continue;
+        PlayerSnapshot p;
+        if (!SnapshotSlot(slot, true, &p))
+            continue;
+        if (!g_map.started)
+            return;
+        StartOccupancy(slot, p);
+    }
 }
 
 void ClientBeginPostImpl(void* ent) {
@@ -1911,7 +1933,17 @@ void SvFramePostImpl(int) {
     if (!g_initialized)
         return;
     EnsureSession();
-    if (!g_sessionStarted || !g_map.loaded || g_map.ended)
+    if (!g_sessionStarted)
+        return;
+
+    // SpawnEntities is the normal map boundary. If that detour is missed (for
+    // example during a server-side map change), detect the new mapname here so
+    // g_map.ended cannot permanently stop telemetry.
+    const char* liveMap = Telemetry_CvarString(g_cvMapname, "");
+    if (liveMap && liveMap[0] && g_map.loaded && g_map.map != liveMap)
+        OnSpawnEntitiesImpl(liveMap);
+
+    if (!g_map.loaded || g_map.ended)
         return;
     // ClientBegin is the normal map-start trigger. This also covers a client
     // that was already connected when the feature loaded (or a bot) without
@@ -1921,6 +1953,7 @@ void SvFramePostImpl(int) {
     if (!g_map.started)
         return;
 
+    ReconcileOccupancies();
     PollSlotCounters();
 
     if (LevelIntermission()) {
