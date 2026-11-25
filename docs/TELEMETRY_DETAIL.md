@@ -143,19 +143,23 @@ posed gore bolts and stores the selected front-zone index in the game DLL
 global at RVA `0x130650`. The 26 human zone names are at RVA `0x132F78`. The
 producer reads both after the body damage call:
 
-- every valid enemy hit increments the exact zone for that weapon, e.g.
-  `GZ_HEAD_FRONT`, `GZ_CHEST_FRONT`, `GZ_GROIN`;
+- only a traced/projectile hit with a resolved zone increments the exact zone
+  for that weapon, e.g. `GZ_HEAD_FRONT`, `GZ_CHEST_FRONT`, `GZ_GROIN`;
+- a hit whose only record is hair, an ear or an accessory returns no zone and
+  is ignored, not attributed to the previous shot;
+- spread/explosive/torso-blast damage does not refresh the front-zone global,
+  so those hits are skipped rather than assigned a stale zone;
 - `headshot_hits` is the sum of `GZ_HEAD_FRONT` + `GZ_HEAD_BACK`;
 - a kill is counted as a `headshot_kill` only when the victim's most recent
-  damage event was a head zone in the same server frame as `player_die`;
+  exact zone was a head zone in the same server frame as `player_die`;
 - head/neck/torso/groin/limb buckets are derived from the exact zone names.
 
 The zone is resolved by the engine's posed model, not by a raw height guess, so
-crouching, leaning and model differences are handled by the gore code. Damage
-paths that take a special gore branch (for example some fire/explosion/melee
-paths) may not refresh the front-zone global; those hits fall back to the last
-resolved zone. Treat exact zones as authoritative for bullet/projectile hits
-and approximate for special damage types.
+crouching, leaning and model differences are handled by the gore code. Exact
+zone stats currently cover traced/projectile hits (bullets, sniper, pistol,
+thrown knife, projectiles). Shotgun spread and explosions have no exact zone
+global and are intentionally absent until a separate spread-zone collector is
+added.
 
 ### Existing aggregate payload
 

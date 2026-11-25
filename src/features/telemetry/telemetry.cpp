@@ -2015,14 +2015,27 @@ void DamagePreImpl(void* targ, void*, void* attacker, float*, float*, float*,
     }
 }
 
-void BodyDamagePostImpl(int, void* thisp, void* victim, void*, void* attacker,
-                        float*, float* point, float*, int damage, int, int,
-                        int mod, float, float) {
+void BodyDamagePostImpl(int result, void* thisp, void* victim, void*,
+                        void* attacker, float*, float* point, float*, int damage,
+                        int, int dflags, int mod, float, float) {
     (void)thisp;
     (void)point;
     if (!g_initialized || !EventEnabled(kEventAccuracy))
         return;
     if (!g_map.started || g_map.ended || damage <= 0 || !victim)
+        return;
+
+    // The zone global is only refreshed by the traced/projectile resolver.
+    // A hair/ear/accessory-only hit makes the body damage call return 0, and
+    // explosions/torso blasts never touch the global, so reading it there
+    // would attribute damage to the previous bullet's zone.
+    if (result <= 0 || result == 99999)
+        return;
+    if (!(dflags & (0x100 | 0x200)))  // TRACED or PROJECTILE
+        return;
+    if ((dflags & 0x20000) && !(dflags & 0x200))  // SPREAD estimate
+        return;
+    if (dflags & (0x8000 | 0x100000))  // EXPLOSIVE or TORSO_BLAST
         return;
 
     int victimSlot = -1;
