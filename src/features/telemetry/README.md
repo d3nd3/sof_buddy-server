@@ -14,6 +14,7 @@ Native JSONL event stream for `sof-db-backend`.
 | `spectator_enter` / `spectator_leave` | `resp.spectator` changes in `PutClientInServer` |
 | `team_change` | `ClientUserinfoChanged` changes `resp.team` while active |
 | `player_match_stats` | Map end, one per connected slot |
+| `player_weapon_stats` | Map end or disconnect, per-weapon MOD frags/deaths |
 | `player_death` | `player_die` Post (optional, `events` bit 1) |
 | `flag_capture` | `ctf_base_touch` succeeds (optional, bit 2) |
 | `player_sample` | Configured cadence (optional, bit 4) |
@@ -87,6 +88,9 @@ Telemetry deliberately observes existing ownership instead of replacing it:
 - One connect is one label occupancy. Spectator enter/leave updates it rather
   than creating a new identity; a spec-only occupancy has zero active time
   and is excluded from match stats.
+- Per-weapon MOD counters follow the SoFPlus `.stats` grouping. Victim deaths
+  count for every MOD; attacker frags count only for non-teamkill kills;
+  teamkills remain in the separate teamkill total.
 - Snapshots include GUID, IP and ping so the backend labelling heuristics can
   attach a player without relying on `games.log`.
 

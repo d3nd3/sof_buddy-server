@@ -47,6 +47,7 @@ counter can miss the final cap.
 | `spectator_enter`, `spectator_leave` | `PutClientInServer` post when `resp.spectator` changes | no |
 | `team_change` | `ClientUserinfoChanged` post, active players only | no |
 | `player_match_stats` | map-end snapshot beside `map_end` | no |
+| `player_weapon_stats` | map end or disconnect, from native MOD counters | no |
 | `player_death` | `player_die` post | bit `1` |
 | `flag_capture` | `ctf_base_touch` override, counts the deciding cap | bit `2` |
 | `player_sample` | `SV_Frame` post at `_sofbuddy_telemetry_sample_sec` | bit `4` |
@@ -71,6 +72,10 @@ per-tick/per-shot firehose:
 - Sum and average in the backend. Per-kill detail remains optional; a flag
   capture stays event-level because it is the only evidence for the deciding
   CTF cap.
+- Per-weapon frags/deaths are aggregated in RAM from `player_die` MOD values
+  and emitted once per occupancy as `player_weapon_stats`. The MOD grouping is
+  the same one SoFPlus uses for `.stats`/`.statsall`; teamkills stay in the
+  teamkill bucket and are not counted as weapon frags.
 - Every native player event carries `guid`, `ip`, `ping`, team, and the current
   cumulative counters. The labelling heuristics need these at the occupancy
   boundary, not a reconstructed log.

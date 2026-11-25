@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <array>
 #include <cctype>
 #include <deque>
 #include <string>
@@ -68,6 +69,48 @@ constexpr int kEngineClientStateSpawned = 3;
 constexpr int kEventCombat = 1;
 constexpr int kEventFlags = 2;
 constexpr int kEventSamples = 4;
+
+// MOD groups used by SoFPlus' sp_sv_info_client_mod and its .stats/.statsall
+// scripts. The producer aggregates the same frag/death counters natively so
+// the backend does not need to poll SoFPlus cvars or parse console output.
+constexpr int kWeaponCount = 17;
+const char* const kWeaponKeys[kWeaponCount] = {
+    "knife", "pistol", "magnum", "shotgun", "sniper", "machinepistol",
+    "assaultrifle", "machinegun", "slugthrower", "rocketlauncher",
+    "flamethrower", "mpg", "grenade", "c4", "claymore", "telefrag", "other",
+};
+const char* const kWeaponLabels[kWeaponCount] = {
+    "Knife", "Pistol", "Magnum", "Shotgun", "Sniper", "Machine pistol",
+    "Assault rifle", "Machine gun", "Slugthrower", "Rocket launcher",
+    "Flamethrower", "MPG", "Grenade", "C4", "Claymore", "Telefrag", "Other",
+};
+
+int WeaponIndexForMod(int mod) {
+    switch (mod) {
+        case 1:
+        case 2: return 0;   // knife slash / thrown
+        case 3: return 1;
+        case 4: return 2;
+        case 9: return 3;
+        case 7: return 4;
+        case 5: return 5;
+        case 6: return 6;
+        case 10:
+        case 11: return 7;
+        case 8:
+        case 37: return 8;
+        case 12:
+        case 13: return 9;
+        case 15:
+        case 16: return 10;
+        case 14: return 11;
+        case 36: return 12;
+        case 17: return 13;
+        case 18: return 14;
+        case 23: return 15;
+        default: return 16;  // world/environment/unknown/other MODs
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Safety helpers.
@@ -520,9 +563,44 @@ struct SlotState {
     int ping = 0;
     int pingMax = 0;
     std::string ip;
+    std::array<int, kWeaponCount> weaponFrags{};
+    std::array<int, kWeaponCount> weaponDeaths{};
 };
 
 SlotState g_slots[kMaxClients];
+
+bool HasWeaponStats(int slot) {
+    if (slot < 0 || slot >= kMaxClients)
+        return false;
+    for (int i = 0; i < kWeaponCount; ++i) {
+        if (g_slots[slot].weaponFrags[i] > 0 ||
+            g_slots[slot].weaponDeaths[i] > 0)
+            return true;
+    }
+    return false;
+}
+
+std::string BuildWeaponArray(int slot) {
+    std::string out = "[";
+    bool first = true;
+    for (int i = 0; i < kWeaponCount; ++i) {
+        const int frags = g_slots[slot].weaponFrags[i];
+        const int deaths = g_slots[slot].weaponDeaths[i];
+        if (frags <= 0 && deaths <= 0)
+            continue;
+        if (!first)
+            out += ",";
+        first = false;
+        JsonObj item;
+        item.AddStr("weapon", kWeaponKeys[i]);
+        item.AddStr("label", kWeaponLabels[i]);
+        item.AddInt("frags", frags);
+        item.AddInt("deaths", deaths);
+        out += item.Done();
+    }
+    out += "]";
+    return out;
+}
 
 const char* SideName(int team) {
     return team == 1 ? "blue" : team == 2 ? "red" : "";
@@ -1039,6 +1117,25 @@ void EmitPlayerStats(const std::string& matchUuid) {
     }
 }
 
+void EmitWeaponStats(const std::string& matchUuid, int slot) {
+    if (matchUuid.empty() || !HasWeaponStats(slot))
+        return;
+    PlayerSnapshot p;
+    if (!SnapshotSlot(slot, true, &p))
+        return;
+    JsonObj d;
+    AddPlayerSnapshotFields(d, p, false);
+    d.AddStr("guid", p.guid);
+    d.AddRaw("weapons", BuildWeaponArray(slot));
+    d.AddStr("source", "native_telemetry");
+    Emit("player_weapon_stats", d.Done(), matchUuid, p.guid, slot);
+}
+
+void EmitWeaponStatsForAll(const std::string& matchUuid) {
+    for (int slot = 0; slot < MaxClients(); ++slot)
+        EmitWeaponStats(matchUuid, slot);
+}
+
 void EmitMapEnd(const char* hint) {
     if (!g_map.loaded || !g_map.started || g_map.ended)
         return;
@@ -1100,6 +1197,7 @@ void EmitMapEnd(const char* hint) {
     const std::string matchUuid = g_map.matchUuid;
     Emit("map_end", d.Done(), matchUuid);
     EmitPlayerStats(matchUuid);
+    EmitWeaponStatsForAll(matchUuid);
 }
 
 void EmitPlayerConnect(const PlayerSnapshot& p) {
@@ -1249,6 +1347,22 @@ void EmitSelfTest() {
     pms.AddInt("ping_max", 47);
     pms.AddStr("source", "native_telemetry");
     Emit("player_match_stats", pms.Done(), match, "", 0);
+
+    JsonObj ws;
+    ws.AddStr("name", "TelemetrySelfTest");
+    ws.AddStr("team", "blue");
+    ws.AddInt("team_number", 1);
+    ws.AddBool("spectator", false);
+    ws.AddStr("ip", "203.0.113.7");
+    ws.AddInt("ping", 42);
+    ws.AddInt("active_playtime_sec", 60);
+    ws.AddRaw(
+        "weapons",
+        "[{\"weapon\":\"shotgun\",\"label\":\"Shotgun\",\"frags\":5,"
+        "\"deaths\":2},{\"weapon\":\"knife\",\"label\":\"Knife\",\"frags\":1,"
+        "\"deaths\":0}]");
+    ws.AddStr("source", "native_telemetry");
+    Emit("player_weapon_stats", ws.Done(), match, "", 0);
 
     JsonObj me;
     me.AddStr("map", "test/selftest");
@@ -1500,6 +1614,7 @@ void ClientDisconnectPreImpl(void*& ent) {
     PlayerSnapshot p;
     if (SnapshotSlot(slot, false, &p))
         EmitPlayerDisconnect(p);
+    EmitWeaponStats(CurrentMatchUuid(), slot);
     g_slots[slot] = SlotState();
 }
 
@@ -1521,12 +1636,20 @@ void PlayerDiePostImpl(void* self, void*, void* attacker, int mod, float*) {
 
     EnsureMapStarted();
     if (g_slots[victimSlot].mapSerial == g_mapSerial) {
+        const int weapon = WeaponIndexForMod(mod);
+        ++g_slots[victimSlot].weaponDeaths[weapon];
         ++g_slots[victimSlot].deaths;
         if (suicide)
             ++g_slots[victimSlot].suicides;
         if (teamkill && killerSlot >= 0 &&
             g_slots[killerSlot].mapSerial == g_mapSerial)
             ++g_slots[killerSlot].teamkills;
+        // Match SoFPlus' sp_sv_info_client_mod: teamkills are counted in the
+        // teamkill bucket, not as weapon frags. A world/environment death has
+        // no attacker and only increments the victim's weapon-death counter.
+        if (!suicide && !teamkill && killerSlot >= 0 &&
+            g_slots[killerSlot].mapSerial == g_mapSerial)
+            ++g_slots[killerSlot].weaponFrags[weapon];
     }
 
     if (EventEnabled(kEventCombat))

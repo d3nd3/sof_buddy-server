@@ -464,7 +464,9 @@ when the SoFPlus counter misses it.
 Player snapshots carry GUID, IP, ping and both current and total score. Active
 playtime excludes spectator time, and a spectate round-trip does not erase the
 score accumulated before it, so later player labelling and career averages see
-only actual play.
+only actual play. Per-weapon frags and deaths are aggregated from `player_die`
+MODs and emitted once per occupancy, using the same grouping as SoFPlus
+`.stats`/`.statsall`.
 
 ```
 telemetry_selftest     queue one synthetic session/map/player/flag sequence
