@@ -477,8 +477,10 @@ rather than recording the live one. Files live under
 `<userdir>/<dir>/session-<uuid>.jsonl` and are pulled by `sof-db-push` or an
 SSH spool puller.
 
-Details: [`src/features/telemetry/README.md`](src/features/telemetry/README.md)
-and [`docs/TELEMETRY.md`](docs/TELEMETRY.md)
+Details: [`src/features/telemetry/README.md`](src/features/telemetry/README.md),
+[`docs/TELEMETRY.md`](docs/TELEMETRY.md), and the
+[detailed-collection guide](docs/TELEMETRY_DETAIL.md) for optional combat
+detail, damage/weapon-fire plans, accuracy caveats, and safe testing.
 
 ---
 

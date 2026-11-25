@@ -8,7 +8,9 @@
 >
 > This document decides where each field/event comes from so the feature does
 > not grow two competing data paths. `src/features/telemetry/README.md` is the
-> operational reference (cvars, spool layout, thread model).
+> operational reference (cvars, spool layout, thread model). For enabling
+> optional detail later, and for what still needs new hooks, see
+> [`TELEMETRY_DETAIL.md`](TELEMETRY_DETAIL.md).
 
 ## Decision
 
@@ -135,13 +137,13 @@ for chat, team change, damage, or weapon fire.
 | `player_disconnect` | `ClientDisconnect`; snapshot before clearing | `_sp_sv_on_client_disconnect`, `disconnect\...` log | **Native.** Emit final player stats. |
 | `team_change` | `ClientUserinfoChanged` / `PutClientInServer`; `gclient->resp.team`, userinfo | `_sp_sv_on_client_userinfo_change`, `_sp_sv_info_client_team` | **Native.** SoFPlus has no dedicated event. |
 | `player_match_stats` | Map-end snapshot of `gclient` fields | `sp_sv_info_client <slot>` | **Native reads.** Cross-check with SoFPlus only if a field is hard to read. |
-| `player_kill`, `player_death`, `player_suicide`, `player_teamkill` | `player_die` Post; victim/killer, MOD, team | `_sp_sv_on_client_die`, `die\...` log, `sp_sv_info_client_mod` | **Native.** `skinteam_quiet` keeps the override and now dispatches the shared Post callbacks. |
+| `player_death` | `player_die` Post; victim/killer, MOD, teamkill/suicide flags | `_sp_sv_on_client_die`, `die\...` log, `sp_sv_info_client_mod` | **Native.** Implemented as one per-death event (optional bit `1`). Separate `player_kill`/`player_suicide`/`player_teamkill` events are not emitted. |
 | `flag_capture` | `ctf_base_touch` override; `ent->ctf_flags`, teams | `_sp_sv_on_ctf_flag_capture`, `flag\...` log, `_sp_sv_info_flag_*` | **Native.** This is also the reliable source for the final cap. Recover/drop are not emitted yet. |
-| `chat`, `chat_team` | `ClientCommand` (`say`, `say_team`) | none | **Native only.** Not implemented in the lean profile. |
-| `admin_command`, `map_vote` | `ClientCommand` / console command path | SoFPlus vote commands | **Native** for the event; SoFPlus only for config. |
-| `damage`, `weapon_fire` | Combat functions (optional) | none | **Native optional.** Keep off in the lean profile. |
-| `player_sample` | `SV_Frame` Post; `gclient` fields | `sp_sv_info_client` | **Native reads** at the `_sofbuddy_telemetry_sample_sec` cadence. Optional. |
-| `server_metrics` | `G_RunFrame`; server/level counters | `sp_sv_info_frames` | **Native.** Optional cadence. |
+| `chat`, `chat_team` | `ClientCommand` (`say`, `say_team`) | none | **Not implemented.** Planned native observer. |
+| `admin_command`, `map_vote` | `ClientCommand` / console command path | SoFPlus vote commands | **Not implemented.** Planned native observer. |
+| `damage`, `weapon_fire` | Combat functions (optional) | none | **Not implemented.** Planned native hooks; see [`TELEMETRY_DETAIL.md`](TELEMETRY_DETAIL.md). |
+| `player_sample` | `SV_Frame` Post; `gclient` fields | `sp_sv_info_client` | **Native reads** at the `_sofbuddy_telemetry_sample_sec` cadence. Optional bit `4`. |
+| `server_metrics` | `G_RunFrame`; server/level counters | `sp_sv_info_frames` | **Other collectors**, not the native telemetry producer. |
 | GUID / name | Profiles registry + userinfo | `_sp_sv_info_client_guid`, `_sp_sv_info_client_name` | **Native profiles.** Already solved by the profiles feature. |
 | Country | IP from `netadr` + GeoIP | `_sp_sv_info_client_country` | **SoFPlus/GeoIP fallback.** Not needed for the lean profile. |
 | PPM / anti-cheat state | Optional native counters | `_sp_sv_info_client_ppm_*`, `_sp_sv_info_client_ac` | **SoFPlus fallback.** Derived data, not event-critical. |

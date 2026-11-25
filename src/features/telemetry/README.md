@@ -80,6 +80,23 @@ Telemetry deliberately observes existing ownership instead of replacing it:
   SoFPlus replaces the spawned base's touch pointer but calls the original
   body, so this still sees every capture, including the deciding cap.
 
+## Detailed collection later
+
+The default profile is intentionally lean. For the current optional families,
+what is not implemented yet, and how to add damage/weapon-fire/accuracy detail
+without storing a per-shot firehose, see
+[`docs/TELEMETRY_DETAIL.md`](../../../docs/TELEMETRY_DETAIL.md).
+
+Current mask summary:
+
+| Bit | Family | Status |
+|---:|---|---|
+| `1` | per-death `player_death` | implemented |
+| `2` | `flag_capture` | implemented |
+| `4` | `player_sample` cadence | implemented |
+| `8` | `damage` | planned, no-op today |
+| `16` | `weapon_fire` | planned, no-op today |
+
 ## Score, spectator and labelling
 
 - `active_playtime_sec` / `playtime_sec` exclude spectator time.
