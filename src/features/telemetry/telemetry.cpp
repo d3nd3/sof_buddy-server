@@ -1940,7 +1940,8 @@ void SvFramePostImpl(int) {
     // example during a server-side map change), detect the new mapname here so
     // g_map.ended cannot permanently stop telemetry.
     const char* liveMap = Telemetry_CvarString(g_cvMapname, "");
-    if (liveMap && liveMap[0] && g_map.loaded && g_map.map != liveMap)
+    if (liveMap && liveMap[0] && g_map.loaded && g_map.map != liveMap &&
+        !LevelIntermission())
         OnSpawnEntitiesImpl(liveMap);
 
     if (!g_map.loaded || g_map.ended)
