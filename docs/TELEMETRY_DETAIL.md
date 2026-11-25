@@ -67,8 +67,18 @@ set _sofbuddy_telemetry_sample_sec "30"
 ```
 
 Adds periodic `player_sample` snapshots (frags, deaths, score, flags, ping,
-active playtime). `30` seconds is the recommended cadence; `5` seconds is for a
-temporary live dashboard, not long-term storage.
+active playtime). `30` seconds is the storage-light default for a presence
+dashboard. For the match scoreboard timeline/playback use `38` (flags +
+samples + accuracy) and a shorter cadence such as `5` seconds:
+
+```text
+set _sofbuddy_telemetry_events "38"
+set _sofbuddy_telemetry_sample_sec "5"
+```
+
+At 16 players this is about 3 samples per second, which is manageable for a
+public scoreboard scrubber. Historical matches without samples cannot be
+backfilled from this source.
 
 Cvars are read live, so changing the mask does not require a restart. The
 feature itself must be compiled into the DLL (experimental profile today).
