@@ -42,6 +42,12 @@
     "priority": 10
   },
   {
+    "function": "bodyhuman_damage",
+    "callback": "Telemetry_BodyDamagePost",
+    "phase": "Post",
+    "priority": 10
+  },
+  {
     "function": "ctf_base_touch",
     "callback": "Telemetry_CtfBaseTouch",
     "override": true

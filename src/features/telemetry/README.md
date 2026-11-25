@@ -15,7 +15,7 @@ Native JSONL event stream for `sof-db-backend`.
 | `team_change` | `ClientUserinfoChanged` changes `resp.team` while active |
 | `player_match_stats` | Map end, one per connected slot |
 | `player_weapon_stats` | Map end or disconnect, per-weapon MOD frags/deaths |
-| `player_weapon_accuracy_stats` | Map end or disconnect, per-weapon shots/hits/damage (optional, bit 32) |
+| `player_weapon_accuracy_stats` | Map end or disconnect, per-weapon shots/hits/damage, exact gore zones and headshot kills (optional, bit 32) |
 | `player_death` | `player_die` Post (optional, `events` bit 1) |
 | `flag_capture` | `ctf_base_touch` succeeds (optional, bit 2) |
 | `player_sample` | Configured cadence (optional, bit 4) |

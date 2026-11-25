@@ -64,6 +64,12 @@ constexpr unsigned kEngineClientStateOfs = 0x00;
 constexpr unsigned kEngineClientNetaddrOfs = 21124;
 constexpr int kEngineClientStateSpawned = 3;
 
+// Human gore-zone table. The retail game DLL keeps the last selected front
+// zone index and the 26 zone-name pointers at these RVAs.
+constexpr unsigned kRvaLastFrontZone = 0x130650;
+constexpr unsigned kRvaHumanZoneNames = 0x132F78;
+constexpr int kHumanZoneCount = 26;
+
 constexpr int kEventCombat = 1;
 constexpr int kEventFlags = 2;
 constexpr int kEventSamples = 4;
@@ -182,6 +188,57 @@ HMODULE GameMod() {
 
 bool IsValidModuleRva(HMODULE h, unsigned rva, std::size_t size) {
     return h && IsSafeMemoryBlock(reinterpret_cast<char*>(h) + rva, size);
+}
+
+int LastHumanHitZone() {
+    HMODULE h = GameMod();
+    if (!IsValidModuleRva(h, kRvaLastFrontZone, sizeof(int)))
+        return -1;
+    return *reinterpret_cast<const int*>(
+        reinterpret_cast<char*>(h) + kRvaLastFrontZone);
+}
+
+const char* HumanZoneName(int zone) {
+    if (zone < 0 || zone >= kHumanZoneCount)
+        return "";
+    HMODULE h = GameMod();
+    if (!IsValidModuleRva(h, kRvaHumanZoneNames,
+                          sizeof(void*) * kHumanZoneCount))
+        return "";
+    char* const* names = reinterpret_cast<char* const*>(
+        reinterpret_cast<char*>(h) + kRvaHumanZoneNames);
+    const char* name = names[zone];
+    return IsSafeMemoryBlock(name, 1) ? name : "";
+}
+
+bool IsHeadZone(int zone) {
+    const char* name = HumanZoneName(zone);
+    return name && std::strncmp(name, "GZ_HEAD", 7) == 0;
+}
+
+enum ZoneBucket {
+    kZoneHead,
+    kZoneNeck,
+    kZoneTorso,
+    kZoneGroin,
+    kZoneLimb,
+    kZoneBucketCount,
+};
+
+ZoneBucket BucketForZone(int zone) {
+    const char* name = HumanZoneName(zone);
+    if (name && std::strncmp(name, "GZ_HEAD", 7) == 0)
+        return kZoneHead;
+    if (name && std::strcmp(name, "GZ_NECK") == 0)
+        return kZoneNeck;
+    if (name && std::strcmp(name, "GZ_GROIN") == 0)
+        return kZoneGroin;
+    if (name &&
+        (std::strncmp(name, "GZ_ARM", 6) == 0 ||
+         std::strncmp(name, "GZ_LEG", 6) == 0 ||
+         std::strncmp(name, "GZ_FOOT", 7) == 0))
+        return kZoneLimb;
+    return kZoneTorso;
 }
 
 HMODULE ExeMod() {
@@ -618,6 +675,13 @@ struct SlotState {
     // Unclaimed shots per weapon. The first damage event after a shot claims
     // one; later pellets/splash from the same shot cannot push hits > shots.
     std::array<int, kWeaponCount> weaponPendingHit{};
+    std::array<std::array<int, kHumanZoneCount>, kWeaponCount>
+        weaponZoneHits{};
+    std::array<int, kWeaponCount> weaponHeadshotKills{};
+    // Zone of the most recent human-body damage event for this player. Read by
+    // player_die to classify the killing blow.
+    int lastHitZone = -1;
+    std::uint32_t lastHitFrame = 0;
 };
 
 SlotState g_slots[kMaxClients];
@@ -661,10 +725,47 @@ bool HasAccuracyStats(int slot) {
     for (int i = 0; i < kWeaponCount; ++i) {
         if (g_slots[slot].weaponShots[i] > 0 ||
             g_slots[slot].weaponDamageEvents[i] > 0 ||
-            g_slots[slot].weaponDamage[i] > 0)
+            g_slots[slot].weaponDamage[i] > 0 ||
+            g_slots[slot].weaponHeadshotKills[i] > 0)
             return true;
+        for (int z = 0; z < kHumanZoneCount; ++z) {
+            if (g_slots[slot].weaponZoneHits[i][z] > 0)
+                return true;
+        }
     }
     return false;
+}
+
+std::string BuildZoneArray(
+    const std::array<int, kHumanZoneCount>& zones) {
+    std::string out = "[";
+    bool first = true;
+    for (int z = 0; z < kHumanZoneCount; ++z) {
+        if (zones[z] <= 0)
+            continue;
+        const char* name = HumanZoneName(z);
+        if (!name || !name[0])
+            continue;
+        if (!first)
+            out += ",";
+        first = false;
+        JsonObj item;
+        item.AddStr("zone", name);
+        item.AddInt("hits", zones[z]);
+        out += item.Done();
+    }
+    out += "]";
+    return out;
+}
+
+int HeadshotHits(
+    const std::array<int, kHumanZoneCount>& zones) {
+    int total = 0;
+    for (int z = 0; z < kHumanZoneCount; ++z) {
+        if (IsHeadZone(z))
+            total += zones[z];
+    }
+    return total;
 }
 
 std::string BuildAccuracyArray(int slot) {
@@ -672,8 +773,10 @@ std::string BuildAccuracyArray(int slot) {
     bool first = true;
     for (int i = 0; i < kWeaponCount; ++i) {
         const SlotState& s = g_slots[slot];
+        const std::string zones = BuildZoneArray(s.weaponZoneHits[i]);
         if (s.weaponShots[i] <= 0 && s.weaponDamageEvents[i] <= 0 &&
-            s.weaponDamage[i] <= 0)
+            s.weaponDamage[i] <= 0 && s.weaponHeadshotKills[i] <= 0 &&
+            zones == "[]")
             continue;
         if (!first)
             out += ",";
@@ -685,6 +788,10 @@ std::string BuildAccuracyArray(int slot) {
         item.AddInt("hits", s.weaponHits[i]);
         item.AddInt("damage_events", s.weaponDamageEvents[i]);
         item.AddInt("damage", s.weaponDamage[i]);
+        item.AddInt("headshot_hits", HeadshotHits(s.weaponZoneHits[i]));
+        item.AddInt("headshot_kills", s.weaponHeadshotKills[i]);
+        if (zones != "[]")
+            item.AddRaw("zones", zones);
         out += item.Done();
     }
     out += "]";
@@ -1482,9 +1589,14 @@ void EmitSelfTest() {
     wa.AddRaw(
         "weapons",
         "[{\"weapon\":\"shotgun\",\"label\":\"Shotgun\",\"shots\":20,"
-        "\"hits\":11,\"damage_events\":11,\"damage\":405},"
+        "\"hits\":11,\"damage_events\":11,\"damage\":405,"
+        "\"headshot_hits\":4,\"headshot_kills\":1,"
+        "\"zones\":[{\"zone\":\"GZ_HEAD_FRONT\",\"hits\":4},"
+        "{\"zone\":\"GZ_CHEST_FRONT\",\"hits\":7}]},"
         "{\"weapon\":\"knife\",\"label\":\"Knife\",\"shots\":3,"
-        "\"hits\":2,\"damage_events\":2,\"damage\":80}]");
+        "\"hits\":2,\"damage_events\":2,\"damage\":80,"
+        "\"headshot_hits\":0,\"headshot_kills\":0,"
+        "\"zones\":[{\"zone\":\"GZ_GROIN\",\"hits\":2}]}]");
     wa.AddStr("source", "native_telemetry");
     Emit("player_weapon_accuracy_stats", wa.Done(), match, "", 0);
 
@@ -1795,8 +1907,15 @@ void PlayerDiePostImpl(void* self, void*, void* attacker, int mod, float*) {
         // teamkill bucket, not as weapon frags. A world/environment death has
         // no attacker and only increments the victim's weapon-death counter.
         if (!suicide && !teamkill && killerSlot >= 0 &&
-            g_slots[killerSlot].mapSerial == g_mapSerial)
+            g_slots[killerSlot].mapSerial == g_mapSerial) {
             ++g_slots[killerSlot].weaponFrags[weapon];
+            const int zone = g_slots[victimSlot].lastHitZone;
+            const std::uint32_t frame = LevelFrame();
+            if (zone >= 0 && zone < kHumanZoneCount &&
+                IsHeadZone(zone) && frame <= g_slots[victimSlot].lastHitFrame + 1)
+                ++g_slots[killerSlot].weaponHeadshotKills[weapon];
+        }
+        g_slots[victimSlot].lastHitZone = -1;
     }
 
     if (EventEnabled(kEventCombat))
@@ -1817,6 +1936,37 @@ bool PlayerSlotForEdict(void* ent, int* slot) {
         return false;
     *slot = n;
     return true;
+}
+
+// Valid active enemy-player damage pair for per-weapon accuracy/hit-zone
+// stats. Team 0 is used by non-team modes, so only reject a known same-team
+// pair; self-damage is always rejected.
+bool PlayerPairForDamage(void* attacker, void* victim, int* attackerSlot,
+                         int* victimSlot) {
+    if (!attacker || !victim || attacker == victim || !attackerSlot ||
+        !victimSlot)
+        return false;
+    if (!PlayerSlotForEdict(attacker, attackerSlot) ||
+        !PlayerSlotForEdict(victim, victimSlot))
+        return false;
+
+    SlotState& as = g_slots[*attackerSlot];
+    SlotState& vs = g_slots[*victimSlot];
+    if (as.mapSerial != g_mapSerial || vs.mapSerial != g_mapSerial)
+        return false;
+    if (!as.active || as.spectator || !vs.active || vs.spectator)
+        return false;
+
+    void* attackerClient = ClientForEnt(attacker);
+    void* victimClient = ClientForEnt(victim);
+    if (!attackerClient || !victimClient)
+        return false;
+    const int attackerTeam =
+        ReadIntOr(static_cast<char*>(attackerClient) + kClientTeamOfs, 0);
+    const int victimTeam =
+        ReadIntOr(static_cast<char*>(victimClient) + kClientTeamOfs, 0);
+    return attackerTeam == 0 || victimTeam == 0 ||
+           attackerTeam != victimTeam;
 }
 
 void WeaponAttackPreImpl(void* thisp, int attack, void* attacker, void*,
@@ -1852,30 +2002,10 @@ void DamagePreImpl(void* targ, void*, void* attacker, float*, float*, float*,
 
     int attackerSlot = -1;
     int victimSlot = -1;
-    if (!PlayerSlotForEdict(attacker, &attackerSlot) ||
-        !PlayerSlotForEdict(targ, &victimSlot))
+    if (!PlayerPairForDamage(attacker, targ, &attackerSlot, &victimSlot))
         return;
 
     SlotState& as = g_slots[attackerSlot];
-    SlotState& vs = g_slots[victimSlot];
-    if (as.mapSerial != g_mapSerial || vs.mapSerial != g_mapSerial)
-        return;
-    if (!as.active || as.spectator || !vs.active || vs.spectator)
-        return;
-
-    // Team damage never counts toward accuracy. Team 0 is used by non-team
-    // modes, so only reject a known same-team pair.
-    void* attackerClient = ClientForEnt(attacker);
-    void* victimClient = ClientForEnt(targ);
-    if (!attackerClient || !victimClient)
-        return;
-    const int attackerTeam =
-        ReadIntOr(static_cast<char*>(attackerClient) + kClientTeamOfs, 0);
-    const int victimTeam =
-        ReadIntOr(static_cast<char*>(victimClient) + kClientTeamOfs, 0);
-    if (attackerTeam != 0 && victimTeam != 0 && attackerTeam == victimTeam)
-        return;
-
     const int weapon = WeaponIndexForMod(mod);
     ++as.weaponDamageEvents[weapon];
     as.weaponDamage[weapon] += damage;
@@ -1883,6 +2013,40 @@ void DamagePreImpl(void* targ, void*, void* attacker, float*, float*, float*,
         --as.weaponPendingHit[weapon];
         ++as.weaponHits[weapon];
     }
+}
+
+void BodyDamagePostImpl(int, void* thisp, void* victim, void*, void* attacker,
+                        float*, float* point, float*, int damage, int, int,
+                        int mod, float, float) {
+    (void)thisp;
+    (void)point;
+    if (!g_initialized || !EventEnabled(kEventAccuracy))
+        return;
+    if (!g_map.started || g_map.ended || damage <= 0 || !victim)
+        return;
+
+    int victimSlot = -1;
+    if (!PlayerSlotForEdict(victim, &victimSlot))
+        return;
+    SlotState& vs = g_slots[victimSlot];
+    if (vs.mapSerial != g_mapSerial || !vs.active || vs.spectator)
+        return;
+
+    const int zone = LastHumanHitZone();
+    if (zone < 0 || zone >= kHumanZoneCount)
+        return;
+
+    // Remember the last zone even for world/self damage; player_die only uses
+    // it for a valid enemy kill.
+    vs.lastHitZone = zone;
+    vs.lastHitFrame = LevelFrame();
+
+    int attackerSlot = -1;
+    int victimAgain = -1;
+    if (!PlayerPairForDamage(attacker, victim, &attackerSlot, &victimAgain))
+        return;
+    const int weapon = WeaponIndexForMod(mod);
+    ++g_slots[attackerSlot].weaponZoneHits[weapon][zone];
 }
 
 void CtfBaseTouchImpl(void* self, void* other, void* plane, void* surf,
@@ -2037,6 +2201,17 @@ void Telemetry_DamagePre(void*& targ, void*& inflictor, void*& attacker,
                          float& penetrate, float& absorb) {
     DamagePreImpl(targ, inflictor, attacker, dir, point, normal, damage,
                   knockback, dflags, mod, penetrate, absorb);
+}
+
+int Telemetry_BodyDamagePost(int result, void* thisp, void* victim,
+                             void* inflictor, void* attacker, float* dir,
+                             float* point, float* origin, int damage,
+                             int knockback, int dflags, int mod,
+                             float penetrate, float absorb) {
+    BodyDamagePostImpl(result, thisp, victim, inflictor, attacker, dir, point,
+                       origin, damage, knockback, dflags, mod, penetrate,
+                       absorb);
+    return result;
 }
 
 void Telemetry_CtfBaseTouch(void* self, void* other, void* plane, void* surf,

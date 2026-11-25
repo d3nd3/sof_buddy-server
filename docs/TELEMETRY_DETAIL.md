@@ -94,7 +94,6 @@ occupancy at map end or disconnect. It is not a per-death record.
 
 - raw per-shot `weapon_fire` events;
 - raw per-hit `damage` events;
-- headshot/hit-location data;
 - per-victim damage attribution or hit timelines;
 - per-tick positions, velocity or view angles (the `.sbd` demo recorder covers
   that separately);
@@ -109,12 +108,13 @@ events are only needed for hit timelines or per-victim analysis.
 
 ## Accuracy aggregate (implemented)
 
-The producer installs two native hooks when the feature is enabled:
+The producer installs three native hooks when the feature is enabled:
 
 | Hook | RVA | Role |
 |---|---:|---|
 | `CWorldWeapons::attack` | `0x659C0` | one call = one shot |
 | `t_damage` | `0x8BB10` | valid enemy-player damage = hit/damage |
+| human body damage | `0x2B8E0` | exact gore zone of each human hit |
 
 `CWorldWeapons::attack` receives an `attacks_e` value (`ATK_SHOTGUN`,
 `ATK_ROCKET`, ...), which is mapped to the same weapon keys as
@@ -136,6 +136,27 @@ Rules:
 Accuracy is `hits / shots`. This is trigger-pull accuracy for shotguns, not
 pellet accuracy; document that when comparing weapons.
 
+### Exact hit zones and headshot kills
+
+The retail human body damage routine (`0x2B8E0`) resolves the hit against the
+posed gore bolts and stores the selected front-zone index in the game DLL
+global at RVA `0x130650`. The 26 human zone names are at RVA `0x132F78`. The
+producer reads both after the body damage call:
+
+- every valid enemy hit increments the exact zone for that weapon, e.g.
+  `GZ_HEAD_FRONT`, `GZ_CHEST_FRONT`, `GZ_GROIN`;
+- `headshot_hits` is the sum of `GZ_HEAD_FRONT` + `GZ_HEAD_BACK`;
+- a kill is counted as a `headshot_kill` only when the victim's most recent
+  damage event was a head zone in the same server frame as `player_die`;
+- head/neck/torso/groin/limb buckets are derived from the exact zone names.
+
+The zone is resolved by the engine's posed model, not by a raw height guess, so
+crouching, leaning and model differences are handled by the gore code. Damage
+paths that take a special gore branch (for example some fire/explosion/melee
+paths) may not refresh the front-zone global; those hits fall back to the last
+resolved zone. Treat exact zones as authoritative for bullet/projectile hits
+and approximate for special damage types.
+
 ### Existing aggregate payload
 
 ```json
@@ -149,9 +170,17 @@ pellet accuracy; document that when comparing weapons.
     "team": "blue",
     "weapons": [
       {"weapon": "shotgun", "label": "Shotgun", "shots": 40, "hits": 22,
-       "damage_events": 22, "damage": 810},
+       "damage_events": 22, "damage": 810, "headshot_hits": 6,
+       "headshot_kills": 2,
+       "zones": [{"zone": "GZ_HEAD_FRONT", "hits": 4},
+                 {"zone": "GZ_HEAD_BACK", "hits": 2},
+                 {"zone": "GZ_CHEST_FRONT", "hits": 11},
+                 {"zone": "GZ_GROIN", "hits": 1}]},
       {"weapon": "rocketlauncher", "label": "Rocket launcher", "shots": 7,
-       "hits": 6, "damage_events": 11, "damage": 540}
+       "hits": 6, "damage_events": 11, "damage": 540,
+       "headshot_hits": 1, "headshot_kills": 0,
+       "zones": [{"zone": "GZ_HEAD_FRONT", "hits": 1},
+                 {"zone": "GZ_CHEST_BACK", "hits": 5}]}
     ],
     "source": "native_telemetry"
   }
@@ -289,6 +318,9 @@ Accuracy aggregate — done:
 - [x] Emit one summary event at map end/disconnect.
 - [x] Add backend migration `010_weapon_accuracy.sql`, ingest projection,
   match/career views, public/admin columns.
+- [x] Hook the human body damage routine and map the exact `GZ_*` zone table.
+- [x] Count per-weapon headshot hits and killing-blow headshot kills.
+- [x] Add backend migration `011_weapon_hitzones.sql`, zone views and UI.
 - [x] Validate the event through `telemetry_selftest` and the backend tests.
 
 Raw events — still open:

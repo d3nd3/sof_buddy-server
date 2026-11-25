@@ -52,7 +52,7 @@ counter can miss the final cap.
 | `team_change` | `ClientUserinfoChanged` post, active players only | no |
 | `player_match_stats` | map-end snapshot beside `map_end` | no |
 | `player_weapon_stats` | map end or disconnect, from native MOD counters | no |
-| `player_weapon_accuracy_stats` | map end or disconnect, from `attack`/`t_damage` counters | bit `32` |
+| `player_weapon_accuracy_stats` | map end or disconnect, from `attack`/`t_damage`/body-damage counters | bit `32` |
 | `player_death` | `player_die` post | bit `1` |
 | `flag_capture` | `ctf_base_touch` override, counts the deciding cap | bit `2` |
 | `player_sample` | `SV_Frame` post at `_sofbuddy_telemetry_sample_sec` | bit `4` |
@@ -140,7 +140,7 @@ for chat, team change, damage, or weapon fire.
 | `player_disconnect` | `ClientDisconnect`; snapshot before clearing | `_sp_sv_on_client_disconnect`, `disconnect\...` log | **Native.** Emit final player stats. |
 | `team_change` | `ClientUserinfoChanged` / `PutClientInServer`; `gclient->resp.team`, userinfo | `_sp_sv_on_client_userinfo_change`, `_sp_sv_info_client_team` | **Native.** SoFPlus has no dedicated event. |
 | `player_match_stats` | Map-end snapshot of `gclient` fields | `sp_sv_info_client <slot>` | **Native reads.** Cross-check with SoFPlus only if a field is hard to read. |
-| `player_weapon_accuracy_stats` | `CWorldWeapons::attack` Pre + `t_damage` Pre; aggregate in RAM | none | **Native.** Optional bit `32`; one event per occupancy, no raw shot/damage stream. |
+| `player_weapon_accuracy_stats` | `CWorldWeapons::attack` Pre + `t_damage` Pre + human body damage Post; aggregate in RAM | none | **Native.** Optional bit `32`; includes exact `GZ_*` hit zones and headshot kills, one event per occupancy, no raw shot/damage stream. |
 | `player_death` | `player_die` Post; victim/killer, MOD, teamkill/suicide flags | `_sp_sv_on_client_die`, `die\...` log, `sp_sv_info_client_mod` | **Native.** Implemented as one per-death event (optional bit `1`). Separate `player_kill`/`player_suicide`/`player_teamkill` events are not emitted. |
 | `flag_capture` | `ctf_base_touch` override; `ent->ctf_flags`, teams | `_sp_sv_on_ctf_flag_capture`, `flag\...` log, `_sp_sv_info_flag_*` | **Native.** This is also the reliable source for the final cap. Recover/drop are not emitted yet. |
 | `chat`, `chat_team` | `ClientCommand` (`say`, `say_team`) | none | **Not implemented.** Planned native observer. |

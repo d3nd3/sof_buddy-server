@@ -531,6 +531,43 @@ functions:
       - type: float
         name: absorb
 
+  # Human-body damage handler. It resolves the exact gore zone of a hit and
+  # leaves the selected front-zone index in the game DLL global 0x50130650.
+  # Hook Post so that global belongs to this damage call.
+  - name: bodyhuman_damage
+    module: GameDll
+    identifier: "0x2B8E0"
+    return_type: int
+    calling_convention: __thiscall
+    detour_len: 0
+    params:
+      - type: void*
+        name: thisp
+      - type: void*
+        name: victim
+      - type: void*
+        name: inflictor
+      - type: void*
+        name: attacker
+      - type: float*
+        name: dir
+      - type: float*
+        name: point
+      - type: float*
+        name: origin
+      - type: int
+        name: damage
+      - type: int
+        name: knockback
+      - type: int
+        name: dflags
+      - type: int
+        name: mod
+      - type: float
+        name: penetrate
+      - type: float
+        name: absorb
+
   # SV_Configstring. CS_PLAYERSKINS (0x587) is name\team\skin\bit. A leading
   # * on team is the client "doesn't recognise teamname" line.
   - name: configstring
