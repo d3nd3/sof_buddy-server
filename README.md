@@ -454,8 +454,13 @@ once per occupancy, not a per-shot stream.
 ```
 set _sofbuddy_telemetry "1"
 set _sofbuddy_telemetry_dir "telemetry/spool"
-set _sofbuddy_telemetry_events "34"   # flags (2) + accuracy (32)
+set _sofbuddy_telemetry_events "38"   # flags (2) + samples (4) + accuracy (32)
+set _sofbuddy_telemetry_sample_sec "5"
 ```
+
+`38` gives the backend match scoreboard a 5-second player-state timeline. Drop
+bit `4` and use a longer cadence if storage is tight; historical matches cannot
+be backfilled.
 
 The game thread only serializes an event and appends it to a bounded queue. A
 background writer owns the spool file, so a stalled disk or unreachable
