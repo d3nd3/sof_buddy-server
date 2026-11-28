@@ -30,6 +30,7 @@ Per client, per recorded tick, after the stock `ClientEndServerFrame` has run
 | `entity_state_t` (116 B) | `edict_t.s`, `ent+0` | body origin/angles, model/skin/frame, effects/events |
 | slot, frame, level time | game globals | grouping and playback clock |
 | name, userinfo, spectator flag | `gclient_t.pers`, `client+0xCC` | roster without needing configstrings |
+| active/spectator state | `gclient_t.resp.spectator`, `client+800` | current mode; falls back to `pers.spectator` (`client+0x2DC`) when unavailable |
 
 The two pointer fields inside `player_state_t` (`gun`, `bod`) are process-local;
 the recorder zeroes them on disk. Everything else is copied verbatim. The
@@ -111,7 +112,10 @@ first frame after recording starts. `EVENT` is used by `svdemo_mark`;
 chat/join/leave kinds are reserved.
 
 A balanced `END` chunk is written on stop, map change, size cap, disable,
-shutdown and write error, so a truncated file is detectable.
+shutdown, idle stop and write error, so a truncated file is detectable.
+Automatic recordings that never see damage or a frag are discarded instead of
+being published, so an idle spectator/limbo/test client cannot create an empty
+replay.
 
 ### Size
 
@@ -142,11 +146,18 @@ All `ARCHIVE`, read live:
 | Cvar | Default | Meaning |
 |---|---:|---|
 | `_sofbuddy_svdemo` | `1` | Master switch. `0` stops an active recording and refuses new ones. |
-| `_sofbuddy_svdemo_auto` | `0` | Start a new file on the first client frame of each map. |
+| `_sofbuddy_svdemo_auto` | `0` | Start automatically when a spawned, non-spectator player shows actual play (movement, damage or a frag). |
 | `_sofbuddy_svdemo_entities` | `1` | Include `entity_state_t` (body/model/effects). |
 | `_sofbuddy_svdemo_interval` | `1` | Record every Nth server frame (1 = every 100 ms tick). |
 | `_sofbuddy_svdemo_max_mb` | `64` | Per-file cap in MiB; `0` = unlimited. |
 | `_sofbuddy_svdemo_dir` | `demos` | Directory under the engine userdir. |
+
+Automatic mode does not start on the first client frame. It waits for a client
+that the engine has spawned and the game does not consider a spectator, and
+then requires either sustained horizontal movement, a health change or a frag
+gain. Single teleports/intermission moves do not count. If no damage or frag
+ever occurs, the automatic file is removed at stop. A recording also stops
+after 15 seconds with no live non-spectator player left.
 
 Files land in `<FS_Userdir()>/<_sofbuddy_svdemo_dir>/<name>.sbd`. On a typical
 Windows server that is `User/demos/…`; the engine creates the directory.

@@ -9,4 +9,7 @@ server configstrings so a renderer can resolve model/skin/image indexes. It does
 not modify gameplay, does not touch the network channel, and buffers writes so
 a 10 Hz recording does not block the tick. Files are written under
 `<userdir>/<dir>/<name>.sbd`; recording is manual (`svdemo_start`) or automatic
-per map (`_sofbuddy_svdemo_auto 1`).
+(`_sofbuddy_svdemo_auto 1`). Automatic mode waits for a spawned non-spectator
+player to move, take damage or score, stops after 15 seconds without a live
+player, and discards a file that never saw damage or a frag, so idle
+spectator/limbo/test clients do not publish empty replays.

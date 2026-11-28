@@ -104,7 +104,7 @@ every build with its full feature list and descriptions:
 | `_sofbuddy_stufftext` | `1` | live | `ARCHIVE` | Server console command `stufftext`: send `svc_stufftext` to clients |
 | `_sofbuddy_reldef` | `1` | live | `ARCHIVE` | Queue server→client reliable staging so bursty prints/stufftext do not coalesce into one blob. Bypassed during connect (`state < cs_spawned`) |
 | `_sofbuddy_svdemo` | `1` | live | `ARCHIVE` | Master switch for the server-side state-demo recorder |
-| `_sofbuddy_svdemo_auto` | `0` | live | `ARCHIVE` | Start a new `.sbd` on the first client frame of each map |
+| `_sofbuddy_svdemo_auto` | `0` | live | `ARCHIVE` | Start automatically when a spawned, non-spectator player shows real play (movement, damage or a frag) |
 | `_sofbuddy_svdemo_entities` | `1` | live | `ARCHIVE` | Include player `entity_state_t` (body/model/effects) |
 | `_sofbuddy_svdemo_interval` | `1` | live | `ARCHIVE` | Record every Nth server frame (1 = every tick) |
 | `_sofbuddy_svdemo_max_mb` | `64` | live | `ARCHIVE` | Per-file size cap; `0` = unlimited |

@@ -149,7 +149,10 @@ Current controls:
 
 - manual: `svdemo_start [name]`, `svdemo_stop`, `svdemo_status`,
   `svdemo_mark`, `svdemo_flush`, `svdemo_roster`;
-- automatic per map: `_sofbuddy_svdemo_auto 1`;
+- automatic: `_sofbuddy_svdemo_auto 1` starts after a spawned,
+  non-spectator player shows sustained movement, damage or a frag; files with
+  no damage/frag are discarded, and recording stops 15 s after the last live
+  non-spectator player leaves;
 - size cap: `_sofbuddy_svdemo_max_mb`;
 - sampling: `_sofbuddy_svdemo_interval`;
 - body/entity capture: `_sofbuddy_svdemo_entities`.

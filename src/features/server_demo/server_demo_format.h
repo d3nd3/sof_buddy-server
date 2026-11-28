@@ -79,6 +79,7 @@ enum EndReason : std::uint8_t {
     kEndSizeCap = 3,
     kEndShutdown = 4,
     kEndError = 5,
+    kEndIdle = 6,
 };
 
 // ---------------------------------------------------------------------------

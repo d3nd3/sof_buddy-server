@@ -293,6 +293,7 @@ def reason_name(reason: int) -> str:
         3: "size cap",
         4: "shutdown",
         5: "error",
+        6: "idle",
     }.get(reason, f"unknown({reason})")
 
 

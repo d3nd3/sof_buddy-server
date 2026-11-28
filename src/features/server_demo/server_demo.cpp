@@ -21,7 +21,10 @@
 //   entity_state_t .............. ent+0, 116 bytes
 //   gclient_t.pers.userinfo ..... client+0xCC (512)
 //   gclient_t.pers.netname ...... client+0x2CC (16)
-//   gclient_t.pers.spectator .... client+0x2DC (qboolean)
+//   gclient_t.pers.spectator .... client+0x2DC (qboolean, userinfo request)
+//   gclient_t.pers.connected .... client+0x2F8
+//   gclient_t.pers.health ....... client+0x2FC
+//   gclient_t.resp.spectator .... client+800 (qboolean, current state)
 //   level.framenum .............. gamex86+0x15CCD8
 //   level.time .................. gamex86+0x15CCDC
 //   level.level_name ............ gamex86+0x15CCE0
@@ -63,9 +66,28 @@ constexpr int kDefaultEdictStride = 0x464;
 constexpr unsigned kEdictClientOfs = 0x74;
 constexpr unsigned kClientUserinfoOfs = 0xCC;
 constexpr unsigned kClientNetnameOfs = 0x2CC;
-constexpr unsigned kClientSpectatorOfs = 0x2DC;
-constexpr unsigned kClientNeedBytes = 0x300;
+constexpr unsigned kClientPersSpectatorOfs = 0x2DC;
+constexpr unsigned kClientPersConnectedOfs = 0x2F8;
+constexpr unsigned kClientRespSpectatorOfs = 800;
+constexpr unsigned kClientNeedBytes = 0x340;
+constexpr unsigned kPsPmoveOriginOfs = 4;
+constexpr unsigned kPsStatsOfs = 164;
+constexpr int kStatHealth = 1;
+constexpr int kStatFrags = 10;
+constexpr int kActivityMotionFrames = 4;
+constexpr int kActivityMotionDistance = 64;
+constexpr int kActivityMaxStep = 256;
+constexpr std::uint32_t kIdleStopMs = 15000;
+constexpr std::uint32_t kIdleCheckMs = 1000;
 constexpr int kMaxClients = 64;
+
+// Engine server slot state (SoF.exe svs.clients). The game DLL can read the
+// engine's view of the connection, which is more reliable than pm_type when
+// deciding whether a slot is actually in the game or still in limbo.
+constexpr unsigned kRvaSvsClients = 0x396EEC;
+constexpr unsigned kEngineClientStride = 0xD2AC;
+constexpr unsigned kEngineClientStateOfs = 0x00;
+constexpr int kEngineClientStateSpawned = 3;
 constexpr std::size_t kFlushThreshold = 64 * 1024;
 constexpr int kCmdNameOfs = 0x04;
 constexpr int kCmdFnOfs = 0x08;
@@ -101,9 +123,30 @@ struct RecordingState {
     std::uint32_t lastLevelMs = 0;
     int interval = 1;
     bool entities = true;
+    bool automatic = false;
+    bool combatSeen = false;
+    std::uint32_t lastLiveMs = 0;
+    std::uint32_t lastLiveCheckMs = 0;
 };
 
 RecordingState g_rec;
+
+// Per-slot play evidence for auto-start. A connected, spawned non-spectator
+// client is not enough: idle test/limbo clients look like players to the game,
+// but they never move or fight. Auto-recording waits for sustained horizontal
+// movement, damage, or a frag before creating a file.
+struct SlotActivity {
+    bool initialized = false;
+    std::int16_t origin[3] = {};
+    int health = 0;
+    int frags = 0;
+    int motionFrames = 0;
+    long long motionDistanceSq = 0;
+    bool played = false;
+};
+
+SlotActivity g_activity[kMaxClients + 1];
+std::string g_activityMap;
 
 void StopRecording(std::uint8_t reason);
 
@@ -260,6 +303,171 @@ std::uint32_t LevelTimeMs() {
     if (ms > 0xffffffffu)
         return 0xffffffffu;
     return static_cast<std::uint32_t>(ms);
+}
+
+bool ReadShortAt(const void* base, unsigned offset, std::int16_t* out) {
+    if (!base || !out)
+        return false;
+    const void* p = static_cast<const char*>(base) + offset;
+    if (!IsSafeMemoryBlock(p, sizeof(*out)))
+        return false;
+    *out = *reinterpret_cast<const std::int16_t*>(p);
+    return true;
+}
+
+bool ReadIntAt(const void* base, unsigned offset, std::int32_t* out) {
+    if (!base || !out)
+        return false;
+    const void* p = static_cast<const char*>(base) + offset;
+    if (!IsSafeMemoryBlock(p, sizeof(*out)))
+        return false;
+    *out = *reinterpret_cast<const std::int32_t*>(p);
+    return true;
+}
+
+bool ClientIsSpectator(void* client) {
+    // resp.spectator is the state set by PutClientInServer; pers.spectator is
+    // the userinfo/request value. Treat either as spectator so a client that
+    // requested spectator but has not respawned yet is not counted as playing.
+    std::int32_t resp = 0;
+    if (ReadIntAt(client, kClientRespSpectatorOfs, &resp) && resp != 0)
+        return true;
+    std::int32_t pers = 0;
+    if (ReadIntAt(client, kClientPersSpectatorOfs, &pers) && pers != 0)
+        return true;
+    return false;
+}
+
+// Returns the engine's client-state check. `known` is false when the engine
+// globals are unavailable, in which case the caller should fall back to the
+// game-DLL fields instead of assuming the slot is not spawned.
+bool EngineClientSpawned(int slot0, bool* known) {
+    if (known)
+        *known = false;
+    if (slot0 < 0 || slot0 >= kMaxClients)
+        return false;
+    HMODULE h = ExeMod();
+    if (!IsValidModuleRva(h, kRvaSvsClients, sizeof(void*)))
+        return false;
+    char* clients = *reinterpret_cast<char**>(
+        reinterpret_cast<char*>(h) + kRvaSvsClients);
+    if (!IsSafeMemoryBlock(clients, 1))
+        return false;
+    char* client = clients + static_cast<unsigned>(slot0) * kEngineClientStride;
+    if (!IsSafeMemoryBlock(client + kEngineClientStateOfs, sizeof(int)))
+        return false;
+    if (known)
+        *known = true;
+    return *reinterpret_cast<const int*>(client + kEngineClientStateOfs) ==
+           kEngineClientStateSpawned;
+}
+
+bool IsLivePlayer(void* ent, void* client, int slot) {
+    if (!ent || !client || slot < 1 || slot > kMaxClients)
+        return false;
+    bool engineKnown = false;
+    const bool spawned = EngineClientSpawned(slot - 1, &engineKnown);
+    if (engineKnown && !spawned)
+        return false;
+    if (ClientIsSpectator(client))
+        return false;
+    std::int32_t connected = 0;
+    if (ReadIntAt(client, kClientPersConnectedOfs, &connected) && connected == 0)
+        return false;
+    return true;
+}
+
+void ClearActivity() {
+    for (int slot = 0; slot <= kMaxClients; ++slot)
+        g_activity[slot] = SlotActivity();
+}
+
+void ResetActivityForMap(const std::string& map) {
+    if (map == g_activityMap)
+        return;
+    g_activityMap = map;
+    ClearActivity();
+}
+
+// Returns true once this slot has shown enough evidence of actual play.
+// One teleporting/intermission position change is deliberately not enough.
+// `combat` reports a health change or frag gain seen on this tick.
+bool UpdateActivity(void* client, int slot, bool* combat) {
+    if (combat)
+        *combat = false;
+    if (!client || slot < 1 || slot > kMaxClients)
+        return false;
+    std::int16_t origin[3] = {};
+    std::int16_t healthShort = 0;
+    std::int16_t fragsShort = 0;
+    for (int i = 0; i < 3; ++i) {
+        if (!ReadShortAt(client, kPsPmoveOriginOfs + static_cast<unsigned>(i) * 2,
+                         &origin[i]))
+            return false;
+    }
+    if (!ReadShortAt(client, kPsStatsOfs + kStatHealth * 2, &healthShort) ||
+        !ReadShortAt(client, kPsStatsOfs + kStatFrags * 2, &fragsShort))
+        return false;
+
+    SlotActivity& a = g_activity[slot];
+    if (!a.initialized) {
+        a.initialized = true;
+        std::memcpy(a.origin, origin, sizeof(a.origin));
+        a.health = healthShort;
+        a.frags = fragsShort;
+        return false;
+    }
+
+    const int dx = static_cast<int>(origin[0]) - static_cast<int>(a.origin[0]);
+    const int dy = static_cast<int>(origin[1]) - static_cast<int>(a.origin[1]);
+    const long long stepSq =
+        static_cast<long long>(dx) * dx + static_cast<long long>(dy) * dy;
+    // A single large horizontal jump is a teleport/spectator/intermission
+    // move, not sustained walking. Ignore those steps for the activity score.
+    if (stepSq <= static_cast<long long>(kActivityMaxStep) * kActivityMaxStep) {
+        if (stepSq >= 4) {
+            ++a.motionFrames;
+            a.motionDistanceSq += stepSq;
+        }
+    }
+
+    if (a.motionFrames >= kActivityMotionFrames &&
+        a.motionDistanceSq >=
+            static_cast<long long>(kActivityMotionDistance) * kActivityMotionDistance)
+        a.played = true;
+    if (healthShort != a.health) {
+        a.played = true;
+        if (combat)
+            *combat = true;
+    }
+    if (fragsShort > a.frags) {
+        a.played = true;
+        if (combat)
+            *combat = true;
+    }
+
+    std::memcpy(a.origin, origin, sizeof(a.origin));
+    a.health = healthShort;
+    a.frags = fragsShort;
+    return a.played;
+}
+
+int CountLivePlayers() {
+    char* edicts = Edicts();
+    const int stride = EdictStride();
+    if (!edicts || stride <= 0)
+        return 0;
+    int count = 0;
+    const int maxClients = MaxClients();
+    for (int slot = 1; slot <= maxClients; ++slot) {
+        char* ent = edicts + static_cast<unsigned>(slot) * static_cast<unsigned>(stride);
+        if (!IsSafeMemoryBlock(ent, kEdictClientOfs + sizeof(void*)))
+            continue;
+        void* client = ClientForEnt(ent);
+        if (IsLivePlayer(ent, client, slot))
+            ++count;
+    }
+    return count;
 }
 
 std::string ReadGameString(unsigned rva, std::size_t cap) {
@@ -451,6 +659,10 @@ void ResetRecordingState() {
     g_rec.lastLevelMs = 0;
     g_rec.interval = 1;
     g_rec.entities = true;
+    g_rec.automatic = false;
+    g_rec.combatSeen = false;
+    g_rec.lastLiveMs = 0;
+    g_rec.lastLiveCheckMs = 0;
 }
 
 const char* EndReasonName(std::uint8_t reason) {
@@ -467,6 +679,8 @@ const char* EndReasonName(std::uint8_t reason) {
             return "shutdown";
         case svdemo::kEndError:
             return "error";
+        case svdemo::kEndIdle:
+            return "idle";
         default:
             return "unknown";
     }
@@ -480,6 +694,12 @@ void StopRecording(std::uint8_t reason) {
     const std::string path = g_rec.path;
     const std::uint64_t frames = g_rec.clientFrames;
     const std::uint64_t bytes = g_rec.bytes + g_rec.buffer.size();
+    // Automatic files only exist for real play. Movement alone is not enough:
+    // a test/limbo client can wander the map without ever fighting. If no
+    // damage or frag occurred before the stop, discard the file so demosync
+    // never publishes an empty replay.
+    const bool discard = wasActive && g_rec.automatic &&
+                         (!g_rec.combatSeen || frames == 0);
 
     g_rec.active = false;
     if (g_rec.file) {
@@ -509,7 +729,17 @@ void StopRecording(std::uint8_t reason) {
                           static_cast<unsigned>(frames),
                           static_cast<unsigned>(bytes));
     }
+    if (discard) {
+        if (std::remove(path.c_str()) == 0) {
+            if (!g_shuttingDown)
+                Buddy_DebugPrintf("[svdemo] discarded no-combat recording: %s\n",
+                                  path.c_str());
+        } else if (!g_shuttingDown) {
+            Buddy_DebugPrintf("[svdemo] could not discard %s\n", path.c_str());
+        }
+    }
     ResetRecordingState();
+    ClearActivity();
 }
 
 bool StartRecording(const char* requested, bool automatic) {
@@ -552,6 +782,10 @@ bool StartRecording(const char* requested, bool automatic) {
     g_rec.startLevelMs = LevelTimeMs();
     g_rec.lastLevelMs = g_rec.startLevelMs;
     g_rec.maxSlot = 0;
+    g_rec.automatic = automatic;
+    g_rec.combatSeen = false;
+    g_rec.lastLiveMs = g_rec.startLevelMs;
+    g_rec.lastLiveCheckMs = g_rec.startLevelMs;
 
     svdemo::FileInfo info;
     info.flags = g_rec.entities ? svdemo::kChunkFlagHasEntity : svdemo::kChunkFlagNone;
@@ -615,10 +849,9 @@ std::uint32_t HashRoster(const std::string& name, const std::string& userinfo,
 void MaybeWriteRoster(void* client, int slot, std::uint32_t frame, std::uint32_t timeMs) {
     const std::string name = FixedString(static_cast<char*>(client) + kClientNetnameOfs, 16);
     const std::string userinfo = FixedString(static_cast<char*>(client) + kClientUserinfoOfs, 512);
-    const std::uint8_t spectator =
-        *reinterpret_cast<const std::uint8_t*>(static_cast<char*>(client) + kClientSpectatorOfs)
-            ? svdemo::kClientFlagSpectator
-            : svdemo::kClientFlagNone;
+    const std::uint8_t spectator = ClientIsSpectator(client)
+                                       ? svdemo::kClientFlagSpectator
+                                       : svdemo::kClientFlagNone;
     const std::uint32_t hash = HashRoster(name, userinfo, spectator);
     if (g_rosterValid[slot] && g_rosterHash[slot] == hash)
         return;
@@ -673,7 +906,7 @@ void CaptureClient(void* ent) {
     // These are process-local pointers in the live game; never write them.
     cf.ps.gun = 0;
     cf.ps.bod = 0;
-    if (*reinterpret_cast<const std::uint8_t*>(static_cast<char*>(client) + kClientSpectatorOfs))
+    if (ClientIsSpectator(client))
         cf.flags |= svdemo::kClientFlagSpectator;
 
     if (g_rec.entities) {
@@ -816,8 +1049,47 @@ void ServerDemo_ClientEndServerFramePost(void* ent) {
     if (!g_rec.active) {
         if (!ServerDemo_AutoEnabled() || map.empty())
             return;
+        ResetActivityForMap(map);
+        void* client = ClientForEnt(ent);
+        const int slot = SlotForEnt(ent);
+        if (!IsLivePlayer(ent, client, slot)) {
+            if (slot >= 1 && slot <= kMaxClients)
+                g_activity[slot] = SlotActivity();
+            return;
+        }
+        // Auto-recording starts on evidence of play, not merely on a
+        // connected slot. This keeps spectator/limbo/test clients from
+        // producing empty per-map files.
+        bool combat = false;
+        if (!UpdateActivity(client, slot, &combat))
+            return;
         if (!StartRecording(nullptr, true))
             return;
+        g_rec.combatSeen = combat;
+    } else if (g_rec.automatic) {
+        void* client = ClientForEnt(ent);
+        const int slot = SlotForEnt(ent);
+        if (IsLivePlayer(ent, client, slot)) {
+            bool combat = false;
+            UpdateActivity(client, slot, &combat);
+            if (combat)
+                g_rec.combatSeen = true;
+        }
+        // A recording that ran out of non-spectator players (all disconnected
+        // or switched to spectator) is closed after a grace period. Players
+        // standing still are still live; only the absence of live players
+        // stops the file.
+        const std::uint32_t timeMs = LevelTimeMs();
+        if (timeMs >= g_rec.lastLiveCheckMs &&
+            timeMs - g_rec.lastLiveCheckMs >= kIdleCheckMs) {
+            g_rec.lastLiveCheckMs = timeMs;
+            if (CountLivePlayers() > 0) {
+                g_rec.lastLiveMs = timeMs;
+            } else if (timeMs > g_rec.lastLiveMs &&
+                       timeMs - g_rec.lastLiveMs >= kIdleStopMs) {
+                StopRecording(svdemo::kEndIdle);
+            }
+        }
     }
 
     CaptureClient(ent);
@@ -854,12 +1126,13 @@ extern "C" void __cdecl svdemo_Status_f() {
     Buddy_DebugPrintf(
         "[svdemo] recording %s\n"
         "[svdemo]   map=%s level=%s frames=%u..%u client-frames=%u bytes=%u max-slot=%u\n"
-        "[svdemo]   interval=%d entities=%d level-ms=%u\n",
+        "[svdemo]   interval=%d entities=%d auto=%d combat=%d live=%d level-ms=%u\n",
         g_rec.path.c_str(), g_rec.map.c_str(), g_rec.levelName.c_str(),
         static_cast<unsigned>(g_rec.firstFrame), static_cast<unsigned>(g_rec.lastFrame),
         static_cast<unsigned>(g_rec.clientFrames),
         static_cast<unsigned>(g_rec.bytes + g_rec.buffer.size()),
         static_cast<unsigned>(g_rec.maxSlot), g_rec.interval, g_rec.entities ? 1 : 0,
+        g_rec.automatic ? 1 : 0, g_rec.combatSeen ? 1 : 0, CountLivePlayers(),
         static_cast<unsigned>(g_rec.lastLevelMs));
 }
 
